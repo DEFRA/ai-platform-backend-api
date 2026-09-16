@@ -1,6 +1,6 @@
 # Specifications
 
-This folder stores feature and technical specification documents (`.md`) for `ai-platform-backend-api`. Use it to capture design intent *before* implementation so both humans and AI coding agents (GitHub Copilot) can reference agreed requirements and constraints.
+This folder stores feature and technical specification documents (`.md`) for `ai-platform-backend-api`. Use it to capture design intent _before_ implementation so both humans and AI coding agents (GitHub Copilot) can reference agreed requirements and constraints.
 
 ## Conventions
 
@@ -22,17 +22,22 @@ Some specs (e.g. [mvp-portal-ui-api-scope.md](./mvp-portal-ui-api-scope.md)) ori
 # <Title>
 
 ## Status
+
 Draft | Accepted | Superseded by <link>
 
 ## Problem
+
 What problem this addresses and why now.
 
 ## Requirements
+
 - Bullet list of must-have behaviour / acceptance criteria
 
 ## Out of Scope
+
 - What this explicitly does not cover
 
 ## Notes
+
 Links to related specs, ADRs, or discussions.
 ```

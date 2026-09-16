@@ -4,7 +4,7 @@
 
 ## Architecture
 
-- **Layered structure**: 
+- **Layered structure**:
   - `src/routes/` — HTTP route definitions and thin request/response handling (validation via Joi, then delegate to services)
   - `src/services/` — Business logic, transactions, orchestration (no direct DB access)
   - `src/plugins/` — Hapi plugin initialization (logger, MongoDB connection, pulse/health, request tracing, routing)
@@ -21,7 +21,7 @@
 - **Tests**: `npm test` (Vitest with coverage reporting; see `vitest.config.js`)
   - Watch mode: `npm test:watch`
   - Coverage thresholds are enforced in CI
-- **Linting**: 
+- **Linting**:
   - ESLint (neostandard config): `npm run lint` (--fix available via `npm run lint:fix`)
   - Prettier formatting: `npm run format` (with format:check for CI)
   - Pre-commit hook: `npm run git:pre-commit-hook` runs security audit, format check, lint, and tests
@@ -35,7 +35,7 @@
 - **Services own business logic**: Services orchestrate data access, validation, and external integrations. They do not perform HTTP request/response handling.
 - **Dependency injection via server.app**: Services access MongoDB, config, and other dependencies through the injected `server.app` container, not via direct imports or global state.
 - **Azure/APIM integration** (if applicable): Calls to Azure APIM go through dedicated adapter functions (e.g. `adapters/azure/apim-management-client.js`) behind a port interface (e.g. `CredentialIssuer` with `issue()`, `renew()`, `revoke()`, `suspend()`). Services never call Azure directly.
-- **Sensitive data handling**: 
+- **Sensitive data handling**:
   - Never log, persist, or return the full subscription key or tokens — only display a `keyHint` (last 4 characters).
   - Use `Idempotency-Key` headers on endpoints that create resources to prevent duplicates on retries.
 - **Error handling**: Use `@hapi/boom` with stable `code` fields so the frontend can map errors to user-facing messages.

@@ -9,9 +9,7 @@ export const credentials = {
     validate: {
       headers: Joi.object({
         'x-user-id': Joi.string().required(),
-        'idempotency-key': Joi.string()
-          .guid({ version: 'uuidv4' })
-          .required()
+        'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
       }).unknown(true),
       payload: Joi.object({
         modelSlug: Joi.string()
