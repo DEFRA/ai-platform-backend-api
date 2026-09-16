@@ -6,6 +6,8 @@ export default defineConfig({
     environment: 'node',
     clearMocks: true,
     fileParallelism: false,
+    // mongodb-memory-server downloads a ~600MB binary on first run, which can exceed the default 10s hook timeout
+    hookTimeout: 120000,
     coverage: {
       provider: 'v8',
       reportsDirectory: './coverage',

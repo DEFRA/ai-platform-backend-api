@@ -126,6 +126,20 @@ export const config = convict({
       default: 'x-cdp-request-id',
       env: 'TRACING_HEADER'
     }
+  },
+  allowedEmailDomains: {
+    doc: 'Comma-separated list of email domains allowed to sign in',
+    format: String,
+    default: 'defra.gov.uk',
+    env: 'ALLOWED_EMAIL_DOMAINS'
+  },
+  research: {
+    credentialTtlDays: {
+      doc: 'Research tier credential time-to-live in days',
+      format: 'nat',
+      default: 7,
+      env: 'RESEARCH_CREDENTIAL_TTL_DAYS'
+    }
   }
 })
 
