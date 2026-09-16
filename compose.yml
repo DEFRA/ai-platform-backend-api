@@ -39,7 +39,7 @@ services:
 
   ################################################################################
 
-  cdp-node-backend-template:
+  ai-platform-backend-api:
     build:
       context: .
       target: development
