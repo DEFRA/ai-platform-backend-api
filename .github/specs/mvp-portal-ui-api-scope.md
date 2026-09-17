@@ -10,8 +10,8 @@ source: C:\Repos\ai-platform-discovery-docs\docs\mvp-portal-ui-api-scope.md
 
 This is the build specification for the first slice of the Defra AI Platform Portal: a GOV.UK-styled web UI and a JSON API, delivered as two services on the Defra Core Delivery Platform (CDP). It is written for developers who will implement it PR by PR without access to earlier discovery material. Everything you need is in this document plus the two public CDP templates:
 
-* `https://github.com/DEFRA/cdp-node-frontend-template`
-* `https://github.com/DEFRA/cdp-node-backend-template`
+- `https://github.com/DEFRA/cdp-node-frontend-template`
+- `https://github.com/DEFRA/cdp-node-backend-template`
 
 Day 1 delivers: sign in, a model catalogue, model detail pages with examples, self-service issue of a rate-limited Research tier credential for a shared model, and an account page to renew or revoke it. It does not deliver Entra sign-in, funded teams, per-team Foundry projects, infrastructure generation or usage dashboards. Those are named follow-on phases.
 
@@ -21,12 +21,12 @@ Platform-level decisions referenced here are proposals except where marked confi
 
 ### Platform facts you need
 
-* AICE is the Defra AI adoption hub. It operates the AI Platform, sets guardrails and issues retirement notices. Delivery teams own their workloads.
-* The platform lets Defra applications call eligible, pinned models hosted in Microsoft Azure AI Foundry through an Azure API Management (APIM) gateway. Consumers never receive Azure or Foundry roles, provider keys or direct endpoints.
-* Tenancy (confirmed 16 September 2026): one Foundry project per funded team, plus one Shared AI Platform project that hosts the Research tier.
-* The Research tier (confirmed 16 September 2026) is free trial access for Defra staff without a funded team. AICE absorbs the cost against its Research cost centre. Rules: Defra tenant identities only (no guests); capture only user and team name; fixed token and time allowances; credentials expire after at most one week; a small fixed number of renewals; users cannot change budgets, limits or models; no production endpoints; the same guardrails as paid tiers (isolation, fixed safety profile, full audit).
-* Geography (confirmed): UK regions or the EU Data Zone only. No Global routes, no US Data Zone, no DeepSeek. The platform handles OFFICIAL data only; no OFFICIAL-SENSITIVE.
-* Success target to keep in view (proposal O01): a developer reaches usable model access within 5 minutes of sign-in.
+- AICE is the Defra AI adoption hub. It operates the AI Platform, sets guardrails and issues retirement notices. Delivery teams own their workloads.
+- The platform lets Defra applications call eligible, pinned models hosted in Microsoft Azure AI Foundry through an Azure API Management (APIM) gateway. Consumers never receive Azure or Foundry roles, provider keys or direct endpoints.
+- Tenancy (confirmed 16 September 2026): one Foundry project per funded team, plus one Shared AI Platform project that hosts the Research tier.
+- The Research tier (confirmed 16 September 2026) is free trial access for Defra staff without a funded team. AICE absorbs the cost against its Research cost centre. Rules: Defra tenant identities only (no guests); capture only user and team name; fixed token and time allowances; credentials expire after at most one week; a small fixed number of renewals; users cannot change budgets, limits or models; no production endpoints; the same guardrails as paid tiers (isolation, fixed safety profile, full audit).
+- Geography (confirmed): UK regions or the EU Data Zone only. No Global routes, no US Data Zone, no DeepSeek. The platform handles OFFICIAL data only; no OFFICIAL-SENSITIVE.
+- Success target to keep in view (proposal O01): a developer reaches usable model access within 5 minutes of sign-in.
 
 ### What the earlier proof of concept showed
 
@@ -47,7 +47,7 @@ A Hapi and Nunjucks proof of concept ("Defra AI Portal") validated the journey: 
 ### In scope for day 1
 
 | Capability       | Detail                                                                                                            |
-| ---------------- | ------------------------------------------------------------------------------------------------------------------- |
+| ---------------- | ----------------------------------------------------------------------------------------------------------------- |
 | Sign in          | Self-declared form: Defra email on an allow-listed domain, display name, team name. Server session.               |
 | Catalogue        | List eligible models with provider, family, version, region and tier tags. Filter by provider and tier.           |
 | Model detail     | Facts, use cases, best-practice links, and curl, Python and JavaScript examples rendered for that model.          |
@@ -73,7 +73,7 @@ A Hapi and Nunjucks proof of concept ("Defra AI Portal") validated the journey: 
 ## Personas and roles
 
 | Role           | Day-1 capability                                                | Later                                               |
-| -------------- | --------------------------------------------------------------- | ---------------------------------------------------- |
+| -------------- | --------------------------------------------------------------- | --------------------------------------------------- |
 | Research user  | Sign in, browse, obtain and manage one Research tier credential | Upgrade to a funded team keeping the same identity  |
 | Team user      | Not available                                                   | Reuse team models and credentials                   |
 | Team admin     | Not available                                                   | Rotate and revoke team credentials                  |
@@ -112,11 +112,11 @@ flowchart LR
 
 ### Boundary rules
 
-* The browser talks only to the frontend. It never calls Azure, Foundry or the backend directly.
-* The frontend renders pages, holds session and journey state, and calls the backend through one `apiClient`. It contains no business rules and no database or Azure access.
-* The backend owns all business rules, persistence, Azure integration and audit. It is the only writer to MongoDB.
-* Azure calls go through the CDP egress proxy using a service principal held in CDP secrets. Workload identity federation replaces the secret later.
-* Rate limiting and quotas are enforced by APIM policy on the `research` product. The portal displays limits; it does not meter usage on day 1.
+- The browser talks only to the frontend. It never calls Azure, Foundry or the backend directly.
+- The frontend renders pages, holds session and journey state, and calls the backend through one `apiClient`. It contains no business rules and no database or Azure access.
+- The backend owns all business rules, persistence, Azure integration and audit. It is the only writer to MongoDB.
+- Azure calls go through the CDP egress proxy using a service principal held in CDP secrets. Workload identity federation replaces the secret later.
+- Rate limiting and quotas are enforced by APIM policy on the `research` product. The portal displays limits; it does not meter usage on day 1.
 
 ### Environments
 
@@ -127,7 +127,7 @@ CDP provides `dev`, `test`, `perf-test` and `prod` environments with pipelines, 
 ### Responsibilities
 
 | Concern                   | Frontend                                                   | Backend                                                     |
-| ------------------------- | ---------------------------------------------------------- | ------------------------------------------------------------ |
+| ------------------------- | ---------------------------------------------------------- | ----------------------------------------------------------- |
 | Rendering                 | Nunjucks, GOV.UK Frontend, no client-side data fetching    | None                                                        |
 | Input validation          | Joi for form shape and GOV.UK error messages               | Joi for every request; authoritative                        |
 | Business rules            | None                                                       | Allow-listed domains, tier eligibility, renewal cap, expiry |
@@ -255,19 +255,19 @@ The account page also shows an allowance state derived from the credential: `ava
 
 ### Error and edge cases
 
-* Email domain not allow-listed: reject at sign-in with a GOV.UK error summary; no user record created.
-* User already holds an active credential for the tier: return 409; the frontend shows the existing credential summary with a revoke-and-reissue route.
-* APIM call fails: credential stays `pending` then `failed`; the user sees a safe error page with a retry link. No secret is ever returned for a non-active credential.
-* Credential past `expiresAt`: any read marks it `expired` (lazy) and the scheduled maintenance run suspends the APIM subscription.
-* Renewal cap reached: 403 with `code: renewal-cap-reached`; the page shows the cap and the upgrade route.
-* Session expired mid-journey: redirect to `/sign-in` with a returnTo query; no partial records.
+- Email domain not allow-listed: reject at sign-in with a GOV.UK error summary; no user record created.
+- User already holds an active credential for the tier: return 409; the frontend shows the existing credential summary with a revoke-and-reissue route.
+- APIM call fails: credential stays `pending` then `failed`; the user sees a safe error page with a retry link. No secret is ever returned for a non-active credential.
+- Credential past `expiresAt`: any read marks it `expired` (lazy) and the scheduled maintenance run suspends the APIM subscription.
+- Renewal cap reached: 403 with `code: renewal-cap-reached`; the page shows the cap and the upgrade route.
+- Session expired mid-journey: redirect to `/sign-in` with a returnTo query; no partial records.
 
 ## Page inventory
 
 ### Routes
 
 | Route                                               | Method    | Page                     | GOV.UK components                                                            | Data                              |
-| ----------------------------------------------------- | --------- | ------------------------ | ------------------------------------------------------------------------------ | ---------------------------------- |
+| --------------------------------------------------- | --------- | ------------------------ | ---------------------------------------------------------------------------- | --------------------------------- |
 | `/`                                                 | GET       | Start                    | Start button, inset text                                                     | None                              |
 | `/sign-in`                                          | GET, POST | Sign in                  | Text inputs, error summary, button                                           | `POST /v1/users`                  |
 | `/sign-out`                                         | POST      | Sign out                 | Button                                                                       | Session clear                     |
@@ -294,10 +294,10 @@ The credential page follows the proof of concept: a green panel confirming issue
 
 ### Design tokens
 
-* GOV.UK Frontend 6.x with `govukRebrand: true` in the page template.
-* `$govuk-brand-colour: #00a33b` (Defra green) for the header bar and start button; links stay GOV.UK blue `#1d70b8`; focus stays `#fd0`.
-* Header service name "Defra AI Platform"; phase banner "Alpha" with a feedback link.
-* Two-thirds and one-third grid on detail and credential pages; full width for the catalogue table.
+- GOV.UK Frontend 6.x with `govukRebrand: true` in the page template.
+- `$govuk-brand-colour: #00a33b` (Defra green) for the header bar and start button; links stay GOV.UK blue `#1d70b8`; focus stays `#fd0`.
+- Header service name "Defra AI Platform"; phase banner "Alpha" with a feedback link.
+- Two-thirds and one-third grid on detail and credential pages; full width for the catalogue table.
 
 ## API v1 contract
 
@@ -306,7 +306,7 @@ The credential page follows the proof of concept: a green panel confirming issue
 All paths are prefixed `/v1` except `/health`. Requests and responses are JSON. Authenticated routes require `x-user-id` (day 1) or a bearer token (phase 1b).
 
 | Method | Path                              | Purpose                                                    | Request                                                   | Success                                                             | Errors                                           |
-| ------ | ---------------------------------- | ----------------------------------------------------------- | ----------------------------------------------------------- | ---------------------------------------------------------------------- | -------------------------------------------------- |
+| ------ | --------------------------------- | ---------------------------------------------------------- | --------------------------------------------------------- | ------------------------------------------------------------------- | ------------------------------------------------ |
 | GET    | `/health`                         | Liveness                                                   | None                                                      | 200 `{status: "ok"}`                                                | None                                             |
 | POST   | `/users`                          | Upsert user and team at sign-in                            | `{email, displayName, teamName}`                          | 200 or 201 `{user, team}`                                           | 400, 403 domain not allowed                      |
 | GET    | `/users/me`                       | Current user and team                                      | Header only                                               | 200 `{user, team}`                                                  | 401, 404                                         |
@@ -342,7 +342,7 @@ Codes: `validation`, `domain-not-allowed`, `model-not-eligible`, `active-credent
 Field names are camelCase. Timestamps are ISO 8601 UTC. `_id` is an ObjectId.
 
 | Collection    | Fields                                                                                                                                                                                                                                                                                                                 | Indexes                                                                |
-| ------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------ |
+| ------------- | ---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------- |
 | `users`       | `email` (lowercased), `displayName`, `teamId`, `roles` (array, default `["research-user"]`), `createdAt`, `updatedAt`, `lastSignInAt`                                                                                                                                                                                  | unique `email`                                                         |
 | `teams`       | `name`, `normalisedName`, `serviceCode` (null day 1), `billingCode` (null day 1), `createdBy`, `createdAt`                                                                                                                                                                                                             | unique `normalisedName`                                                |
 | `models`      | `slug`, `displayName`, `provider`, `family`, `version`, `deploymentName`, `apiVersion`, `apimPath`, `region`, `dataZone`, `eligible`, `tiers` (array), `description`, `useCases` (array), `contextWindow`, `links` (array of `{text, href}`), `limits` `{requestsPerMinute, tokensPerDay}`, `seedVersion`, `updatedAt` | unique `slug`; `eligible, provider`                                    |
@@ -354,7 +354,7 @@ Never store the subscription key, a token, or request or response payloads. `key
 ### Catalogue source options
 
 | Option               | Pros                                                                                                                      | Cons                                                                         |
-| --------------------- | --------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| -------------------- | ------------------------------------------------------------------------------------------------------------------------- | ---------------------------------------------------------------------------- |
 | Curated seed only    | Reviewed content, deterministic tests, no Azure call on read                                                              | Drift from real deployments; manual updates                                  |
 | Live from Azure only | Always current                                                                                                            | Slow, coupled to Azure availability, no room for curated copy or eligibility |
 | Hybrid (chosen)      | Curated copy and eligibility from seed; deployment status and version enriched live behind a flag with cache and fallback | Two sources to reason about; enrichment needs a reader role                  |
@@ -425,35 +425,35 @@ Every page renders fully server-side. JavaScript adds only the copy button and G
 
 ### Security
 
-* CSP through blankie: `default-src 'self'`, `frame-ancestors 'none'`, no inline scripts; HSTS and `X-Content-Type-Options` from the template's secure-context plugin.
-* CSRF: crumb token on every frontend POST.
-* Validation: Joi on every frontend form and every backend route; reject unknown keys.
-* Secrets: the subscription key exists in memory for one response and one render. It is never logged, persisted or included in audit events.
-* Logging: no personal data, no keys, no tokens. Log user ids, not emails.
-* Sessions: `httpOnly`, `secure`, `SameSite=Lax`, Redis-backed, 8-hour absolute lifetime.
-* Backend has no public ingress; maintenance route requires `x-maintenance-token` from CDP secrets.
+- CSP through blankie: `default-src 'self'`, `frame-ancestors 'none'`, no inline scripts; HSTS and `X-Content-Type-Options` from the template's secure-context plugin.
+- CSRF: crumb token on every frontend POST.
+- Validation: Joi on every frontend form and every backend route; reject unknown keys.
+- Secrets: the subscription key exists in memory for one response and one render. It is never logged, persisted or included in audit events.
+- Logging: no personal data, no keys, no tokens. Log user ids, not emails.
+- Sessions: `httpOnly`, `secure`, `SameSite=Lax`, Redis-backed, 8-hour absolute lifetime.
+- Backend has no public ingress; maintenance route requires `x-maintenance-token` from CDP secrets.
 
 ### Observability
 
-* hapi-pino with ECS JSON format; every log line carries `x-cdp-request-id`.
-* `@defra/hapi-tracing` propagates the request id from frontend to backend.
-* `@defra/cdp-metrics` counters: `credential_issued`, `credential_renewed`, `credential_revoked`, `credential_failed`, `apim_call_duration`.
-* `auditEvents` written for every state-changing action with outcome and code.
+- hapi-pino with ECS JSON format; every log line carries `x-cdp-request-id`.
+- `@defra/hapi-tracing` propagates the request id from frontend to backend.
+- `@defra/cdp-metrics` counters: `credential_issued`, `credential_renewed`, `credential_revoked`, `credential_failed`, `apim_call_duration`.
+- `auditEvents` written for every state-changing action with outcome and code.
 
 ### Accessibility
 
-* WCAG 2.2 AA using GOV.UK Design System patterns only.
-* Error summary with links to fields; one H1 per page; page titles prefixed with "Error: " on validation failure.
-* All journeys complete with JavaScript disabled and by keyboard.
-* Interactive targets at least 24 by 24 CSS pixels; forced-colours mode checked.
-* Code examples in `<pre><code>` with a visible language label.
+- WCAG 2.2 AA using GOV.UK Design System patterns only.
+- Error summary with links to fields; one H1 per page; page titles prefixed with "Error: " on validation failure.
+- All journeys complete with JavaScript disabled and by keyboard.
+- Interactive targets at least 24 by 24 CSS pixels; forced-colours mode checked.
+- Code examples in `<pre><code>` with a visible language label.
 
 ### Configuration
 
 All configuration is read through convict from environment variables. CDP injects secrets and MongoDB and Redis settings.
 
 | Service  | Variable                                                            | Purpose                                               |
-| -------- | --------------------------------------------------------------------- | ------------------------------------------------------- |
+| -------- | ------------------------------------------------------------------- | ----------------------------------------------------- |
 | Frontend | `API_BASE_URL`                                                      | Internal backend URL                                  |
 | Frontend | `ALLOWED_EMAIL_DOMAINS`                                             | Comma-separated Defra domains for sign-in             |
 | Frontend | `SESSION_CACHE_ENGINE`, `REDIS_*`                                   | Session store (template defaults)                     |
@@ -470,7 +470,7 @@ All configuration is read through convict from environment variables. CDP inject
 ## Testing strategy
 
 | Layer       | Tool                                                  | Scope                                                                                         |
-| ----------- | ------------------------------------------------------- | ------------------------------------------------------------------------------------------------ |
+| ----------- | ----------------------------------------------------- | --------------------------------------------------------------------------------------------- |
 | Unit        | vitest, `server.inject`                               | Controllers with fake services; services with fake repositories and issuer; policy rules      |
 | Adapter     | vitest-fetch-mock                                     | Token provider caching, APIM client requests and error mapping                                |
 | Integration | vitest-mongodb (backend); mocked API (frontend)       | Repositories and full route flows; frontend journeys with cheerio assertions                  |
@@ -482,19 +482,19 @@ Coverage thresholds in `vitest.config.js`: statements, lines and functions 95 pe
 
 ### Definition of done
 
-* Lint, format and tests pass locally and in CI; coverage thresholds met; SonarCloud quality gate green.
-* No new dependency outside the two templates plus `@hapi/crumb` without a note in the PR.
-* Every new route has a happy-path and a validation-failure test.
-* Every page passes an axe scan and a manual keyboard and no-JavaScript check.
-* No secrets, emails or payloads in logs (assert in tests with a log spy).
-* README updated for any new environment variable.
+- Lint, format and tests pass locally and in CI; coverage thresholds met; SonarCloud quality gate green.
+- No new dependency outside the two templates plus `@hapi/crumb` without a note in the PR.
+- Every new route has a happy-path and a validation-failure test.
+- Every page passes an axe scan and a manual keyboard and no-JavaScript check.
+- No secrets, emails or payloads in logs (assert in tests with a log spy).
+- README updated for any new environment variable.
 
 ## Delivery phases
 
 Frontend and backend proceed in parallel from the contract above. Each phase is one or more PRs per repository.
 
 | Phase | Backend                                                                  | Frontend                                                                         | Depends on                              |
-| ----- | -------------------------------------------------------------------------- | -------------------------------------------------------------------------------------- | ------------------------------------------ |
+| ----- | ------------------------------------------------------------------------ | -------------------------------------------------------------------------------- | --------------------------------------- |
 | P0    | Scaffold from template, `/health`, config, CI, Sonar, README             | Scaffold, layout with rebrand and Defra colour, start page, help and legal pages | CDP repositories created                |
 | P1    | `models` repository, seed, `GET /v1/models`, `GET /v1/models/{slug}`     | Catalogue and model detail pages with example templates                          | P0                                      |
 | P2    | `users`, `teams`, `POST /v1/users`, `GET /v1/users/me`, audit            | Sign-in form, session, `requireSignIn`, sign out                                 | P0                                      |
@@ -506,18 +506,18 @@ Frontend and backend proceed in parallel from the contract above. Each phase is 
 
 The platform direction is OAuth-first with keys only where a supported flow requires them. Day 1 uses APIM subscription keys because they exist today and the proof of concept validated them. The `CredentialIssuer` port isolates this choice. The next design must answer:
 
-* Client registration unit: one Entra app registration per user, per team, or per application, and who creates it.
-* Grant type for deployed applications (client credentials) versus developer tooling (device code or authorisation code).
-* Token lifetime and refresh policy per tier: Research tier at most one week; production longer but finite.
-* Revocation propagation window across issued tokens, APIM caches and active requests.
-* APIM policy shape: `validate-jwt` or `validate-azure-ad-token` with audience and claim checks, mapped to the research product limits.
-* How `POST /v1/credentials` returns a client id and secret or a certificate, and how `renew` maps to secret rotation.
-* Migration of existing subscription-key credentials and the user-facing message.
+- Client registration unit: one Entra app registration per user, per team, or per application, and who creates it.
+- Grant type for deployed applications (client credentials) versus developer tooling (device code or authorisation code).
+- Token lifetime and refresh policy per tier: Research tier at most one week; production longer but finite.
+- Revocation propagation window across issued tokens, APIM caches and active requests.
+- APIM policy shape: `validate-jwt` or `validate-azure-ad-token` with audience and claim checks, mapped to the research product limits.
+- How `POST /v1/credentials` returns a client id and secret or a certificate, and how `renew` maps to secret rotation.
+- Migration of existing subscription-key credentials and the user-facing message.
 
 ## Risks and assumptions
 
 | Item                                                                               | Type       | Mitigation                                                                                    |
-| -------------------------------------------------------------------------------------- | ------------ | -------------------------------------------------------------------------------------------------- |
+| ---------------------------------------------------------------------------------- | ---------- | --------------------------------------------------------------------------------------------- |
 | Gateway SKU not selected (D01)                                                     | Risk       | Use only management API features common to all SKUs; keep issuer behind a port                |
 | CDP egress proxy must allow `management.azure.com` and `login.microsoftonline.com` | Assumption | Request allow-list entries when creating the repositories                                     |
 | Service principal secret is an interim credential                                  | Risk       | Store in CDP secrets; plan workload identity federation                                       |
@@ -529,7 +529,7 @@ The platform direction is OAuth-first with keys only where a supported flow requ
 ## Glossary
 
 | Term                       | Meaning                                                                                                         |
-| ---------------------------- | ------------------------------------------------------------------------------------------------------------------ |
+| -------------------------- | --------------------------------------------------------------------------------------------------------------- |
 | AICE                       | Defra AI adoption hub that operates the AI Platform                                                             |
 | APIM                       | Azure API Management, the gateway in front of models; also its management REST API                              |
 | CDP                        | Defra Core Delivery Platform on AWS: repositories, pipelines, MongoDB, Redis, secrets, proxy                    |

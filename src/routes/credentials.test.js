@@ -57,7 +57,12 @@ describe('#credentials routes', () => {
     const headers = { 'x-user-id': 'user-3', 'idempotency-key': randomUUID() }
     const payload = { modelSlug: 'gpt-3-5-turbo' }
 
-    await server.inject({ method: 'POST', url: '/v1/credentials', headers, payload })
+    await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers,
+      payload
+    })
 
     const { result, statusCode } = await server.inject({
       method: 'POST',

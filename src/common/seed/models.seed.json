@@ -13,7 +13,11 @@
     "eligible": true,
     "tiers": ["research"],
     "description": "OpenAI's flagship model, optimised for complex reasoning and long-context tasks.",
-    "useCases": ["Complex reasoning", "Long-document analysis", "Code generation"],
+    "useCases": [
+      "Complex reasoning",
+      "Long-document analysis",
+      "Code generation"
+    ],
     "contextWindow": "1,000,000 tokens",
     "links": [{ "text": "Best practice guide", "href": "/help/best-practice" }],
     "limits": { "requestsPerMinute": 60, "tokensPerDay": 100000 },
@@ -33,7 +37,11 @@
     "eligible": true,
     "tiers": ["research"],
     "description": "Multimodal OpenAI model balancing speed, cost and capability across text and vision tasks.",
-    "useCases": ["Chat assistants", "Document summarisation", "Image understanding"],
+    "useCases": [
+      "Chat assistants",
+      "Document summarisation",
+      "Image understanding"
+    ],
     "contextWindow": "128,000 tokens",
     "links": [{ "text": "Best practice guide", "href": "/help/best-practice" }],
     "limits": { "requestsPerMinute": 60, "tokensPerDay": 100000 },

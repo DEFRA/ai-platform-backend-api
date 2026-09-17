@@ -1,7 +1,10 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
-import { listEligibleModels, findModelBySlug } from '#/services/models-service.js'
+import {
+  listEligibleModels,
+  findModelBySlug
+} from '#/services/models-service.js'
 
 export const models = [
   {

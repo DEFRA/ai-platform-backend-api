@@ -35,11 +35,13 @@ export async function upsertUser(db, { email, displayName, teamName }) {
   const now = new Date().toISOString()
   const normalisedName = normaliseTeamName(teamName)
 
-  const team = await db.collection('teams').findOneAndUpdate(
-    { normalisedName },
-    { $setOnInsert: { name: teamName, normalisedName, createdAt: now } },
-    { upsert: true, returnDocument: 'after' }
-  )
+  const team = await db
+    .collection('teams')
+    .findOneAndUpdate(
+      { normalisedName },
+      { $setOnInsert: { name: teamName, normalisedName, createdAt: now } },
+      { upsert: true, returnDocument: 'after' }
+    )
 
   const user = await db.collection('users').findOneAndUpdate(
     { email: lowerEmail },

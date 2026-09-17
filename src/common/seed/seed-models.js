@@ -24,5 +24,7 @@ export async function seedModels(db, logger) {
     )
   }
 
-  logger.info(`Seeded ${modelsSeed.length} models (seedVersion ${modelsSeed[0]?.seedVersion})`)
+  logger.info(
+    `Seeded ${modelsSeed.length} models (seedVersion ${modelsSeed[0]?.seedVersion})`
+  )
 }
