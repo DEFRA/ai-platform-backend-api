@@ -1,6 +1,8 @@
 import { MongoClient } from 'mongodb'
 import { LockManager } from 'mongo-locks'
 
+import { seedModels } from '#/common/seed/seed-models.js'
+
 export const mongoDb = {
   plugin: {
     name: 'mongodb',
@@ -17,6 +19,7 @@ export const mongoDb = {
       const locker = new LockManager(db.collection('mongo-locks'))
 
       await createIndexes(db)
+      await seedModels(db, server.logger)
 
       server.logger.info(`MongoDb connected to ${databaseName}`)
 
@@ -43,4 +46,14 @@ async function createIndexes(db) {
 
   // Example of how to create a mongodb index. Remove as required
   await db.collection('example-data').createIndex({ id: 1 })
+
+  await db.collection('models').createIndex({ slug: 1 }, { unique: true })
+  await db.collection('users').createIndex({ email: 1 }, { unique: true })
+  await db
+    .collection('teams')
+    .createIndex({ normalisedName: 1 }, { unique: true })
+  await db
+    .collection('credentials')
+    .createIndex({ userId: 1, idempotencyKey: 1 }, { unique: true })
+  await db.collection('credentials').createIndex({ userId: 1, status: 1 })
 }

@@ -58,5 +58,19 @@ export async function createServer() {
     router
   ])
 
+  // Enriches Boom error responses with the stable `code` (see boomWithCode) and request id,
+  // matching the API error contract in the shared spec.
+  server.ext('onPreResponse', (request, h) => {
+    const { response } = request
+
+    if (response.isBoom) {
+      response.output.payload.code = response.data?.code ?? 'error'
+      response.output.payload.requestId =
+        request.headers['x-cdp-request-id'] ?? request.info.id
+    }
+
+    return h.continue
+  })
+
   return server
 }
