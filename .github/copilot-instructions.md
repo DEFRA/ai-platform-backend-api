@@ -41,6 +41,7 @@
 - **Error handling**: Use `@hapi/boom` with stable `code` fields so the frontend can map errors to user-facing messages.
 - **Authentication**: Routes that require authentication validate `x-user-id` via a `requireUser` pre-handler. Maintenance routes validate `x-maintenance-token`.
 - **Network isolation**: The backend has no public ingress — it is only reachable inside the CDP network.
+- **MongoDB write locks**: Guard non-atomic multi-step writes with `server.locker`/`request.locker` (`mongo-locks`, see README's [MongoDB Locks](../README.md#mongodb-locks) section): acquire via `const lock = await server.locker.lock('unique-resource-name')`, bail out if `!lock`, and always release in a `finally` (or use `await using lock = ...` for automatic release — note test coverage reports don't like that syntax). Keep the locked section small and atomic.
 
 ## Code Quality and Design Principles
 
