@@ -139,7 +139,28 @@ export const config = convict({
       format: 'nat',
       default: 7,
       env: 'RESEARCH_CREDENTIAL_TTL_DAYS'
+    },
+    renewalCap: {
+      doc: 'Maximum number of renewals allowed for a Research tier credential',
+      format: 'nat',
+      default: 3,
+      env: 'RESEARCH_RENEWAL_CAP'
     }
+  },
+  audit: {
+    retentionDays: {
+      doc: 'Days to retain auditEvents before they expire (D08 working default)',
+      format: 'nat',
+      default: 30,
+      env: 'AUDIT_RETENTION_DAYS'
+    }
+  },
+  maintenanceToken: {
+    doc: 'Shared secret required in the x-maintenance-token header for maintenance routes',
+    format: String,
+    nullable: true,
+    default: null,
+    env: 'MAINTENANCE_TOKEN'
   }
 })
 
