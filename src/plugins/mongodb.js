@@ -1,6 +1,7 @@
 import { MongoClient } from 'mongodb'
 import { LockManager } from 'mongo-locks'
 
+import { config } from '#/config.js'
 import { seedModels } from '#/common/seed/seed-models.js'
 
 export const mongoDb = {
@@ -56,4 +57,14 @@ async function createIndexes(db) {
     .collection('credentials')
     .createIndex({ userId: 1, idempotencyKey: 1 }, { unique: true })
   await db.collection('credentials').createIndex({ userId: 1, status: 1 })
+  await db.collection('credentials').createIndex({ status: 1, expiresAt: 1 })
+
+  await db.collection('auditEvents').createIndex({ actorUserId: 1, at: 1 })
+  // `at` must be a BSON Date (not an ISO string) for this TTL index to expire documents
+  await db
+    .collection('auditEvents')
+    .createIndex(
+      { at: 1 },
+      { expireAfterSeconds: config.get('audit.retentionDays') * 24 * 60 * 60 }
+    )
 }

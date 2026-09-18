@@ -21,5 +21,17 @@ export const mockCredentialIssuer = {
       keyHint: secret.slice(-4),
       expiresAt
     }
+  },
+
+  async renew({ apimSubscriptionId }) {
+    return { apimSubscriptionId }
+  },
+
+  async revoke({ apimSubscriptionId }) {
+    return { apimSubscriptionId }
+  },
+
+  async suspend({ apimSubscriptionId }) {
+    return { apimSubscriptionId }
   }
 }
