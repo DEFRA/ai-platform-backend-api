@@ -43,6 +43,10 @@
 - **Network isolation**: The backend has no public ingress — it is only reachable inside the CDP network.
 - **MongoDB write locks**: Guard non-atomic multi-step writes with `server.locker`/`request.locker` (`mongo-locks`, see README's [MongoDB Locks](../README.md#mongodb-locks) section): acquire via `const lock = await server.locker.lock('unique-resource-name')`, bail out if `!lock`, and always release in a `finally` (or use `await using lock = ...` for automatic release — note test coverage reports don't like that syntax). Keep the locked section small and atomic.
 
+## Engineering standards (AICE)
+
+This codebase must follow the Defra AICE team's [JavaScript style guide](https://github.com/DEFRA/aice-team/blob/main/style-guides/javascript.md), [testing standards](https://github.com/DEFRA/aice-team/blob/main/style-guides/javascript-testing.md) and [code review standards](https://github.com/DEFRA/aice-team/blob/main/style-guides/javascript-review.md), in addition to this repo's own conventions above. Key points: ES modules with named exports only (no default exports); function declarations over arrow functions except for callbacks; classes only when state/dependencies genuinely need encapsulating, otherwise factory or standalone functions; exact-pinned dependency versions (no `^`/`~`); `vi.mock()` only for modules this repo owns, `nock` for network calls, never a hand-rolled stand-in for a third-party type. Where this repo's existing convention differs from the AICE guide (for example JSDoc style, already aligned above), the more specific rule in this file wins; otherwise follow AICE.
+
 ## Code Quality and Design Principles
 
 - Apply SOLID principles pragmatically to JS modules (not just classes):
