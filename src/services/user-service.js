@@ -4,10 +4,6 @@ import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 
-function normaliseTeamName(teamName) {
-  return teamName.trim().toLowerCase().replace(/\s+/g, '-')
-}
-
 function isAllowedEmailDomain(email) {
   const domain = email.split('@')[1]
   const allowedDomains = config
@@ -20,11 +16,12 @@ function isAllowedEmailDomain(email) {
 }
 
 /**
- * Upserts the team and user for the self-declared sign-in journey (J1).
+ * Upserts the user for the Entra ID sign-in journey (B03). Team membership
+ * is assigned separately once a team exists (see Route 2's team-creation plan).
  * @param {import('mongodb').Db} db
- * @param {{email: string, displayName: string, teamName: string}} params
+ * @param {{email: string, displayName: string}} params
  */
-export async function upsertUser(db, { email, displayName, teamName }) {
+export async function upsertUser(db, { email, displayName }) {
   const lowerEmail = email.toLowerCase()
 
   if (!isAllowedEmailDomain(lowerEmail)) {
@@ -36,29 +33,12 @@ export async function upsertUser(db, { email, displayName, teamName }) {
   }
 
   const now = new Date().toISOString()
-  const normalisedName = normaliseTeamName(teamName)
-
-  const team = await db.collection('teams').findOneAndUpdate(
-    { normalisedName },
-    {
-      $setOnInsert: {
-        name: teamName,
-        normalisedName,
-        serviceCode: null,
-        billingCode: null,
-        createdBy: lowerEmail,
-        createdAt: now
-      }
-    },
-    { upsert: true, returnDocument: 'after' }
-  )
 
   const user = await db.collection('users').findOneAndUpdate(
     { email: lowerEmail },
     {
       $set: {
         displayName,
-        teamId: team._id,
         lastSignInAt: now,
         updatedAt: now
       },
@@ -79,11 +59,12 @@ export async function upsertUser(db, { email, displayName, teamName }) {
     outcome: 'success'
   })
 
-  return { user, team }
+  return { user, team: null }
 }
 
 /**
- * Finds the current user and team for the `/v1/users/me` route.
+ * Finds the current user and team for the `/v1/users/me` route. Returns
+ * `team: null` until team creation/membership is built (Route 2's plan).
  * @param {import('mongodb').Db} db
  * @param {string} userId
  */
@@ -100,9 +81,5 @@ export async function findCurrentUser(db, userId) {
     return null
   }
 
-  const team = user.teamId
-    ? await db.collection('teams').findOne({ _id: user.teamId })
-    : null
-
-  return { user, team }
+  return { user, team: null }
 }
