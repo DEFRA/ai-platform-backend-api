@@ -29,18 +29,20 @@ export const credentials = [
           modelSlug: Joi.string()
             .pattern(/^[a-z0-9-]+$/)
             .required(),
-          tier: Joi.string().valid('research').default('research')
+          tier: Joi.string().valid('research').default('research'),
+          purpose: Joi.string().trim().max(500).allow('').optional()
         }).unknown(false)
       }
     },
     handler: async (request, h) => {
       const userId = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
-      const { modelSlug } = request.payload
+      const { modelSlug, purpose } = request.payload
 
       const { credential, secret, replay } = await issueCredential(request.db, {
         userId,
         modelSlug,
+        purpose,
         idempotencyKey
       })
 

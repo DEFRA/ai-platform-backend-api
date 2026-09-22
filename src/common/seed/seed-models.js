@@ -2,6 +2,8 @@ import { readFileSync } from 'node:fs'
 import { fileURLToPath } from 'node:url'
 import path from 'node:path'
 
+import { invalidateModelsCache } from '#/services/models-service.js'
+
 const dirname = path.dirname(fileURLToPath(import.meta.url))
 const modelsSeed = JSON.parse(
   readFileSync(path.join(dirname, 'models.seed.json'), 'utf8')
@@ -23,6 +25,8 @@ export async function seedModels(db, logger) {
       { upsert: true }
     )
   }
+
+  invalidateModelsCache()
 
   logger.info(
     `Seeded ${modelsSeed.length} models (seedVersion ${modelsSeed[0]?.seedVersion})`

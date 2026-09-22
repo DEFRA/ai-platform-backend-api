@@ -11,8 +11,7 @@ export const users = [
       validate: {
         payload: Joi.object({
           email: Joi.string().email().max(254).required(),
-          displayName: Joi.string().min(1).max(100).required(),
-          teamName: Joi.string().min(1).max(100).required()
+          displayName: Joi.string().min(1).max(100).required()
         }).unknown(false)
       }
     },

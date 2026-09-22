@@ -35,12 +35,12 @@ async function findTeamIdForUser(db, userId) {
  * once" from the spec, at the cost of not being able to replay the secret
  * itself on retry.
  * @param {import('mongodb').Db} db
- * @param {{userId: string, modelSlug: string, idempotencyKey: string}} params
+ * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string}} params
  * @param {import('#/adapters/credential-issuer.js').CredentialIssuer} [issuer]
  */
 export async function issueCredential(
   db,
-  { userId, modelSlug, idempotencyKey },
+  { userId, modelSlug, purpose, idempotencyKey },
   issuer = mockCredentialIssuer
 ) {
   const existing = await db
@@ -53,9 +53,9 @@ export async function issueCredential(
 
   const model = await findModelBySlug(db, modelSlug)
 
-  if (!model || !model.eligible) {
+  if (!model || !model.eligible || !model.tiers?.includes('research')) {
     throw boomWithCode(
-      Boom.badRequest,
+      Boom.forbidden,
       'Model is not eligible',
       'model-not-eligible'
     )
@@ -80,6 +80,7 @@ export async function issueCredential(
     teamId,
     modelSlug,
     tier: 'research',
+    purpose: purpose || null,
     type: 'apim-subscription',
     status: 'pending',
     idempotencyKey,

@@ -13,20 +13,19 @@ describe('#users routes', () => {
     await server.stop({ timeout: 0 })
   })
 
-  test('POST /v1/users upserts a user and team', async () => {
+  test('POST /v1/users upserts a user', async () => {
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: '/v1/users',
       payload: {
         email: 'test.user@defra.gov.uk',
-        displayName: 'Test User',
-        teamName: 'Platform Team'
+        displayName: 'Test User'
       }
     })
 
     expect(statusCode).toBe(200)
     expect(result.user.email).toBe('test.user@defra.gov.uk')
-    expect(result.team.name).toBe('Platform Team')
+    expect(result.team).toBeNull()
   })
 
   test('POST /v1/users rejects disallowed email domains', async () => {
@@ -35,8 +34,7 @@ describe('#users routes', () => {
       url: '/v1/users',
       payload: {
         email: 'test.user@example.com',
-        displayName: 'Test User',
-        teamName: 'Platform Team'
+        displayName: 'Test User'
       }
     })
 
@@ -51,22 +49,20 @@ describe('#users routes', () => {
       payload: {
         email: 'test.user@defra.gov.uk',
         displayName: 'Test User',
-        teamName: 'Platform Team',
-        extra: 'not-allowed'
+        teamName: 'not-allowed'
       }
     })
 
     expect(statusCode).toBe(400)
   })
 
-  test('GET /v1/users/me returns the current user and team', async () => {
+  test('GET /v1/users/me returns the current user with no team yet', async () => {
     const signIn = await server.inject({
       method: 'POST',
       url: '/v1/users',
       payload: {
         email: 'me.user@defra.gov.uk',
-        displayName: 'Me User',
-        teamName: 'Me Team'
+        displayName: 'Me User'
       }
     })
 
@@ -78,7 +74,7 @@ describe('#users routes', () => {
 
     expect(statusCode).toBe(200)
     expect(result.user.email).toBe('me.user@defra.gov.uk')
-    expect(result.team.name).toBe('Me Team')
+    expect(result.team).toBeNull()
   })
 
   test('GET /v1/users/me returns 404 for an unknown user id', async () => {

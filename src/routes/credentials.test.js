@@ -83,8 +83,44 @@ describe('#credentials routes', () => {
       payload: { modelSlug: 'not-a-real-model' }
     })
 
-    expect(statusCode).toBe(400)
+    expect(statusCode).toBe(403)
     expect(result.code).toBe('model-not-eligible')
+  })
+
+  test('POST /v1/credentials persists an optional purpose', async () => {
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': 'user-purpose', 'idempotency-key': randomUUID() },
+      payload: { modelSlug: 'gpt-4o', purpose: 'Evaluating for a pilot' }
+    })
+
+    expect(statusCode).toBe(201)
+    expect(result.credential.purpose).toBe('Evaluating for a pilot')
+  })
+
+  test('POST /v1/credentials returns 502 upstream-unavailable when the issuer fails', async () => {
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'test-fail-user',
+        'idempotency-key': randomUUID()
+      },
+      payload: { modelSlug: 'gpt-4o' }
+    })
+
+    expect(statusCode).toBe(502)
+    expect(result.code).toBe('upstream-unavailable')
+
+    const { result: listResult } = await server.inject({
+      method: 'GET',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': 'test-fail-user' }
+    })
+
+    expect(listResult.items[0].status).toBe('failed')
+    expect(listResult.items[0].failureReason).toBe('issuer-error')
   })
 
   test('POST /v1/credentials requires an Idempotency-Key header', async () => {
