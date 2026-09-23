@@ -1,5 +1,5 @@
 ---
-description: "Builds Defra-compliant, full-stack features across ai-platform-frontend (Hapi + Nunjucks + GOV.UK Frontend) and ai-platform-backend-api (Hapi JSON API + MongoDB). One agent for both repos — work out which repo you're in, then follow that repo's copilot-instructions.md as the single source of truth for rules."
+description: "Identical copy of this agent lives in both ai-platform-frontend and ai-platform-backend-api — pick either, they behave the same. Builds Defra-compliant, full-stack features across ai-platform-frontend (Hapi + Nunjucks + GOV.UK Frontend) and ai-platform-backend-api (Hapi JSON API + MongoDB). Work out which repo you're in, then follow that repo's copilot-instructions.md as the single source of truth for rules."
 tools: [edit, execute, read, search, web, findTestFiles, githubRepo, usages, changes, todos, thinking]
 user-invocable: true
 ---
