@@ -23,7 +23,7 @@ This guide applies whenever an AI reviewer — GitHub Copilot Reviews, or an age
 
 ## 1 Purpose and Scope
 
-This guide governs *how* a review is conducted, not what the code should look like. When a comment flags a violation of an existing rule, cite the specific section of the [style guide](../../javascript-style-guide/references/javascript-style-guide.md) or [testing standards](../../javascript-testing-standards/references/javascript-testing-standards.md) rather than restating the rule from memory — the guide is the source of truth, not the reviewer's recollection of it.
+This guide governs _how_ a review is conducted, not what the code should look like. When a comment flags a violation of an existing rule, cite the specific section of the [style guide](../../javascript-style-guide/references/javascript-style-guide.md) or [testing standards](../../javascript-testing-standards/references/javascript-testing-standards.md) rather than restating the rule from memory — the guide is the source of truth, not the reviewer's recollection of it.
 
 ## 2 Triage Tiers
 
@@ -34,6 +34,7 @@ Every review comment falls into exactly one tier. State the tier at the start of
 A blocking comment identifies something that must be fixed before merge: a correctness bug, a security issue, a missing or inadequate test for new behaviour, or a violation of the style guide or testing standards that automated tooling does not already catch.
 
 Do this:
+
 ```
 Blocking: `submitOrder` doesn't handle the API rejecting the order — an
 unhandled rejection here surfaces as a raw 500 to the user. See the "when
@@ -42,9 +43,11 @@ needs; nothing currently covers it.
 ```
 
 Don't do this:
+
 ```
 Blocking: this function is a bit long.
 ```
+
 (Length alone isn't a defined rule anywhere in the style guide — it isn't blocking, and may not be worth a comment at all; see [3 What Not to Flag](#3-what-not-to-flag).)
 
 ### 2.2 Suggestion
@@ -52,6 +55,7 @@ Blocking: this function is a bit long.
 A suggestion is a non-blocking improvement — readability, naming, a cleaner approach that doesn't change behaviour. Phrase it as an option, not an instruction, and let the author decide.
 
 Do this:
+
 ```
 Suggestion: `handleClick` and `handleSubmit` duplicate the same three lines
 of validation — consider extracting a `validateForm` helper if a third
@@ -59,9 +63,11 @@ handler needs it too.
 ```
 
 Don't do this:
+
 ```
 You should extract this into a helper.
 ```
+
 (States a demand for something that isn't blocking — reads as Blocking even though it isn't one.)
 
 ### 2.3 Question
@@ -69,15 +75,18 @@ You should extract this into a helper.
 A question is genuine uncertainty about intent — something the diff doesn't make clear — not a way to soften an instruction.
 
 Do this:
+
 ```
 Question: is the 30-second timeout here intentional, or inherited from a
 default? The endpoint it calls typically responds in under a second.
 ```
 
 Don't do this:
+
 ```
 Question: don't you think this should use async/await instead of .then()?
 ```
+
 (Not a question — a Suggestion wearing a question mark. State it as one.)
 
 ## 3 What Not to Flag
@@ -94,6 +103,7 @@ Silence is a valid outcome. Do not comment on:
 One comment per distinct issue — never bundle three unrelated points into a single thread, and never split one point across three. Cite the file and line the issue actually lives on, and cite the specific guide section when the issue is a violation of an existing rule, rather than asserting it from memory. A blocking comment proposes a concrete fix or asks for one; it does not stop at naming the problem.
 
 Do this:
+
 ```
 Blocking (src/pages/checkout/controller.js:42): the cart total is formatted
 with `toFixed(2)` before VAT is added — see style-guide §2.4.2 on template
@@ -102,6 +112,7 @@ the end.
 ```
 
 Don't do this:
+
 ```
 This whole file needs work.
 ```

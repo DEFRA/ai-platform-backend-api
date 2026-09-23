@@ -31,15 +31,15 @@
 ## Conventions
 
 - **JSDoc**: Every exported function has JSDoc comments.
-- **Routes are thin**: Validate input with Joi (reject unknown keys with `.unknown(false)`), then call exactly one service method, then map and return the result.
+- **Routes are thin**: Validate input with Joi, reject unknown keys for payload/query/path schemas (`.unknown(false)`), allow unrelated transport headers where required (`.unknown(true)`), then call exactly one service method, then map and return the result.
 - **Services own business logic**: Services orchestrate data access, validation, and external integrations. They do not perform HTTP request/response handling.
 - **Dependency injection via server.app**: Services access MongoDB, config, and other dependencies through the injected `server.app` container, not via direct imports or global state.
 - **Azure/APIM integration** (if applicable): Calls to Azure APIM go through dedicated adapter functions (e.g. `adapters/azure/apim-management-client.js`) behind a port interface (e.g. `CredentialIssuer` with `issue()`, `renew()`, `revoke()`, `suspend()`). Services never call Azure directly.
 - **Sensitive data handling**:
-  - Never log, persist, or return the full subscription key or tokens — only display a `keyHint` (last 4 characters).
+  - Never log or persist full subscription keys or tokens. Return the full credential secret only once in the initial create response where the API contract requires it; use `keyHint` (last 4 characters) everywhere else.
   - Use `Idempotency-Key` headers on endpoints that create resources to prevent duplicates on retries.
 - **Error handling**: Use `@hapi/boom` with stable `code` fields so the frontend can map errors to user-facing messages.
-- **Authentication**: Routes that require authentication validate `x-user-id` via a `requireUser` pre-handler. Maintenance routes validate `x-maintenance-token`.
+- **Authentication**: Routes that require authentication validate/read `x-user-id` in route validation/handlers (or via a shared pre-handler if introduced). Maintenance routes validate `x-maintenance-token`.
 - **Network isolation**: The backend has no public ingress — it is only reachable inside the CDP network.
 - **MongoDB write locks**: Guard non-atomic multi-step writes with `server.locker`/`request.locker` (`mongo-locks`, see README's [MongoDB Locks](../README.md#mongodb-locks) section): acquire via `const lock = await server.locker.lock('unique-resource-name')`, bail out if `!lock`, and always release in a `finally` (or use `await using lock = ...` for automatic release — note test coverage reports don't like that syntax). Keep the locked section small and atomic.
 
@@ -58,3 +58,70 @@ The Defra AICE team's Copilot CLI plugin `aice-javascript@defra-aice` (from the 
   - **Interface segregation**: ports expose only the methods callers need (e.g. `CredentialIssuer.issue()`), not a large multi-purpose interface.
   - **Dependency inversion**: services depend on port interfaces (`CredentialIssuer`) injected as parameters/defaults, never on a concrete adapter (e.g. the real Azure client) directly, so a mock or alternate implementation can be substituted without changing the service.
 - **API layer is a RESTful JSON API**: model routes around resources and plural nouns (`/v1/models`, `/v1/credentials`), use the correct HTTP method per operation (`GET` read, `POST` create, `PATCH`/`POST .../renew` for partial updates or actions, `DELETE` remove), return the correct status code (`200`/`201`/`204`/`4xx`/`5xx`), set a `Location` header on `201 Created` responses, and always request/respond with JSON (`application/json`) — never HTML or plain text.
+
+## Naming conventions
+
+- **Directories and JS files**: `kebab-case` (e.g. `src/adapters/azure/apim-management-client.js`).
+- **Routes (URL paths)**: lowercase, plural resource nouns with hyphens (e.g. `/v1/models`, `/v1/credentials`).
+- **Environment variables**: `UPPER_SNAKE_CASE`.
+- **Config keys**: `lowerCamelCase`, accessed via the `convict`-based config module for application configuration reads; test/setup/bootstrap code may set `process.env` directly when required.
+- **Test files**: `<name>.test.js` colocated next to the file under test.
+
+## Branching and version control
+
+- `main` is always shippable — it must build, pass all tests, and be deployable at any time.
+- All work happens on branches, never directly on `main`. Follow trunk-based development with short-lived feature branches and pull requests.
+- Branch naming: `<type>/<brief-description>` (`feature/`, `fix/`, `docs/`, `refactor/`, `test/`, `chore/`).
+- Commit messages use conventional format: `type: short description` (`feat`, `fix`, `docs`, `style`, `refactor`, `test`, `chore`).
+- Open a pull request and get it reviewed before merging to `main`.
+
+## Quality gates
+
+CI (`.github/workflows/check-pull-request.yml`) currently runs on every PR: `npm run security-audit`, `npm ci`, `npm run format:check`, `npm run lint`, `npm test` (coverage), and a Docker image build test. All of these must pass before merging.
+
+- SonarCloud is configured (`sonar-project.properties`) but the scan step is **currently commented out** in `check-pull-request.yml` and `publish.yml` — it is not yet an active CI gate. Don't assume a Sonar quality gate is blocking merges until that step is uncommented.
+- Follow the Defra tiered coverage targets as the aspiration for any code you touch: ≥90% global, ≥95% for core business logic, 100% for error handling and security-critical paths — and never let coverage decrease from the current baseline.
+- At least one approving code review from another developer before merging.
+
+## Allowed / discouraged dependencies
+
+This repo already complies with Defra's dependency guidance — keep it that way when adding new packages:
+
+- Hapi, not Express/Fastify/Koa.
+- Standalone `joi`, not the deprecated `@hapi/joi`.
+- Native `mongodb` driver, not `mongoose`.
+- Native `fetch`/`undici`, not `request` or `axios`.
+- `neostandard`, not bare `eslint`/`prettier`/`standard` configs.
+- No TypeScript without an approved exception — vanilla JS with JSDoc.
+- No `lodash` or `moment` — use native JS methods instead.
+- New dependencies must be widely used, actively maintained, and compatible with the current Node.js LTS.
+
+## Security
+
+- Follow OWASP Secure Coding Practices.
+- Never log PII or secrets. Only persist/return approved user fields required by the current API contract (for example `displayName` and `email` for users), and avoid unnecessary exposure.
+- Validate and sanitise route input with `joi`: reject unknown keys for payload/query/path schemas, and allow unrelated transport headers where appropriate.
+- Build MongoDB queries via the native driver's query object syntax, never by concatenating user input into query strings or `$where` expressions.
+- Never log or persist full subscription keys or tokens; return a full credential secret only in the one-time creation response, and return only `keyHint` (last 4 characters) in all other contexts.
+- Use `Idempotency-Key` headers on endpoints that create resources.
+- Authentication is internal-only: routes validate/read `x-user-id` directly today (or via a shared pre-handler if introduced), and use `x-maintenance-token` for maintenance routes — the backend has no public ingress and does not implement its own sign-in flow.
+- Only use approved MCP servers (see [Defra MCP guidance](https://defra.github.io/defra-ai-sdlc/pages/appendix/defra-mcp-guidance/)) — do not enable community or self-built MCP servers.
+
+## Documentation
+
+- Write JSDoc comments for exported functions (already an established convention above).
+- Keep the README up to date with setup, run, and environment variable changes.
+- Document breaking changes in PR descriptions.
+
+## How Copilot should respond
+
+- Follow conventions already in the codebase — check existing patterns first.
+- Prefer modifying existing files over creating new ones when the change fits naturally.
+- Provide minimal diffs touching only the necessary files; do not refactor unrelated code.
+- Always include or update tests for changed behaviour.
+- Keep solutions DRY: before adding new utilities, search `src/common/` and existing services for similar code.
+- If a request conflicts with these instructions, or would use a discouraged library, skip tests, hardcode a secret, or break a quality gate — flag it explicitly and do not proceed silently.
+
+## Licence
+
+All code is published under the [Open Government Licence v3](../LICENCE) unless an exception is approved.
