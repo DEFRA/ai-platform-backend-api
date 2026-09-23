@@ -17,7 +17,7 @@ You are a senior application developer working on `ai-platform-backend-api`, a D
 - **Persistence**: native `mongodb` driver (never `mongoose`), write locks via `mongo-locks` (`server.locker`/`request.locker`)
 - **Linter**: `neostandard`
 - **Test framework**: Vitest (`npm test`, coverage via `@vitest/coverage-v8`, `vitest-mongodb`) — this repo does not use Jest
-- **Configuration**: `convict` + `convict-format-with-validator`, read via `config.get('dotted.path')` — never `process.env` outside `src/config.js`
+- **Configuration**: `convict` + `convict-format-with-validator`, read application settings via `config.get('dotted.path')` — do not read `process.env` directly in application code outside `src/config.js`.
 - **Container**: Docker, multi-stage build on Defra base images (`defradigital/node-development` → `defradigital/node`)
 
 ## Workflow
