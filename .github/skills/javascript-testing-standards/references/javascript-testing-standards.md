@@ -41,12 +41,14 @@ This guide is an extension to the [AICE JavaScript Style Guide](../../javascript
 All tests live under `tests/`. Never beside the source.
 
 Do this:
+
 ```text
 tests/unit/services/orders.test.js
 tests/integration/pages/orders/new/new.test.js
 ```
 
 Don't do this:
+
 ```text
 src/services/orders.test.js
 src/services/__tests__/orders.test.js
@@ -56,17 +58,18 @@ src/services/__tests__/orders.test.js
 
 Ask what the test **addresses**. That determines the tree, the name and whether it mirrors `src/`.
 
-| Addresses | Lives in | Named after | Mirrors `src/` |
-| --- | --- | --- | --- |
-| a module — imports and calls it | `tests/unit/` | the module | exactly, 1:1 |
+| Addresses                                     | Lives in             | Named after     | Mirrors `src/`  |
+| --------------------------------------------- | -------------------- | --------------- | --------------- |
+| a module — imports and calls it               | `tests/unit/`        | the module      | exactly, 1:1    |
 | an entry point — page, route, handler, plugin | `tests/integration/` | the entry point | directory-level |
-| a journey — a deployed running system | `tests/e2e/` | the journey | not at all |
+| a journey — a deployed running system         | `tests/e2e/`         | the journey     | not at all      |
 
 #### 1.2.1 The Mechanism Rule
 
 Ask only what the test drives — never "how integrated is this?" That question has no stable answer, and inconsistent answers to it are what produce incoherent suites.
 
 Do this:
+
 ```javascript
 // tests/unit/infra/catalogue/client.test.js
 // Imports the class and calls it. No server anywhere.
@@ -76,6 +79,7 @@ await client.request('/orders')
 ```
 
 Don't do this:
+
 ```javascript
 // tests/integration/infra/catalogue/client.test.js
 // Nothing is integrated here, so the folder describes nothing about the test
@@ -85,6 +89,7 @@ const client = new OrdersClient({ baseUrl })
 A plugin test that boots a minimal server with throwaway routes is an **integration** test, because it injects — even though it will feel like a unit test. Allowing "but it only registers one plugin" reopens the degree question this rule exists to close.
 
 Do this:
+
 ```javascript
 // tests/integration/server/plugins/session-guard.test.js
 const server = Hapi.server()
@@ -101,6 +106,7 @@ The mirror is a **coincidence, not a rule**. A unit test mirrors its module 1:1 
 The same basename may appear in both trees. That is the structure working, not a collision to fix.
 
 Do this:
+
 ```text
 tests/unit/server/catch-all.test.js          # the handler function
 tests/integration/server/catch-all.test.js   # the handler wired into the app
@@ -109,12 +115,14 @@ tests/integration/server/catch-all.test.js   # the handler wired into the app
 For pages specifically, the integration directory nests one level per URL segment, and the leaf file repeats the final segment's name. This replicates the route's slug layout, so a test can be found from its URL without guessing, and so a sub-route can sit alongside its parent without a name clash.
 
 Do this:
+
 ```text
 tests/integration/pages/board-requests/new/new.test.js                  # route: /board-requests/new
 tests/integration/pages/board-requests/new/confirmation/confirmation.test.js   # route: /board-requests/new/confirmation
 ```
 
 Don't do this:
+
 ```text
 tests/integration/pages/board-requests/new.test.js
 tests/integration/pages/board-requests/new-confirmation.test.js   # flattens the route, loses the mapping
@@ -166,6 +174,7 @@ tests/
 One module owns every response shape from each external contract, and each shape records how it was verified.
 
 Do this:
+
 ```javascript
 // tests/fixtures/catalogue-api.js
 
@@ -174,12 +183,13 @@ Do this:
  * Verified against the sandbox API on 2026-01-14 — a plain resource
  * representation. Note there is no `success` field.
  */
-function createdOrder (overrides = {}) {
+function createdOrder(overrides = {}) {
   return { id: 'ord-1', sku: 'sku-abc', status: 'pending', ...overrides }
 }
 ```
 
 Don't do this:
+
 ```javascript
 // Declared inline in one test file, guessed rather than verified,
 // and contradicted by two other files that mock the same endpoint
@@ -197,6 +207,7 @@ Test names are present-tense sentences describing observable behaviour. The test
 #### 2.1.1 Describe Observable Behaviour
 
 Do this:
+
 ```javascript
 describe('ordersController', () => {
   describe('when the API accepts the order', () => {
@@ -208,14 +219,14 @@ describe('ordersController', () => {
 
       await submitOrder(cart)
 
-      expect(router.push)
-        .toHaveBeenCalledWith('/orders/ord_123/confirmation')
+      expect(router.push).toHaveBeenCalledWith('/orders/ord_123/confirmation')
     })
   })
 })
 ```
 
 Don't do this:
+
 ```javascript
 describe('#ordersController', () => {
   test('Should provide expected response', async () => {
@@ -226,6 +237,7 @@ describe('#ordersController', () => {
 Never use a name that promises more than the test asserts.
 
 Do this:
+
 ```javascript
 test('sends the caller email as the X-User-Id header', async () => {
   nock(baseUrl)
@@ -238,13 +250,14 @@ test('sends the caller email as the X-User-Id header', async () => {
 ```
 
 Don't do this:
+
 ```javascript
 test('sends GET request with userId header', async () => {
   nock(baseUrl).get('/orders').reply(200, {})
 
   const res = await client.request('/orders', { userId: 'someone@example.com' })
 
-  expect(res.ok).toBe(true)     // asserts nothing about any header
+  expect(res.ok).toBe(true) // asserts nothing about any header
 })
 ```
 
@@ -259,16 +272,23 @@ If yes, nest — the `describe` establishes world state, the test name states th
 Flat was correct in the single-test `ordersController` example from [2.1.1](#211-describe-observable-behaviour). Once a sibling needs different setup, nest:
 
 Do this:
+
 ```javascript
 describe('ordersController', () => {
   describe('when the API accepts the order', () => {
-    beforeEach(() => mockApi.submitOrder.mockResolvedValue({
-      status: 'accepted',
-      orderId: 'ord_123'
-    }))
+    beforeEach(() =>
+      mockApi.submitOrder.mockResolvedValue({
+        status: 'accepted',
+        orderId: 'ord_123'
+      })
+    )
 
-    test('redirects to the confirmation page', async () => { /* … */ })
-    test('clears the cart', async () => { /* … */ })
+    test('redirects to the confirmation page', async () => {
+      /* … */
+    })
+    test('clears the cart', async () => {
+      /* … */
+    })
   })
 
   describe('when the API rejects the order', () => {
@@ -276,13 +296,18 @@ describe('ordersController', () => {
       mockApi.submitOrder.mockRejectedValue(new Error('payment declined'))
     )
 
-    test('shows an error message', async () => { /* … */ })
-    test('keeps the cart intact', async () => { /* … */ })
+    test('shows an error message', async () => {
+      /* … */
+    })
+    test('keeps the cart intact', async () => {
+      /* … */
+    })
   })
 })
 ```
 
 Don't do this:
+
 ```javascript
 describe('formatOrderTotal', () => {
   describe('given a list of items', () => {       // no world state — a heading
@@ -293,6 +318,7 @@ describe('formatOrderTotal', () => {
 A pure function has no Given worth stating. Put the input inline where it stays visible:
 
 Do this:
+
 ```javascript
 describe('OrderSummaryViewModel', () => {
   test('marks the order as cancellable while it is pending', () => {
@@ -314,6 +340,7 @@ The distinction matters more than the number: label levels are effortless to wri
 The outer `describe` isn't automatically a label. When a file covers one unambiguous thing, restating its name adds nothing. When a file exports multiple classes, addresses more than one entry point, or the filename alone doesn't say what's under test, the outer `describe` disambiguates — that's real information, and it earns a level like any other.
 
 Do this:
+
 ```javascript
 // checkoutController has two entry points, and both nested levels
 // below it establish real state — all three earn their place
@@ -341,6 +368,7 @@ describe('checkoutController', () => {
 ```
 
 Don't do this:
+
 ```javascript
 describe('checkoutController', () => {
   describe('when authenticated', () => {
@@ -366,12 +394,14 @@ Even a genuine fourth real level can earn its place — but flatten a compound p
 **Every test must be able to fail.** A regex over rendered HTML must not match the copy of the branch that should not have run.
 
 Do this:
+
 ```javascript
 expect(payload).toContain('Your order is confirmed')
 expect(payload).not.toContain('Order not placed')
 ```
 
 Don't do this:
+
 ```javascript
 // "Order not placed" also matches /order/i — this passes in both branches
 expect(payload).toMatch(/order|someone@example\.com/i)
@@ -380,11 +410,13 @@ expect(payload).toMatch(/order|someone@example\.com/i)
 Prefer an assertion that discriminates over one that merely fires.
 
 Do this:
+
 ```javascript
 expect(logger.error).toHaveBeenCalledWith(expect.stringContaining('production'))
 ```
 
 Don't do this:
+
 ```javascript
 // passes if the message becomes anything at all
 expect(logger.error).toHaveBeenCalled()
@@ -393,6 +425,7 @@ expect(logger.error).toHaveBeenCalled()
 Never assert against a value you configured on a mock in the same test — that asserts your setup, not the code. There is no "do this instead": the test should not exist.
 
 Don't do this:
+
 ```javascript
 createServerSpy.mockRejectedValue(new Error('Server failed to start'))
 
@@ -402,6 +435,7 @@ await expect(createServer()).rejects.toThrow('Server failed to start')
 Banned as a test's only assertion: `toBeDefined()`, `expect(res.ok).toBe(true)`, `expect(nock.isDone()).toBe(true)`. Exception: asserting `isDone()` is **false** against a would-have-matched interceptor proves a call did not happen, and that does discriminate.
 
 Do this:
+
 ```javascript
 const refresh = nock(authUrl).post('/token').reply(200, { access_token: 'new' })
 
@@ -418,15 +452,17 @@ expect(refresh.isDone()).toBe(false)
 Assert a relationship where one exists, not merely a presence.
 
 Do this:
+
 ```javascript
 const rendered = payload.match(/<script[^>]*nonce="([^"]*)"/)[1]
-const header = res.headers['content-security-policy']
-  .match(/'nonce-([^']+)'/)[1]
+const header =
+  res.headers['content-security-policy'].match(/'nonce-([^']+)'/)[1]
 
 expect(rendered).toBe(header)
 ```
 
 Don't do this:
+
 ```javascript
 // This form passed for months against a page rendering nonce="[object Object]"
 expect(payload).toMatch(/nonce="[^"]+"/)
@@ -437,6 +473,7 @@ expect(payload).toMatch(/nonce="[^"]+"/)
 **A bare `RegExp` inside `toMatchObject` or `toEqual` never matches — it passes silently.** Verified on vitest 4.1.9.
 
 Do this:
+
 ```javascript
 await expect(client.request('/orders')).rejects.toMatchObject({
   message: expect.stringMatching(/GET \/orders failed/)
@@ -444,6 +481,7 @@ await expect(client.request('/orders')).rejects.toMatchObject({
 ```
 
 Don't do this:
+
 ```javascript
 await expect(client.request('/orders')).rejects.toMatchObject({
   // always passes, whatever the message is
@@ -454,6 +492,7 @@ await expect(client.request('/orders')).rejects.toMatchObject({
 Use one idiom for rejections. Never `try/catch` plus `expect.fail`.
 
 Don't do this:
+
 ```javascript
 try {
   await client.request('/orders')
@@ -472,6 +511,7 @@ Only mock types this repo owns.
 For code that calls out over HTTP, that means intercepting at the network layer with `nock` rather than stubbing `fetch` or the module that wraps it. For a module this repo owns, `vi.mock()` is the right tool.
 
 Do this:
+
 ```javascript
 nock(catalogueUrl).post('/orders').reply(201, createdOrder())
 
@@ -482,6 +522,7 @@ vi.mock('../../src/common/logger.js', () => ({
 ```
 
 Don't do this:
+
 ```javascript
 vi.mock('node:fs')
 vi.mock('nunjucks')
@@ -491,10 +532,11 @@ vi.mock('../../src/config/config.js')
 If a test must mock `node:fs`, the production code usually does I/O at import time. Extract the I/O behind a function that takes its inputs as arguments, and test it against a real fixture file instead of mocking.
 
 Do this:
+
 ```javascript
 // src/server/plugins/asset-path.js — the path is an argument, so a test
 // can point it at a real fixture and nothing needs mocking
-function createAssetResolver ({ manifestPath }) {
+function createAssetResolver({ manifestPath }) {
   const manifest = JSON.parse(readFileSync(manifestPath, 'utf8'))
 
   return (asset) => manifest[asset]?.file ?? asset
@@ -505,9 +547,10 @@ When extracting, keep the failure timing. A module that fails at boot on bad con
 
 #### 2.4.2 Third-Party Types
 
-The same ownership rule applies past the network layer, to any third-party type. A hand-rolled stand-in for one asserts your *belief* about someone else's contract, and nothing validates that belief — the test keeps passing against a shape the library stopped producing two majors ago. It's fixture drift applied to objects instead of HTTP bodies, and there's no wire format to catch it.
+The same ownership rule applies past the network layer, to any third-party type. A hand-rolled stand-in for one asserts your _belief_ about someone else's contract, and nothing validates that belief — the test keeps passing against a shape the library stopped producing two majors ago. It's fixture drift applied to objects instead of HTTP bodies, and there's no wire format to catch it.
 
 Do this:
+
 ```javascript
 // The real framework toolkit, the real response lifecycle
 const { statusCode, payload } = await server.inject({
@@ -520,6 +563,7 @@ expect(payload).toContain('Page not found')
 ```
 
 Don't do this:
+
 ```javascript
 // A hand-rolled stand-in for the framework's response toolkit. If the
 // framework changes that contract, this test keeps passing against a
@@ -534,6 +578,7 @@ The same applies to any dependency's types — an SDK client, a Redis connection
 Mocking a type **you** own is different in kind: you control its shape, and it changes in the same commit as the tests that depend on it. That is a seam, not a guess.
 
 Do this:
+
 ```javascript
 // OrdersClient is ours, so faking it is a decision about our own boundary.
 // seam: keeps the page test off the network — one line saying why, per above
@@ -543,8 +588,9 @@ vi.mock('../../src/infra/catalogue/client.js')
 A minimal fake of a third-party type is tolerable for a handler genuinely worth a unit test, under three conditions: keep it to the surface actually used, build it in a factory rather than at module scope, and drive the same code path through the real type in an integration test. That pairing is why the same basename legitimately appears in both trees ([1.2](#12-placement)).
 
 Do this:
+
 ```javascript
-function toolkit () {
+function toolkit() {
   return { view: vi.fn().mockReturnThis(), code: vi.fn().mockReturnThis() }
 }
 
@@ -555,6 +601,7 @@ test('passes a non-error response straight through', () => {
 ```
 
 Don't do this:
+
 ```javascript
 // Shared across every test in the file, so results depend on execution order
 const mockToolkit = {
@@ -568,6 +615,7 @@ const mockToolkit = {
 Always restore a global you mutate.
 
 Do this:
+
 ```javascript
 const originalIsProduction = config.get('isProduction')
 
@@ -577,6 +625,7 @@ afterEach(() => config.set('isProduction', originalIsProduction))
 For environment variables specifically, prefer `vi.stubEnv()` over mocking the config module or mutating `process.env` directly — one `vi.unstubAllEnvs()` restores everything a test stubbed, so there's nothing to track by hand.
 
 Do this:
+
 ```javascript
 afterEach(() => vi.unstubAllEnvs())
 
@@ -587,11 +636,12 @@ test('enables express checkout when the feature flag is set', () => {
 ```
 
 Don't do this:
+
 ```javascript
 const original = process.env.FEATURE_EXPRESS_CHECKOUT
 process.env.FEATURE_EXPRESS_CHECKOUT = 'true'
 // …
-process.env.FEATURE_EXPRESS_CHECKOUT = original   // easy to forget
+process.env.FEATURE_EXPRESS_CHECKOUT = original // easy to forget
 ```
 
 ## Contributions

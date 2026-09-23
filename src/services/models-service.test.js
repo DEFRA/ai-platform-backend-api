@@ -11,7 +11,9 @@ function fakeDb(models) {
         toArray: async () =>
           models.filter((model) =>
             Object.entries(query).every(([key, value]) =>
-              key === 'tiers' ? model.tiers?.includes(value) : model[key] === value
+              key === 'tiers'
+                ? model.tiers?.includes(value)
+                : model[key] === value
             )
           )
       }),
