@@ -18,7 +18,7 @@
 - **Install**: `npm install` (Node.js ≥24 required)
 - **Dev server**: `npm run dev` (watches for changes, runs on port defined in config)
   - Debug mode: `npm run dev:debug` (Node inspector on `0.0.0.0:9229`)
-- **Tests**: `npm test` (Vitest with coverage reporting; see `vitest.config.js`)
+- **Tests**: `npm test` (Vitest with coverage reporting, `vitest-mongodb` for MongoDB-backed tests; see `vitest.config.js`)
   - Watch mode: `npm test:watch`
   - Coverage thresholds are enforced in CI
 - **Linting**:
@@ -99,7 +99,7 @@ This repo already complies with Defra's dependency guidance — keep it that way
 ## Security
 
 - Follow OWASP Secure Coding Practices.
-- Never log PII or secrets. Only persist/return approved user fields required by the current API contract (for example `displayName` and `email` for users), and avoid unnecessary exposure.
+- Never log PII or secrets. Only persist/return approved user fields required by the current API contract (for example `displayName` and `email` for users), and avoid unnecessary exposure. Logging is structured JSON via `hapi-pino` + `@elastic/ecs-pino-format`; the no-PII rule applies to every log line, including error/debug levels.
 - Validate and sanitise route input with `joi`: reject unknown keys for payload/query/path schemas, and allow unrelated transport headers where appropriate.
 - Build MongoDB queries via the native driver's query object syntax, never by concatenating user input into query strings or `$where` expressions.
 - Never log or persist full subscription keys or tokens; return a full credential secret only in the one-time creation response, and return only `keyHint` (last 4 characters) in all other contexts.
