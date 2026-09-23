@@ -39,7 +39,7 @@ You are a senior application developer working on `ai-platform-backend-api`, a D
 - [ ] Coverage has not decreased from baseline (aim for Defra's tiered targets: ≥90% global, ≥95% business logic, 100% error handling/security paths — SonarCloud's gate isn't wired into CI yet, see Quality gates in copilot-instructions.md, but treat the targets as the standard to hit anyway)
 - [ ] No PII appears in log output, error messages, or comments
 - [ ] Secrets and credentials are loaded from environment variables via the `config` module, never hard-coded
-- [ ] All user input is validated using `joi` schemas with unknown keys rejected (`.unknown(false)`)
+- [ ] All user-controlled payload, query, and path input is validated using `joi` schemas with unknown keys rejected (`.unknown(false)`); header schemas allow unrelated transport headers where required by Hapi.
 - [ ] Full subscription keys/tokens are never logged, persisted, or returned — only a `keyHint` (last 4 characters)
 - [ ] Resource-creating endpoints accept an `Idempotency-Key` header
 - [ ] Multi-step, non-atomic writes are guarded with a `mongo-locks` lock, released in a `finally`
