@@ -31,15 +31,15 @@
 ## Conventions
 
 - **JSDoc**: Every exported function has JSDoc comments.
-- **Routes are thin**: Validate input with Joi (reject unknown keys with `.unknown(false)`), then call exactly one service method, then map and return the result.
+- **Routes are thin**: Validate input with Joi, reject unknown keys for payload/query/path schemas (`.unknown(false)`), allow unrelated transport headers where required (`.unknown(true)`), then call exactly one service method, then map and return the result.
 - **Services own business logic**: Services orchestrate data access, validation, and external integrations. They do not perform HTTP request/response handling.
 - **Dependency injection via server.app**: Services access MongoDB, config, and other dependencies through the injected `server.app` container, not via direct imports or global state.
 - **Azure/APIM integration** (if applicable): Calls to Azure APIM go through dedicated adapter functions (e.g. `adapters/azure/apim-management-client.js`) behind a port interface (e.g. `CredentialIssuer` with `issue()`, `renew()`, `revoke()`, `suspend()`). Services never call Azure directly.
 - **Sensitive data handling**:
-  - Never log, persist, or return the full subscription key or tokens — only display a `keyHint` (last 4 characters).
+  - Never log or persist full subscription keys or tokens. Return the full credential secret only once in the initial create response where the API contract requires it; use `keyHint` (last 4 characters) everywhere else.
   - Use `Idempotency-Key` headers on endpoints that create resources to prevent duplicates on retries.
 - **Error handling**: Use `@hapi/boom` with stable `code` fields so the frontend can map errors to user-facing messages.
-- **Authentication**: Routes that require authentication validate `x-user-id` via a `requireUser` pre-handler. Maintenance routes validate `x-maintenance-token`.
+- **Authentication**: Routes that require authentication validate/read `x-user-id` in route validation/handlers (or via a shared pre-handler if introduced). Maintenance routes validate `x-maintenance-token`.
 - **Network isolation**: The backend has no public ingress — it is only reachable inside the CDP network.
 - **MongoDB write locks**: Guard non-atomic multi-step writes with `server.locker`/`request.locker` (`mongo-locks`, see README's [MongoDB Locks](../README.md#mongodb-locks) section): acquire via `const lock = await server.locker.lock('unique-resource-name')`, bail out if `!lock`, and always release in a `finally` (or use `await using lock = ...` for automatic release — note test coverage reports don't like that syntax). Keep the locked section small and atomic.
 
@@ -64,7 +64,7 @@ The Defra AICE team's Copilot CLI plugin `aice-javascript@defra-aice` (from the 
 - **Directories and JS files**: `kebab-case` (e.g. `src/adapters/azure/apim-management-client.js`).
 - **Routes (URL paths)**: lowercase, plural resource nouns with hyphens (e.g. `/v1/models`, `/v1/credentials`).
 - **Environment variables**: `UPPER_SNAKE_CASE`.
-- **Config keys**: `lowerCamelCase`, accessed via the `convict`-based config module — never `process.env` directly outside it.
+- **Config keys**: `lowerCamelCase`, accessed via the `convict`-based config module for application configuration reads; test/setup/bootstrap code may set `process.env` directly when required.
 - **Test files**: `<name>.test.js` colocated next to the file under test.
 
 ## Branching and version control
@@ -99,12 +99,12 @@ This repo already complies with Defra's dependency guidance — keep it that way
 ## Security
 
 - Follow OWASP Secure Coding Practices.
-- Never log, persist, or expose PII (names, addresses, emails, phone numbers, NI numbers, bank details) or secrets.
-- Validate and sanitise all user input with `joi` (reject unknown keys) at the route boundary before it reaches a service.
+- Never log PII or secrets. Only persist/return approved user fields required by the current API contract (for example `displayName` and `email` for users), and avoid unnecessary exposure.
+- Validate and sanitise route input with `joi`: reject unknown keys for payload/query/path schemas, and allow unrelated transport headers where appropriate.
 - Build MongoDB queries via the native driver's query object syntax, never by concatenating user input into query strings or `$where` expressions.
-- Never log, persist, or return full subscription keys or tokens — only a `keyHint` (last 4 characters), per the sensitive data handling convention above.
+- Never log or persist full subscription keys or tokens; return a full credential secret only in the one-time creation response, and return only `keyHint` (last 4 characters) in all other contexts.
 - Use `Idempotency-Key` headers on endpoints that create resources.
-- Authentication is internal-only: `x-user-id` via the `requireUser` pre-handler, `x-maintenance-token` for maintenance routes — the backend has no public ingress and does not implement its own sign-in flow.
+- Authentication is internal-only: routes validate/read `x-user-id` directly today (or via a shared pre-handler if introduced), and use `x-maintenance-token` for maintenance routes — the backend has no public ingress and does not implement its own sign-in flow.
 - Only use approved MCP servers (see [Defra MCP guidance](https://defra.github.io/defra-ai-sdlc/pages/appendix/defra-mcp-guidance/)) — do not enable community or self-built MCP servers.
 
 ## Documentation
