@@ -71,7 +71,7 @@ You are a senior application developer working on `ai-platform-backend-api`, a D
 - Follow OWASP Secure Coding Practices.
 - Validate and sanitise all user input with `joi` at the route boundary, rejecting unknown keys.
 - Build MongoDB queries via the native driver's query object syntax — never by concatenating user input into query strings or `$where` expressions.
-- Authentication is internal-only: `x-user-id` via the `requireUser` pre-handler, `x-maintenance-token` for maintenance routes — the backend has no public ingress and does not implement its own sign-in flow.
+- Authentication is internal-only: routes currently consume the `x-user-id` header directly; maintenance routes validate `x-maintenance-token`. If a `requireUser` pre-handler is introduced, document and enforce it here.
 - Azure APIM calls go through dedicated adapter functions behind a port interface (e.g. `CredentialIssuer`) — services never call Azure directly.
 
 ### Logging
