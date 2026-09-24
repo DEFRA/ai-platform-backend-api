@@ -425,6 +425,39 @@ describe('#credentials routes', () => {
     expect(result.secret).toEqual(expect.stringContaining('mock_'))
   })
 
+  test('POST /v1/credentials creates only one active credential when a team requests concurrently', async () => {
+    const teamId = await createTeamWithActiveDeployment('team-cred-race-1')
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        server.inject({
+          method: 'POST',
+          url: '/v1/credentials',
+          headers: {
+            'x-user-id': 'team-cred-race-1',
+            'idempotency-key': randomUUID()
+          },
+          payload: {
+            modelSlug: 'gpt-4o',
+            tier: 'team',
+            teamId,
+            environment: 'dev'
+          }
+        })
+      )
+    )
+
+    const ids = new Set(
+      responses.map((response) => response.result.credential._id.toString())
+    )
+
+    expect(ids.size).toBe(1)
+    // Exactly one caller may ever see the secret for a shared credential.
+    expect(
+      responses.filter((response) => response.result.secret !== undefined)
+    ).toHaveLength(1)
+  })
+
   test('POST /v1/credentials reuses the existing shared team credential on a second request', async () => {
     const teamId = await createTeamWithActiveDeployment('team-cred-user-2')
     const payload = {

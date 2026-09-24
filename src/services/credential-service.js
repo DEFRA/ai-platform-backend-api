@@ -5,7 +5,10 @@ import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { findModelBySlug } from '#/services/models-service.js'
 import { mockCredentialIssuer } from '#/adapters/mock-credential-issuer.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
-import { requireLock } from '#/common/helpers/mongo-lock.js'
+import {
+  requireLock,
+  acquireLockWithRetry
+} from '#/common/helpers/mongo-lock.js'
 import { findActiveDeployment } from '#/services/team-deployment-service.js'
 
 /**
@@ -42,10 +45,38 @@ async function findTeamIdForUser(db, userId) {
  * once" from the spec, at the cost of not being able to replay the secret
  * itself on retry.
  * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
  * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string}} params
  * @param {import('#/adapters/credential-issuer.js').CredentialIssuer} [issuer]
  */
 export async function issueCredential(
+  db,
+  locker,
+  params,
+  issuer = mockCredentialIssuer
+) {
+  const { tier = 'research', teamId, modelSlug, environment } = params
+
+  if (tier !== 'team') {
+    return issueCredentialForParams(db, params, issuer)
+  }
+
+  // A team shares one credential per model+environment, so the
+  // check-for-active-then-insert below must not interleave with another
+  // member's request or both would create an active credential.
+  const lock = await acquireLockWithRetry(
+    locker,
+    `team-credential:${teamId}:${modelSlug}:${environment}`
+  )
+
+  try {
+    return await issueCredentialForParams(db, params, issuer)
+  } finally {
+    await lock.free()
+  }
+}
+
+async function issueCredentialForParams(
   db,
   {
     userId,

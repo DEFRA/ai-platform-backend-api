@@ -48,6 +48,16 @@ export async function createTeam(
     ;({ insertedId } = await db.collection('teams').insertOne(team))
   } catch (error) {
     if (error.code === 11000) {
+      // Either index can trip first when a concurrent retry uses the same key
+      // and the same name, so always check for a replay before reporting a clash.
+      const winner = await db
+        .collection('teams')
+        .findOne({ createdBy, idempotencyKey })
+
+      if (winner) {
+        return { team: winner, replay: true }
+      }
+
       throw boomWithCode(
         Boom.conflict,
         'A team with this name already exists',
@@ -58,14 +68,21 @@ export async function createTeam(
     throw error
   }
 
-  await db.collection('teamMembers').insertOne({
-    teamId: insertedId.toString(),
-    userId: createdBy,
-    email: null,
-    role: 'admin',
-    status: 'active',
-    createdAt: now
-  })
+  try {
+    await db.collection('teamMembers').insertOne({
+      teamId: insertedId.toString(),
+      userId: createdBy,
+      email: null,
+      role: 'admin',
+      status: 'active',
+      createdAt: now
+    })
+  } catch (error) {
+    // Without this the team would survive with no admin, and the idempotent
+    // replay would keep handing back that unusable team forever.
+    await db.collection('teams').deleteOne({ _id: insertedId })
+    throw error
+  }
 
   await recordAuditEvent(db, {
     actorUserId: createdBy,
@@ -194,7 +211,32 @@ export async function addMember(
     createdAt: now
   }
 
-  const { insertedId } = await db.collection('teamMembers').insertOne(member)
+  let insertedId
+
+  try {
+    ;({ insertedId } = await db.collection('teamMembers').insertOne(member))
+  } catch (error) {
+    if (error.code === 11000) {
+      // Lost a race: either the same key (replay it) or the same email
+      // (a genuine duplicate invite). The unique indexes decide, not the
+      // earlier reads, so concurrent invites cannot both succeed.
+      const winner = await db
+        .collection('teamMembers')
+        .findOne({ teamId, idempotencyKey })
+
+      if (winner) {
+        return winner
+      }
+
+      throw boomWithCode(
+        Boom.conflict,
+        'This person is already a member of the team',
+        'member-exists'
+      )
+    }
+
+    throw error
+  }
 
   await recordAuditEvent(db, {
     actorUserId,

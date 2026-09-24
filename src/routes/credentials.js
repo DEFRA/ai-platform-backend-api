@@ -51,15 +51,19 @@ export const credentials = [
       const idempotencyKey = request.headers['idempotency-key']
       const { modelSlug, tier, teamId, environment, purpose } = request.payload
 
-      const { credential, secret, replay } = await issueCredential(request.db, {
-        userId,
-        modelSlug,
-        tier,
-        teamId,
-        environment,
-        purpose,
-        idempotencyKey
-      })
+      const { credential, secret, replay } = await issueCredential(
+        request.db,
+        request.locker,
+        {
+          userId,
+          modelSlug,
+          tier,
+          teamId,
+          environment,
+          purpose,
+          idempotencyKey
+        }
+      )
 
       const response = h.response({ credential, secret })
 

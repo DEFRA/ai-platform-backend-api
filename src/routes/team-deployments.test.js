@@ -308,4 +308,36 @@ describe('#team-deployments routes', () => {
 
     expect(result.items[0].status).toBe('active')
   })
+
+  test('concurrent polls never regress a deployment status', async () => {
+    const teamId = await createTeam('deploy-user-15')
+
+    const created = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('deploy-user-15'),
+      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+    })
+
+    const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
+    const headers = { 'x-user-id': 'deploy-user-15' }
+
+    await wait(300)
+
+    // Every poll races to persist the status it read; a stale writer must not
+    // overwrite a newer one, so all of them must agree on the terminal state.
+    const responses = await Promise.all(
+      Array.from({ length: 8 }, () =>
+        server.inject({ method: 'GET', url, headers })
+      )
+    )
+
+    expect(
+      responses.map((response) => response.result.deployment.status)
+    ).toEqual(Array.from({ length: 8 }, () => 'active'))
+
+    const after = await server.inject({ method: 'GET', url, headers })
+
+    expect(after.result.deployment.status).toBe('active')
+  })
 })

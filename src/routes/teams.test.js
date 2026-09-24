@@ -64,6 +64,68 @@ describe('#teams routes', () => {
     )
   })
 
+  test('POST /v1/teams creates only one team when the same Idempotency-Key is sent concurrently', async () => {
+    const headers = {
+      'x-user-id': 'team-user-2b',
+      'idempotency-key': randomUUID()
+    }
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        server.inject({
+          method: 'POST',
+          url: '/v1/teams',
+          headers,
+          payload: { name: 'Concurrent Replay Team' }
+        })
+      )
+    )
+
+    const ids = new Set(
+      responses.map((response) => response.result.team._id.toString())
+    )
+
+    expect(ids.size).toBe(1)
+    expect(responses.every((response) => response.statusCode < 400)).toBe(true)
+  })
+
+  test('POST /v1/teams/{id}/members creates one membership when the same email is invited concurrently', async () => {
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: postHeaders('team-user-2c'),
+      payload: { name: 'Concurrent Invite Team' }
+    })
+    const teamId = created.result.team._id.toString()
+
+    const responses = await Promise.all(
+      Array.from({ length: 5 }, () =>
+        server.inject({
+          method: 'POST',
+          url: `/v1/teams/${teamId}/members`,
+          headers: postHeaders('team-user-2c'),
+          payload: { email: 'concurrent.invite@defra.gov.uk' }
+        })
+      )
+    )
+
+    expect(
+      responses.filter((response) => response.statusCode === 201)
+    ).toHaveLength(1)
+
+    const team = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${teamId}`,
+      headers: { 'x-user-id': 'team-user-2c' }
+    })
+
+    expect(
+      team.result.members.filter(
+        (member) => member.email === 'concurrent.invite@defra.gov.uk'
+      )
+    ).toHaveLength(1)
+  })
+
   test('POST /v1/teams rejects a duplicate team name', async () => {
     const headers = {
       'x-user-id': 'team-user-3',

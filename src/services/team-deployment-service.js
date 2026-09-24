@@ -96,6 +96,14 @@ export async function requestDeployment(
       .insertOne(deployment))
   } catch (error) {
     if (error.code === 11000) {
+      const winner = await db
+        .collection('teamDeployments')
+        .findOne({ teamId, idempotencyKey })
+
+      if (winner) {
+        return winner
+      }
+
       const conflicting = await db
         .collection('teamDeployments')
         .findOne({ teamId, modelSlug, environment })
@@ -184,9 +192,18 @@ async function refreshDeploymentStatus(db, deployment, orchestrator) {
     update.failureReason = failureReason ?? 'unknown'
   }
 
-  await db
+  // Compare-and-set on the status we read: a slower concurrent poll must not
+  // overwrite a newer status with its stale one.
+  const { matchedCount } = await db
     .collection('teamDeployments')
-    .updateOne({ _id: deployment._id }, { $set: update })
+    .updateOne(
+      { _id: deployment._id, status: deployment.status },
+      { $set: update }
+    )
+
+  if (matchedCount === 0) {
+    return db.collection('teamDeployments').findOne({ _id: deployment._id })
+  }
 
   return { ...deployment, ...update }
 }
