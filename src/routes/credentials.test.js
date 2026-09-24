@@ -423,6 +423,10 @@ describe('#credentials routes', () => {
     expect(result.credential.tier).toBe('team')
     expect(result.credential.teamId).toBe(teamId)
     expect(result.secret).toEqual(expect.stringContaining('mock_'))
+    // Provisioned against the team's deployment, never the requesting member.
+    expect(result.credential.apimSubscriptionId).toBe(
+      `team-${teamId}-gpt-4o-dev`
+    )
   })
 
   test('POST /v1/credentials creates only one active credential when a team requests concurrently', async () => {

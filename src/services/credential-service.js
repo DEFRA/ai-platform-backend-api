@@ -180,7 +180,13 @@ async function issueCredentialForParams(
 
   let issued
   try {
-    issued = await issuer.issue({ userId, modelSlug })
+    issued = await issuer.issue({
+      userId,
+      modelSlug,
+      tier,
+      teamId: resolvedTeamId,
+      environment: environment || null
+    })
   } catch {
     await db
       .collection('credentials')
