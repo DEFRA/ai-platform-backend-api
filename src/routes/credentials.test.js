@@ -1,9 +1,5 @@
 import { randomUUID } from 'node:crypto'
 
-// Short mock stage duration so a team deployment can reach `active` in real
-// time within a test without waiting on the production default.
-process.env.TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS = '30'
-
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -12,6 +8,10 @@ describe('#credentials routes', () => {
   let server
 
   beforeAll(async () => {
+    // Short mock stage duration so a team deployment can reach `active` in real
+    // time within a test without waiting on the production default.
+    vi.stubEnv('TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS', '30')
+
     // Dynamic import needed due to config being updated by vitest-mongodb
     const { createServer } = await import('#/server.js')
 
@@ -21,6 +21,7 @@ describe('#credentials routes', () => {
 
   afterAll(async () => {
     await server.stop({ timeout: 0 })
+    vi.unstubAllEnvs()
   })
 
   test('POST /v1/credentials issues a mock credential', async () => {
@@ -203,7 +204,10 @@ describe('#credentials routes', () => {
     await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/members`,
-      headers: { 'x-user-id': 'team-cred-view-1' },
+      headers: {
+        'x-user-id': 'team-cred-view-1',
+        'idempotency-key': randomUUID()
+      },
       payload: { email: 'viewer-teammate@defra.gov.uk' }
     })
 
@@ -225,6 +229,64 @@ describe('#credentials routes', () => {
     expect(statusCode).toBe(200)
     expect(result.secret).toBeUndefined()
     expect(result.teamId).toBe(teamId)
+  })
+
+  test('a teammate cannot view or list another member\u2019s personal research credential', async () => {
+    const teamId = await createTeamWithActiveDeployment('team-cred-leak-1')
+
+    // A research credential issued by the team admin still persists their
+    // teamId, so it must not surface to teammates as a shared credential.
+    const personal = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'team-cred-leak-1',
+        'idempotency-key': randomUUID()
+      },
+      payload: { modelSlug: 'gpt-4o-mini' }
+    })
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/members`,
+      headers: {
+        'x-user-id': 'team-cred-leak-1',
+        'idempotency-key': randomUUID()
+      },
+      payload: { email: 'leak-teammate@defra.gov.uk' }
+    })
+
+    const signIn = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        email: 'leak-teammate@defra.gov.uk',
+        displayName: 'Leak Teammate'
+      }
+    })
+
+    const teammateId = signIn.result.user._id.toString()
+
+    const viewed = await server.inject({
+      method: 'GET',
+      url: `/v1/credentials/${personal.result.credential._id}`,
+      headers: { 'x-user-id': teammateId }
+    })
+
+    expect(viewed.statusCode).toBe(404)
+
+    const listed = await server.inject({
+      method: 'GET',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': teammateId }
+    })
+
+    expect(
+      listed.result.items.some(
+        (item) =>
+          item._id.toString() === personal.result.credential._id.toString()
+      )
+    ).toBe(false)
   })
 
   test('POST /v1/credentials/{id}/renew extends expiry and increments renewalCount', async () => {
@@ -323,7 +385,7 @@ describe('#credentials routes', () => {
     const deployment = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': userId },
+      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
       payload: { modelSlug, environment: 'dev' }
     })
 
@@ -415,7 +477,10 @@ describe('#credentials routes', () => {
     await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'team-cred-user-3' },
+      headers: {
+        'x-user-id': 'team-cred-user-3',
+        'idempotency-key': randomUUID()
+      },
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -480,7 +545,10 @@ describe('#credentials routes', () => {
     await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/members`,
-      headers: { 'x-user-id': 'team-cred-user-5' },
+      headers: {
+        'x-user-id': 'team-cred-user-5',
+        'idempotency-key': randomUUID()
+      },
       payload: { email: 'teammate@defra.gov.uk' }
     })
 

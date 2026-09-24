@@ -1,9 +1,5 @@
 import { randomUUID } from 'node:crypto'
 
-// Short mock stage duration so the "being set up" progression can be polled
-// in real time within a test without waiting on the production default.
-process.env.TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS = '30'
-
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -12,6 +8,10 @@ describe('#team-deployments routes', () => {
   let server
 
   beforeAll(async () => {
+    // Short mock stage duration so the "being set up" progression can be polled
+    // in real time within a test without waiting on the production default.
+    vi.stubEnv('TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS', '30')
+
     // Dynamic import needed due to config being updated by vitest-mongodb
     const { createServer } = await import('#/server.js')
 
@@ -21,6 +21,7 @@ describe('#team-deployments routes', () => {
 
   afterAll(async () => {
     await server.stop({ timeout: 0 })
+    vi.unstubAllEnvs()
   })
 
   async function createTeam(userId) {
@@ -34,13 +35,17 @@ describe('#team-deployments routes', () => {
     return result.team._id
   }
 
+  function postHeaders(userId) {
+    return { 'x-user-id': userId, 'idempotency-key': randomUUID() }
+  }
+
   test('POST /v1/teams/{teamId}/deployments requests a deployment for an active team member', async () => {
     const teamId = await createTeam('deploy-user-1')
 
     const { result, statusCode, headers } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-1' },
+      headers: postHeaders('deploy-user-1'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -58,7 +63,7 @@ describe('#team-deployments routes', () => {
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-2' },
+      headers: postHeaders('deploy-user-2'),
       payload: { modelSlug: 'gpt-4o', environment: 'qa' }
     })
 
@@ -72,7 +77,7 @@ describe('#team-deployments routes', () => {
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-3' },
+      headers: postHeaders('deploy-user-3'),
       payload: { modelSlug: 'gpt-4o-mini', environment: 'dev' }
     })
 
@@ -86,7 +91,7 @@ describe('#team-deployments routes', () => {
     const { statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'someone-else' },
+      headers: postHeaders('someone-else'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -99,14 +104,14 @@ describe('#team-deployments routes', () => {
     const first = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-5' },
+      headers: postHeaders('deploy-user-5'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-5' },
+      headers: postHeaders('deploy-user-5'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -115,13 +120,50 @@ describe('#team-deployments routes', () => {
     expect(result.existingId).toBe(first.result.deployment._id.toString())
   })
 
+  test('POST /v1/teams/{teamId}/deployments replays the original deployment for a repeated idempotency key', async () => {
+    const teamId = await createTeam('deploy-user-13')
+    const headers = postHeaders('deploy-user-13')
+
+    const first = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers,
+      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+    })
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers,
+      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+    })
+
+    expect(statusCode).toBe(201)
+    expect(result.deployment._id.toString()).toBe(
+      first.result.deployment._id.toString()
+    )
+  })
+
+  test('POST /v1/teams/{teamId}/deployments requires an idempotency key', async () => {
+    const teamId = await createTeam('deploy-user-14')
+
+    const { statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: { 'x-user-id': 'deploy-user-14' },
+      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+    })
+
+    expect(statusCode).toBe(400)
+  })
+
   test('GET /v1/teams/{teamId}/deployments/{id} progresses through the GitOps states to active', async () => {
     const teamId = await createTeam('deploy-user-6')
 
     const created = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-6' },
+      headers: postHeaders('deploy-user-6'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -146,7 +188,7 @@ describe('#team-deployments routes', () => {
     const created = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-7' },
+      headers: postHeaders('deploy-user-7'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -165,7 +207,7 @@ describe('#team-deployments routes', () => {
     const created = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'test-checks-fail-8' },
+      headers: postHeaders('test-checks-fail-8'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -187,7 +229,7 @@ describe('#team-deployments routes', () => {
     const created = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'test-deploy-fail-9' },
+      headers: postHeaders('test-deploy-fail-9'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -209,7 +251,7 @@ describe('#team-deployments routes', () => {
     const created = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-10' },
+      headers: postHeaders('deploy-user-10'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -233,7 +275,7 @@ describe('#team-deployments routes', () => {
     await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-11' },
+      headers: postHeaders('deploy-user-11'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 
@@ -252,7 +294,7 @@ describe('#team-deployments routes', () => {
     await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-12' },
+      headers: postHeaders('deploy-user-12'),
       payload: { modelSlug: 'gpt-4o', environment: 'dev' }
     })
 

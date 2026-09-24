@@ -139,9 +139,12 @@ export async function findTeamById(db, { id, userId }) {
 /**
  * Invites a member by email. Only an active admin of the team may do this.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, email: string}} params
+ * @param {{teamId: string, actorUserId: string, email: string, idempotencyKey: string}} params
  */
-export async function addMember(db, { teamId, actorUserId, email }) {
+export async function addMember(
+  db,
+  { teamId, actorUserId, email, idempotencyKey }
+) {
   const actorMembership = await db
     .collection('teamMembers')
     .findOne({ teamId, userId: actorUserId, status: 'active' })
@@ -159,6 +162,14 @@ export async function addMember(db, { teamId, actorUserId, email }) {
   }
 
   const lowerEmail = email.toLowerCase()
+
+  const replay = await db
+    .collection('teamMembers')
+    .findOne({ teamId, idempotencyKey })
+
+  if (replay) {
+    return replay
+  }
 
   const existingMember = await db
     .collection('teamMembers')
@@ -179,6 +190,7 @@ export async function addMember(db, { teamId, actorUserId, email }) {
     email: lowerEmail,
     role: 'user',
     status: 'invited',
+    idempotencyKey,
     createdAt: now
   }
 

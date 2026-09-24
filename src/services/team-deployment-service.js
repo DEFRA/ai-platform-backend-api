@@ -13,12 +13,12 @@ const TERMINAL_FAILURE_STATUSES = ['checks-failed', 'deploy-failed']
  * design C environments - future environments are a policy change, not a
  * schema change.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, modelSlug: string, environment: string, requestedBy: string}} params
+ * @param {{teamId: string, modelSlug: string, environment: string, requestedBy: string, idempotencyKey: string}} params
  * @param {import('#/adapters/tenant-orchestrator.js').TenantOrchestrator} [orchestrator]
  */
 export async function requestDeployment(
   db,
-  { teamId, modelSlug, environment, requestedBy },
+  { teamId, modelSlug, environment, requestedBy, idempotencyKey },
   orchestrator = mockTenantOrchestrator
 ) {
   if (environment !== 'dev') {
@@ -35,6 +35,14 @@ export async function requestDeployment(
 
   if (!membership) {
     throw Boom.notFound()
+  }
+
+  const replay = await db
+    .collection('teamDeployments')
+    .findOne({ teamId, idempotencyKey })
+
+  if (replay) {
+    return replay
   }
 
   const model = await findModelBySlug(db, modelSlug)
@@ -74,6 +82,7 @@ export async function requestDeployment(
     status: 'requested',
     operationId,
     requestedBy,
+    idempotencyKey,
     createdAt: now,
     activatedAt: null,
     failureReason: null
@@ -87,24 +96,48 @@ export async function requestDeployment(
       .insertOne(deployment))
   } catch (error) {
     if (error.code === 11000) {
-      const conflictError = boomWithCode(
+      const conflicting = await db
+        .collection('teamDeployments')
+        .findOne({ teamId, modelSlug, environment })
+
+      throw boomWithCode(
         Boom.conflict,
         'A deployment already exists for this team and model',
-        'deployment-exists'
+        'deployment-exists',
+        conflicting ? { existingId: conflicting._id.toString() } : {}
       )
-      throw conflictError
     }
 
     throw error
   }
 
-  await orchestrator.requestDeployment({
-    teamId,
-    modelSlug,
-    environment,
-    operationId,
-    requestedBy
-  })
+  try {
+    await orchestrator.requestDeployment({
+      teamId,
+      modelSlug,
+      environment,
+      operationId,
+      requestedBy
+    })
+  } catch {
+    // Remove the row so a retry can start cleanly - leaving it would trip the
+    // unique index and permanently 409 a deployment that never actually started.
+    await db.collection('teamDeployments').deleteOne({ _id: insertedId })
+    await recordAuditEvent(db, {
+      actorUserId: requestedBy,
+      action: 'teamDeployment.request',
+      resource: 'teamDeployment',
+      resourceId: insertedId.toString(),
+      outcome: 'failure',
+      code: 'upstream-unavailable'
+    })
+
+    throw boomWithCode(
+      Boom.badGateway,
+      'Failed to request the team deployment',
+      'upstream-unavailable'
+    )
+  }
 
   await recordAuditEvent(db, {
     actorUserId: requestedBy,

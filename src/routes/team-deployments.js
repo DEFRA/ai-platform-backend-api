@@ -22,7 +22,10 @@ export const teamDeployments = [
     path: '/v1/teams/{teamId}/deployments',
     options: {
       validate: {
-        headers: userIdHeader,
+        headers: Joi.object({
+          'x-user-id': Joi.string().required(),
+          'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
+        }).unknown(true),
         params: Joi.object({ teamId: Joi.string().required() }).unknown(false),
         payload: Joi.object({
           modelSlug: Joi.string()
@@ -36,6 +39,7 @@ export const teamDeployments = [
     },
     handler: async (request, h) => {
       const requestedBy = request.headers['x-user-id']
+      const idempotencyKey = request.headers['idempotency-key']
       const { teamId } = request.params
       const { modelSlug, environment } = request.payload
 
@@ -43,7 +47,8 @@ export const teamDeployments = [
         teamId,
         modelSlug,
         environment,
-        requestedBy
+        requestedBy,
+        idempotencyKey
       })
 
       return h

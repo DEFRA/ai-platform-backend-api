@@ -103,7 +103,7 @@ export async function issueCredential(
 
     const activeTeamCredential = await db
       .collection('credentials')
-      .findOne({ teamId, modelSlug, status: 'active' })
+      .findOne({ teamId, modelSlug, tier: 'team', status: 'active' })
 
     if (activeTeamCredential) {
       return {
@@ -255,9 +255,12 @@ export async function listCredentials(db, { userId }) {
 
   const teamIds = memberships.map((membership) => membership.teamId)
 
+  // The membership side is restricted to tier:'team' because research
+  // credentials also persist a teamId - without it a teammate's personal
+  // credential would be listed as if it were shared.
   const query =
     teamIds.length > 0
-      ? { $or: [{ userId }, { teamId: { $in: teamIds } }] }
+      ? { $or: [{ userId }, { teamId: { $in: teamIds }, tier: 'team' }] }
       : { userId }
 
   const items = await db.collection('credentials').find(query).toArray()
@@ -315,7 +318,7 @@ export async function findCredentialForViewing(db, { id, userId }) {
     teamIds.length > 0
       ? {
           _id: new ObjectId(id),
-          $or: [{ userId }, { teamId: { $in: teamIds } }]
+          $or: [{ userId }, { teamId: { $in: teamIds }, tier: 'team' }]
         }
       : { _id: new ObjectId(id), userId }
 

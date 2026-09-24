@@ -14,16 +14,18 @@ const userIdHeader = Joi.object({
 
 const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
 
+const idempotentHeaders = Joi.object({
+  'x-user-id': Joi.string().required(),
+  'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
+}).unknown(true)
+
 export const teams = [
   {
     method: 'POST',
     path: '/v1/teams',
     options: {
       validate: {
-        headers: Joi.object({
-          'x-user-id': Joi.string().required(),
-          'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
-        }).unknown(true),
+        headers: idempotentHeaders,
         payload: Joi.object({
           name: Joi.string().trim().min(3).max(60).required(),
           serviceCode: Joi.string().trim().max(20).allow('').optional(),
@@ -92,7 +94,7 @@ export const teams = [
     path: '/v1/teams/{id}/members',
     options: {
       validate: {
-        headers: userIdHeader,
+        headers: idempotentHeaders,
         params: idParam,
         payload: Joi.object({
           email: Joi.string().email().max(254).required()
@@ -103,10 +105,14 @@ export const teams = [
       const member = await addMember(request.db, {
         teamId: request.params.id,
         actorUserId: request.headers['x-user-id'],
+        idempotencyKey: request.headers['idempotency-key'],
         email: request.payload.email
       })
 
-      return h.response({ member }).code(201)
+      return h
+        .response({ member })
+        .header('Location', `/v1/teams/${request.params.id}/members`)
+        .code(201)
     }
   }
 ]

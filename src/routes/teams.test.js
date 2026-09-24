@@ -15,6 +15,10 @@ describe('#teams routes', () => {
     await server.stop({ timeout: 0 })
   })
 
+  function postHeaders(userId) {
+    return { 'x-user-id': userId, 'idempotency-key': randomUUID() }
+  }
+
   test('POST /v1/teams creates a team and makes the creator an admin', async () => {
     const { result, statusCode, headers } = await server.inject({
       method: 'POST',
@@ -165,7 +169,7 @@ describe('#teams routes', () => {
     expect(statusCode).toBe(404)
   })
 
-  test('POST /v1/teams/{id}/members invites a member as an admin', async () => {
+  test('POST /v1/teams/{id}/members invites a member with the user role', async () => {
     const headers = {
       'x-user-id': 'team-user-7',
       'idempotency-key': randomUUID()
@@ -181,7 +185,7 @@ describe('#teams routes', () => {
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${created.result.team._id}/members`,
-      headers: { 'x-user-id': 'team-user-7' },
+      headers: postHeaders('team-user-7'),
       payload: { email: 'invitee@defra.gov.uk' }
     })
 
@@ -206,14 +210,14 @@ describe('#teams routes', () => {
     await server.inject({
       method: 'POST',
       url: `/v1/teams/${created.result.team._id}/members`,
-      headers: { 'x-user-id': 'team-user-7b' },
+      headers: postHeaders('team-user-7b'),
       payload: { email: 'duplicate@defra.gov.uk' }
     })
 
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${created.result.team._id}/members`,
-      headers: { 'x-user-id': 'team-user-7b' },
+      headers: postHeaders('team-user-7b'),
       payload: { email: 'duplicate@defra.gov.uk' }
     })
 
@@ -237,7 +241,7 @@ describe('#teams routes', () => {
     await server.inject({
       method: 'POST',
       url: `/v1/teams/${created.result.team._id}/members`,
-      headers: { 'x-user-id': 'team-user-8' },
+      headers: postHeaders('team-user-8'),
       payload: { email: 'user-member@defra.gov.uk' }
     })
 
@@ -264,7 +268,7 @@ describe('#teams routes', () => {
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${created.result.team._id}/members`,
-      headers: { 'x-user-id': boundMember.userId },
+      headers: postHeaders(boundMember.userId),
       payload: { email: 'another@defra.gov.uk' }
     })
 
@@ -288,7 +292,7 @@ describe('#teams routes', () => {
     const { statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${created.result.team._id}/members`,
-      headers: { 'x-user-id': 'someone-else' },
+      headers: postHeaders('someone-else'),
       payload: { email: 'invitee2@defra.gov.uk' }
     })
 
@@ -311,7 +315,7 @@ describe('#teams routes', () => {
     await server.inject({
       method: 'POST',
       url: `/v1/teams/${created.result.team._id}/members`,
-      headers: { 'x-user-id': 'team-user-10' },
+      headers: postHeaders('team-user-10'),
       payload: { email: 'bound.member@defra.gov.uk' }
     })
 
