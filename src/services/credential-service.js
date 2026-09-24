@@ -106,7 +106,11 @@ export async function issueCredential(
       .findOne({ teamId, modelSlug, status: 'active' })
 
     if (activeTeamCredential) {
-      return { credential: activeTeamCredential, secret: undefined, replay: true }
+      return {
+        credential: activeTeamCredential,
+        secret: undefined,
+        replay: true
+      }
     }
 
     resolvedTeamId = teamId
@@ -309,7 +313,10 @@ export async function findCredentialForViewing(db, { id, userId }) {
 
   const query =
     teamIds.length > 0
-      ? { _id: new ObjectId(id), $or: [{ userId }, { teamId: { $in: teamIds } }] }
+      ? {
+          _id: new ObjectId(id),
+          $or: [{ userId }, { teamId: { $in: teamIds } }]
+        }
       : { _id: new ObjectId(id), userId }
 
   const credential = await db.collection('credentials').findOne(query)

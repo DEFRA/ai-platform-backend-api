@@ -93,7 +93,9 @@ export async function listTeamsForUser(db, userId) {
     return []
   }
 
-  const teamIds = memberships.map((membership) => new ObjectId(membership.teamId))
+  const teamIds = memberships.map(
+    (membership) => new ObjectId(membership.teamId)
+  )
 
   return db
     .collection('teams')

@@ -23,9 +23,7 @@ export const teamDeployments = [
     options: {
       validate: {
         headers: userIdHeader,
-        params: Joi.object({ teamId: Joi.string().required() }).unknown(
-          false
-        ),
+        params: Joi.object({ teamId: Joi.string().required() }).unknown(false),
         payload: Joi.object({
           modelSlug: Joi.string()
             .pattern(/^[a-z0-9-]+$/)
@@ -60,9 +58,7 @@ export const teamDeployments = [
     options: {
       validate: {
         headers: userIdHeader,
-        params: Joi.object({ teamId: Joi.string().required() }).unknown(
-          false
-        )
+        params: Joi.object({ teamId: Joi.string().required() }).unknown(false)
       }
     },
     handler: async (request, h) => {

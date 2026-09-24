@@ -22,9 +22,7 @@ export const teams = [
       validate: {
         headers: Joi.object({
           'x-user-id': Joi.string().required(),
-          'idempotency-key': Joi.string()
-            .guid({ version: 'uuidv4' })
-            .required()
+          'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
         }).unknown(true),
         payload: Joi.object({
           name: Joi.string().trim().min(3).max(60).required(),

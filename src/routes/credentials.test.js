@@ -459,7 +459,7 @@ describe('#credentials routes', () => {
     expect(statusCode).toBe(404)
   })
 
-  test("GET /v1/credentials lists a shared team credential for another active team member", async () => {
+  test('GET /v1/credentials lists a shared team credential for another active team member', async () => {
     const teamId = await createTeamWithActiveDeployment('team-cred-user-5')
 
     await server.inject({

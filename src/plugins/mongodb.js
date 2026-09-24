@@ -53,9 +53,7 @@ async function createIndexes(db) {
   await db
     .collection('teams')
     .createIndex({ normalisedName: 1 }, { unique: true })
-  await db
-    .collection('teamMembers')
-    .createIndex({ teamId: 1, userId: 1 })
+  await db.collection('teamMembers').createIndex({ teamId: 1, userId: 1 })
   await db.collection('teamMembers').createIndex({ email: 1 })
   await db
     .collection('teamDeployments')
