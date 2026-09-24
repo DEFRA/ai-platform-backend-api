@@ -42,6 +42,27 @@ export const mongoDb = {
   }
 }
 
+// 85/86 = IndexOptionsConflict/IndexKeySpecsConflict: a stale index with the
+// same auto-generated name already exists with different options (e.g. built
+// before a partialFilterExpression was added) - drop and rebuild it instead of
+// crashing the server on every startup.
+async function ensureIndex(collection, keys, options) {
+  try {
+    await collection.createIndex(keys, options)
+  } catch (error) {
+    if (error.code !== 85 && error.code !== 86) {
+      throw error
+    }
+
+    const name = Object.entries(keys)
+      .map(([field, direction]) => `${field}_${direction}`)
+      .join('_')
+
+    await collection.dropIndex(name)
+    await collection.createIndex(keys, options)
+  }
+}
+
 async function createIndexes(db) {
   await db.collection('mongo-locks').createIndex({ id: 1 })
 
@@ -56,7 +77,8 @@ async function createIndexes(db) {
   // Makes the Idempotency-Key replay on POST /v1/teams atomic rather than
   // check-then-insert, so concurrent retries cannot create two teams.
   // Partial: excludes legacy/null idempotencyKey docs from the uniqueness check.
-  await db.collection('teams').createIndex(
+  await ensureIndex(
+    db.collection('teams'),
     { createdBy: 1, idempotencyKey: 1 },
     {
       unique: true,
@@ -67,13 +89,13 @@ async function createIndexes(db) {
   await db.collection('teamMembers').createIndex({ email: 1 })
   // Partial: the team creator's own admin membership carries a null email and
   // no idempotencyKey, so only invited members participate in these indexes.
-  await db
-    .collection('teamMembers')
-    .createIndex(
-      { teamId: 1, email: 1 },
-      { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
-    )
-  await db.collection('teamMembers').createIndex(
+  await ensureIndex(
+    db.collection('teamMembers'),
+    { teamId: 1, email: 1 },
+    { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
+  )
+  await ensureIndex(
+    db.collection('teamMembers'),
     { teamId: 1, idempotencyKey: 1 },
     {
       unique: true,
@@ -83,7 +105,8 @@ async function createIndexes(db) {
   await db
     .collection('teamDeployments')
     .createIndex({ teamId: 1, modelSlug: 1, environment: 1 }, { unique: true })
-  await db.collection('teamDeployments').createIndex(
+  await ensureIndex(
+    db.collection('teamDeployments'),
     { teamId: 1, idempotencyKey: 1 },
     {
       unique: true,
@@ -91,7 +114,8 @@ async function createIndexes(db) {
     }
   )
   // Partial: excludes legacy/null idempotencyKey docs from the uniqueness check.
-  await db.collection('credentials').createIndex(
+  await ensureIndex(
+    db.collection('credentials'),
     { userId: 1, idempotencyKey: 1 },
     {
       unique: true,

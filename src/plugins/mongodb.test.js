@@ -44,4 +44,34 @@ describe('#mongoDb', () => {
       expect(closeSpy).toHaveBeenCalledWith(true)
     })
   })
+
+  describe('Stale index recovery', () => {
+    test('rebuilds a non-partial idempotencyKey index left by an older deploy', async () => {
+      // Dynamic import needed due to config being updated by vitest-mongodb
+      const { config } = await import('#/config.js')
+      const client = await MongoClient.connect(config.get('mongo.mongoUrl'))
+      const db = client.db(config.get('mongo.databaseName'))
+
+      // Simulate a legacy index built before partialFilterExpression existed
+      await db.collection('teams').dropIndex('createdBy_1_idempotencyKey_1')
+      await db
+        .collection('teams')
+        .createIndex({ createdBy: 1, idempotencyKey: 1 }, { unique: true })
+
+      const { createServer } = await import('#/server.js')
+      const recoveredServer = await createServer()
+      await recoveredServer.initialize()
+
+      const indexes = await db.collection('teams').indexes()
+      const rebuilt = indexes.find(
+        (index) => index.name === 'createdBy_1_idempotencyKey_1'
+      )
+      expect(rebuilt.partialFilterExpression).toEqual({
+        idempotencyKey: { $type: 'string' }
+      })
+
+      await recoveredServer.stop({ timeout: 1000 })
+      await client.close()
+    })
+  })
 })
