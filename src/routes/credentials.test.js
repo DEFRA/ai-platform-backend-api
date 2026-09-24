@@ -1,5 +1,13 @@
 import { randomUUID } from 'node:crypto'
 
+// Short mock stage duration so a team deployment can reach `active` in real
+// time within a test without waiting on the production default.
+process.env.TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS = '30'
+
+function wait(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms))
+}
+
 describe('#credentials routes', () => {
   let server
 
@@ -174,6 +182,51 @@ describe('#credentials routes', () => {
     expect(statusCode).toBe(404)
   })
 
+  test('GET /v1/credentials/{id} allows another active team member to view a shared team credential', async () => {
+    const teamId = await createTeamWithActiveDeployment('team-cred-view-1')
+
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'team-cred-view-1',
+        'idempotency-key': randomUUID()
+      },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'dev'
+      }
+    })
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/members`,
+      headers: { 'x-user-id': 'team-cred-view-1' },
+      payload: { email: 'viewer-teammate@defra.gov.uk' }
+    })
+
+    const signIn = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        email: 'viewer-teammate@defra.gov.uk',
+        displayName: 'Viewer Teammate'
+      }
+    })
+
+    const { statusCode, result } = await server.inject({
+      method: 'GET',
+      url: `/v1/credentials/${issued.result.credential._id}`,
+      headers: { 'x-user-id': signIn.result.user._id.toString() }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.secret).toBeUndefined()
+    expect(result.teamId).toBe(teamId)
+  })
+
   test('POST /v1/credentials/{id}/renew extends expiry and increments renewalCount', async () => {
     const headers = { 'x-user-id': 'user-8', 'idempotency-key': randomUUID() }
     const issued = await server.inject({
@@ -256,5 +309,196 @@ describe('#credentials routes', () => {
     })
 
     expect(statusCode).toBe(404)
+  })
+
+  async function createTeamWithActiveDeployment(userId, modelSlug = 'gpt-4o') {
+    const team = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+      payload: { name: `Team ${userId}` }
+    })
+    const teamId = team.result.team._id.toString()
+
+    const deployment = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: { 'x-user-id': userId },
+      payload: { modelSlug, environment: 'dev' }
+    })
+
+    const pollUrl = `/v1/teams/${teamId}/deployments/${deployment.result.deployment._id}`
+
+    await wait(300)
+    await server.inject({
+      method: 'GET',
+      url: pollUrl,
+      headers: { 'x-user-id': userId }
+    })
+
+    return teamId
+  }
+
+  test('POST /v1/credentials issues a team tier credential once the deployment is active', async () => {
+    const teamId = await createTeamWithActiveDeployment('team-cred-user-1')
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'team-cred-user-1',
+        'idempotency-key': randomUUID()
+      },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'dev'
+      }
+    })
+
+    expect(statusCode).toBe(201)
+    expect(result.credential.tier).toBe('team')
+    expect(result.credential.teamId).toBe(teamId)
+    expect(result.secret).toEqual(expect.stringContaining('mock_'))
+  })
+
+  test('POST /v1/credentials reuses the existing shared team credential on a second request', async () => {
+    const teamId = await createTeamWithActiveDeployment('team-cred-user-2')
+    const payload = {
+      modelSlug: 'gpt-4o',
+      tier: 'team',
+      teamId,
+      environment: 'dev'
+    }
+
+    const first = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'team-cred-user-2',
+        'idempotency-key': randomUUID()
+      },
+      payload
+    })
+
+    const second = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'team-cred-user-2',
+        'idempotency-key': randomUUID()
+      },
+      payload
+    })
+
+    expect(first.statusCode).toBe(201)
+    expect(second.statusCode).toBe(200)
+    expect(second.result.secret).toBeUndefined()
+    expect(second.result.credential._id.toString()).toBe(
+      first.result.credential._id.toString()
+    )
+  })
+
+  test('POST /v1/credentials returns 409 deployment-not-ready before the deployment is active', async () => {
+    const team = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: {
+        'x-user-id': 'team-cred-user-3',
+        'idempotency-key': randomUUID()
+      },
+      payload: { name: 'Team team-cred-user-3' }
+    })
+    const teamId = team.result.team._id.toString()
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: { 'x-user-id': 'team-cred-user-3' },
+      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+    })
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'team-cred-user-3',
+        'idempotency-key': randomUUID()
+      },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'dev'
+      }
+    })
+
+    expect(statusCode).toBe(409)
+    expect(result.code).toBe('deployment-not-ready')
+  })
+
+  test('POST /v1/credentials returns 404 for a team tier request from a non-member', async () => {
+    const teamId = await createTeamWithActiveDeployment('team-cred-user-4')
+
+    const { statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'someone-else',
+        'idempotency-key': randomUUID()
+      },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'dev'
+      }
+    })
+
+    expect(statusCode).toBe(404)
+  })
+
+  test("GET /v1/credentials lists a shared team credential for another active team member", async () => {
+    const teamId = await createTeamWithActiveDeployment('team-cred-user-5')
+
+    await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'team-cred-user-5',
+        'idempotency-key': randomUUID()
+      },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'dev'
+      }
+    })
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/members`,
+      headers: { 'x-user-id': 'team-cred-user-5' },
+      payload: { email: 'teammate@defra.gov.uk' }
+    })
+
+    const signIn = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: { email: 'teammate@defra.gov.uk', displayName: 'Teammate' }
+    })
+
+    const { result, statusCode } = await server.inject({
+      method: 'GET',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': signIn.result.user._id.toString() }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0].teamId).toBe(teamId)
+    expect(result.items[0].secret).toBeUndefined()
   })
 })

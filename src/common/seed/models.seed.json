@@ -35,7 +35,8 @@
     "region": "uksouth",
     "dataZone": "uk",
     "eligible": true,
-    "tiers": ["research"],
+    "tiers": ["research", "team"],
+    "environments": ["dev"],
     "description": "Multimodal OpenAI model balancing speed, cost and capability across text and vision tasks.",
     "useCases": [
       "Chat assistants",

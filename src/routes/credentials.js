@@ -4,7 +4,7 @@ import Boom from '@hapi/boom'
 import {
   issueCredential,
   listCredentials,
-  findCredentialForUser,
+  findCredentialForViewing,
   renewCredential,
   revokeCredential
 } from '#/services/credential-service.js'
@@ -29,7 +29,19 @@ export const credentials = [
           modelSlug: Joi.string()
             .pattern(/^[a-z0-9-]+$/)
             .required(),
-          tier: Joi.string().valid('research').default('research'),
+          tier: Joi.string().valid('research', 'team').default('research'),
+          teamId: Joi.string().when('tier', {
+            is: 'team',
+            then: Joi.required(),
+            otherwise: Joi.forbidden()
+          }),
+          environment: Joi.string()
+            .valid('dev', 'qa', 'preprod', 'prod', 'uat')
+            .when('tier', {
+              is: 'team',
+              then: Joi.required(),
+              otherwise: Joi.forbidden()
+            }),
           purpose: Joi.string().trim().max(500).allow('').optional()
         }).unknown(false)
       }
@@ -37,11 +49,14 @@ export const credentials = [
     handler: async (request, h) => {
       const userId = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
-      const { modelSlug, purpose } = request.payload
+      const { modelSlug, tier, teamId, environment, purpose } = request.payload
 
       const { credential, secret, replay } = await issueCredential(request.db, {
         userId,
         modelSlug,
+        tier,
+        teamId,
+        environment,
         purpose,
         idempotencyKey
       })
@@ -76,7 +91,7 @@ export const credentials = [
       validate: { headers: userIdHeader, params: idParam }
     },
     handler: async (request, h) => {
-      const credential = await findCredentialForUser(request.db, {
+      const credential = await findCredentialForViewing(request.db, {
         id: request.params.id,
         userId: request.headers['x-user-id']
       })

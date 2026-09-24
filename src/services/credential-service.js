@@ -6,6 +6,7 @@ import { findModelBySlug } from '#/services/models-service.js'
 import { mockCredentialIssuer } from '#/adapters/mock-credential-issuer.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { requireLock } from '#/common/helpers/mongo-lock.js'
+import { findActiveDeployment } from '#/services/team-deployment-service.js'
 
 /**
  * Best-effort lookup of a user's team, tolerant of the day-1 interim trust
@@ -27,20 +28,34 @@ async function findTeamIdForUser(db, userId) {
 }
 
 /**
- * Issues a Research tier credential for a user/model, or replays the result
- * of a prior call with the same Idempotency-Key.
+ * Issues a Research or Team tier credential, or replays the result of a
+ * prior call with the same Idempotency-Key. A Team tier request must carry
+ * an explicit `teamId` (never derived from `users.teamId`, which is a
+ * single-team field incompatible with the many-to-many `teamMembers`
+ * model) and only proceeds once that team's model deployment is `active`;
+ * since the credential is shared across the whole team (one doc per
+ * team+model, not per member), a team already holding an active credential
+ * for this model gets that same credential back rather than a fresh one.
  *
  * Note: the secret is never persisted, so a replayed idempotent request
  * returns the credential without a secret — this matches "the key is shown
  * once" from the spec, at the cost of not being able to replay the secret
  * itself on retry.
  * @param {import('mongodb').Db} db
- * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string}} params
+ * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string}} params
  * @param {import('#/adapters/credential-issuer.js').CredentialIssuer} [issuer]
  */
 export async function issueCredential(
   db,
-  { userId, modelSlug, purpose, idempotencyKey },
+  {
+    userId,
+    modelSlug,
+    purpose,
+    idempotencyKey,
+    tier = 'research',
+    teamId,
+    environment
+  },
   issuer = mockCredentialIssuer
 ) {
   const existing = await db
@@ -53,7 +68,7 @@ export async function issueCredential(
 
   const model = await findModelBySlug(db, modelSlug)
 
-  if (!model || !model.eligible || !model.tiers?.includes('research')) {
+  if (!model || !model.eligible || !model.tiers?.includes(tier)) {
     throw boomWithCode(
       Boom.forbidden,
       'Model is not eligible',
@@ -61,25 +76,63 @@ export async function issueCredential(
     )
   }
 
-  const activeCredential = await db
-    .collection('credentials')
-    .findOne({ userId, modelSlug, status: 'active' })
+  let resolvedTeamId = null
 
-  if (activeCredential) {
-    throw boomWithCode(
-      Boom.conflict,
-      'An active credential already exists for this model',
-      'active-credential-exists'
-    )
+  if (tier === 'team') {
+    const membership = await db
+      .collection('teamMembers')
+      .findOne({ teamId, userId, status: 'active' })
+
+    if (!membership) {
+      throw Boom.notFound()
+    }
+
+    const deployment = await findActiveDeployment(db, {
+      teamId,
+      modelSlug,
+      environment
+    })
+
+    if (!deployment) {
+      throw boomWithCode(
+        Boom.conflict,
+        'The team deployment for this model is not ready yet',
+        'deployment-not-ready'
+      )
+    }
+
+    const activeTeamCredential = await db
+      .collection('credentials')
+      .findOne({ teamId, modelSlug, status: 'active' })
+
+    if (activeTeamCredential) {
+      return { credential: activeTeamCredential, secret: undefined, replay: true }
+    }
+
+    resolvedTeamId = teamId
+  } else {
+    const activeCredential = await db
+      .collection('credentials')
+      .findOne({ userId, modelSlug, status: 'active' })
+
+    if (activeCredential) {
+      throw boomWithCode(
+        Boom.conflict,
+        'An active credential already exists for this model',
+        'active-credential-exists'
+      )
+    }
+
+    resolvedTeamId = await findTeamIdForUser(db, userId)
   }
 
   const now = new Date().toISOString()
-  const teamId = await findTeamIdForUser(db, userId)
   const pending = {
     userId,
-    teamId,
+    teamId: resolvedTeamId,
     modelSlug,
-    tier: 'research',
+    tier,
+    environment: environment || null,
     purpose: purpose || null,
     type: 'apim-subscription',
     status: 'pending',
@@ -185,12 +238,25 @@ function withRenewalsRemaining(credential) {
 }
 
 /**
- * Lists a user's own credentials (never includes secrets), applying lazy expiry.
+ * Lists a user's own credentials plus any shared team credentials for teams
+ * they're an active member of (never includes secrets), applying lazy expiry.
  * @param {import('mongodb').Db} db
  * @param {{userId: string}} params
  */
 export async function listCredentials(db, { userId }) {
-  const items = await db.collection('credentials').find({ userId }).toArray()
+  const memberships = await db
+    .collection('teamMembers')
+    .find({ userId, status: 'active' })
+    .toArray()
+
+  const teamIds = memberships.map((membership) => membership.teamId)
+
+  const query =
+    teamIds.length > 0
+      ? { $or: [{ userId }, { teamId: { $in: teamIds } }] }
+      : { userId }
+
+  const items = await db.collection('credentials').find(query).toArray()
   const expired = await Promise.all(
     items.map((item) => applyLazyExpiry(db, item))
   )
@@ -212,6 +278,41 @@ export async function findCredentialForUser(db, { id, userId }) {
   const credential = await db
     .collection('credentials')
     .findOne({ _id: new ObjectId(id), userId })
+
+  if (!credential) {
+    return null
+  }
+
+  return withRenewalsRemaining(await applyLazyExpiry(db, credential))
+}
+
+/**
+ * Finds a credential for read-only viewing - a user's own credential, OR a
+ * shared team credential for a team they're an active member of (mirrors
+ * `listCredentials`' access rule). Used only by the GET-by-id route; renew
+ * and revoke keep the stricter owner-only `findCredentialForUser` above,
+ * since team-credential rotate/revoke role enforcement is Route 3's plan.
+ * @param {import('mongodb').Db} db
+ * @param {{id: string, userId: string}} params
+ */
+export async function findCredentialForViewing(db, { id, userId }) {
+  if (!ObjectId.isValid(id)) {
+    return null
+  }
+
+  const memberships = await db
+    .collection('teamMembers')
+    .find({ userId, status: 'active' })
+    .toArray()
+
+  const teamIds = memberships.map((membership) => membership.teamId)
+
+  const query =
+    teamIds.length > 0
+      ? { _id: new ObjectId(id), $or: [{ userId }, { teamId: { $in: teamIds } }] }
+      : { _id: new ObjectId(id), userId }
+
+  const credential = await db.collection('credentials').findOne(query)
 
   if (!credential) {
     return null

@@ -54,6 +54,13 @@ async function createIndexes(db) {
     .collection('teams')
     .createIndex({ normalisedName: 1 }, { unique: true })
   await db
+    .collection('teamMembers')
+    .createIndex({ teamId: 1, userId: 1 })
+  await db.collection('teamMembers').createIndex({ email: 1 })
+  await db
+    .collection('teamDeployments')
+    .createIndex({ teamId: 1, modelSlug: 1, environment: 1 }, { unique: true })
+  await db
     .collection('credentials')
     .createIndex({ userId: 1, idempotencyKey: 1 }, { unique: true })
   await db.collection('credentials').createIndex({ userId: 1, status: 1 })
