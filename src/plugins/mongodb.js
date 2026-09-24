@@ -53,6 +53,38 @@ async function createIndexes(db) {
   await db
     .collection('teams')
     .createIndex({ normalisedName: 1 }, { unique: true })
+  // Makes the Idempotency-Key replay on POST /v1/teams atomic rather than
+  // check-then-insert, so concurrent retries cannot create two teams.
+  await db
+    .collection('teams')
+    .createIndex({ createdBy: 1, idempotencyKey: 1 }, { unique: true })
+  await db.collection('teamMembers').createIndex({ teamId: 1, userId: 1 })
+  await db.collection('teamMembers').createIndex({ email: 1 })
+  // Partial: the team creator's own admin membership carries a null email and
+  // no idempotencyKey, so only invited members participate in these indexes.
+  await db
+    .collection('teamMembers')
+    .createIndex(
+      { teamId: 1, email: 1 },
+      { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
+    )
+  await db.collection('teamMembers').createIndex(
+    { teamId: 1, idempotencyKey: 1 },
+    {
+      unique: true,
+      partialFilterExpression: { idempotencyKey: { $type: 'string' } }
+    }
+  )
+  await db
+    .collection('teamDeployments')
+    .createIndex({ teamId: 1, modelSlug: 1, environment: 1 }, { unique: true })
+  await db.collection('teamDeployments').createIndex(
+    { teamId: 1, idempotencyKey: 1 },
+    {
+      unique: true,
+      partialFilterExpression: { idempotencyKey: { $type: 'string' } }
+    }
+  )
   await db
     .collection('credentials')
     .createIndex({ userId: 1, idempotencyKey: 1 }, { unique: true })

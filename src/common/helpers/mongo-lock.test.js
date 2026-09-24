@@ -1,4 +1,4 @@
-import { acquireLock, requireLock } from './mongo-lock.js'
+import { acquireLock, requireLock, acquireLockWithRetry } from './mongo-lock.js'
 
 describe('Lock Functions', () => {
   let locker
@@ -64,6 +64,45 @@ describe('Lock Functions', () => {
         `Failed to acquire lock for ${resource}`
       )
       expect(locker.lock).toHaveBeenCalledWith(resource)
+    })
+  })
+
+  describe('acquireLockWithRetry', () => {
+    test('returns the lock on the first attempt when it is free', async () => {
+      const mockLock = { id: 'lockId' }
+
+      locker.lock.mockResolvedValue(mockLock)
+
+      await expect(acquireLockWithRetry(locker, 'testResource')).resolves.toBe(
+        mockLock
+      )
+      expect(locker.lock).toHaveBeenCalledTimes(1)
+    })
+
+    test('retries while the lock is held, then returns it', async () => {
+      const mockLock = { id: 'lockId' }
+
+      locker.lock
+        .mockResolvedValueOnce(null)
+        .mockResolvedValueOnce(null)
+        .mockResolvedValue(mockLock)
+
+      await expect(
+        acquireLockWithRetry(locker, 'testResource', { delayMs: 1 })
+      ).resolves.toBe(mockLock)
+      expect(locker.lock).toHaveBeenCalledTimes(3)
+    })
+
+    test('throws once the attempts are exhausted', async () => {
+      locker.lock.mockResolvedValue(null)
+
+      await expect(
+        acquireLockWithRetry(locker, 'testResource', {
+          attempts: 3,
+          delayMs: 1
+        })
+      ).rejects.toThrow('Failed to acquire lock for testResource')
+      expect(locker.lock).toHaveBeenCalledTimes(3)
     })
   })
 })

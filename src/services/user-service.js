@@ -16,8 +16,8 @@ function isAllowedEmailDomain(email) {
 }
 
 /**
- * Upserts the user for the Entra ID sign-in journey (B03). Team membership
- * is assigned separately once a team exists (see Route 2's team-creation plan).
+ * Upserts the user for the Entra ID sign-in journey (B03), binding any
+ * team invitations for this email to the signed-in user (B08).
  * @param {import('mongodb').Db} db
  * @param {{email: string, displayName: string}} params
  */
@@ -50,6 +50,13 @@ export async function upsertUser(db, { email, displayName }) {
     },
     { upsert: true, returnDocument: 'after' }
   )
+
+  await db
+    .collection('teamMembers')
+    .updateMany(
+      { email: lowerEmail, status: 'invited' },
+      { $set: { userId: user._id.toString(), status: 'active' } }
+    )
 
   await recordAuditEvent(db, {
     actorUserId: user._id.toString(),

@@ -14,7 +14,7 @@ const FORCED_FAILURE_USER_PREFIX = 'test-fail-'
  * @type {import('./credential-issuer.js').CredentialIssuer}
  */
 export const mockCredentialIssuer = {
-  async issue({ userId, modelSlug }) {
+  async issue({ userId, modelSlug, tier = 'research', teamId, environment }) {
     if (userId.startsWith(FORCED_FAILURE_USER_PREFIX)) {
       throw new Error('Mock issuer forced failure')
     }
@@ -25,8 +25,15 @@ export const mockCredentialIssuer = {
       Date.now() + ttlDays * 24 * 60 * 60 * 1000
     ).toISOString()
 
+    // A team subscription belongs to the team's deployment, not to the member
+    // who happened to request it, so it must not be keyed by userId.
+    const apimSubscriptionId =
+      tier === 'team'
+        ? `team-${teamId}-${modelSlug}-${environment}`
+        : `research-${userId}-${modelSlug}`
+
     return {
-      apimSubscriptionId: `research-${userId}-${modelSlug}`,
+      apimSubscriptionId,
       secret,
       keyHint: secret.slice(-4),
       expiresAt

@@ -147,6 +147,14 @@ export const config = convict({
       env: 'RESEARCH_RENEWAL_CAP'
     }
   },
+  teamDeployment: {
+    mockStageDurationMs: {
+      doc: 'Duration in ms of each mocked GitOps stage for team deployment provisioning',
+      format: 'nat',
+      default: 3000,
+      env: 'TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS'
+    }
+  },
   audit: {
     retentionDays: {
       doc: 'Days to retain auditEvents before they expire (D08 working default)',
