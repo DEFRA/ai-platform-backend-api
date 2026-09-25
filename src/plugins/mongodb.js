@@ -20,9 +20,13 @@ export const mongoDb = {
       const db = client.db(databaseName)
       const locker = new LockManager(db.collection('mongo-locks'))
 
+      // Backfills run before indexes are (re)created: several legacy
+      // documents (pre-refactor `teamDeployments`/`credentials` rows) would
+      // otherwise violate the new unique indexes created below, and the
+      // backfill itself drops the legacy indexes those old rows relied on.
+      await runBackfills(db, server.logger)
       await createIndexes(db)
       await seedModels(db, server.logger)
-      await runBackfills(db, server.logger)
 
       server.logger.info(`MongoDb connected to ${databaseName}`)
 
@@ -62,6 +66,18 @@ async function ensureIndex(collection, keys, options) {
 
     await collection.dropIndex(name)
     await collection.createIndex(keys, options)
+  }
+}
+
+// 27/26 = IndexNotFound/NamespaceNotFound: nothing to drop (a fresh
+// database, or an index already removed by a prior run) - not an error.
+async function dropIndexIfExists(collection, name) {
+  try {
+    await collection.dropIndex(name)
+  } catch (error) {
+    if (error.code !== 27 && error.code !== 26) {
+      throw error
+    }
   }
 }
 
@@ -107,6 +123,17 @@ async function createIndexes(db) {
   await db
     .collection('teamDeployments')
     .createIndex({ teamId: 1, environment: 1 }, { unique: true })
+  // Superseded by the index above once `deployments[]` consolidated every
+  // legacy one-row-per-model document (see the backfill registry) - the
+  // migration itself runs before this, so these are always safe to drop.
+  await dropIndexIfExists(
+    db.collection('teamDeployments'),
+    'teamId_1_modelSlug_1_environment_1'
+  )
+  await dropIndexIfExists(
+    db.collection('teamDeployments'),
+    'teamId_1_idempotencyKey_1'
+  )
   // Partial: excludes legacy/null idempotencyKey docs from the uniqueness check.
   await ensureIndex(
     db.collection('credentials'),
