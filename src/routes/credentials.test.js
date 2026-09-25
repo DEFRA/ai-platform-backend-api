@@ -337,6 +337,34 @@ describe('#credentials routes', () => {
     expect(result.code).toBe('renewal-cap-reached')
   })
 
+  test('POST /v1/credentials/{id}/renew rejects a team tier credential as non-renewable', async () => {
+    const teamId = await createTeamWithActiveDeployment('team-cred-renew-1')
+
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'team-cred-renew-1',
+        'idempotency-key': randomUUID()
+      },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'sandbox'
+      }
+    })
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/credentials/${issued.result.credential._id}/renew`,
+      headers: { 'x-user-id': 'team-cred-renew-1' }
+    })
+
+    expect(statusCode).toBe(400)
+    expect(result.code).toBe('team-credential-no-renewal')
+  })
+
   test('DELETE /v1/credentials/{id} revokes the credential', async () => {
     const headers = { 'x-user-id': 'user-10', 'idempotency-key': randomUUID() }
     const issued = await server.inject({
@@ -588,6 +616,66 @@ describe('#credentials routes', () => {
 
     expect(statusCode).toBe(409)
     expect(result.code).toBe('credential-type-fixed')
+  })
+
+  test('POST /v1/credentials releases the credentialType reservation when the issuer fails, so a retry is not locked to a type that was never issued', async () => {
+    const teamId = await createTeamWithActiveDeployment('test-fail-rollback-1')
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/members`,
+      headers: {
+        'x-user-id': 'test-fail-rollback-1',
+        'idempotency-key': randomUUID()
+      },
+      payload: { email: 'rollback-teammate@defra.gov.uk' }
+    })
+    const signIn = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        email: 'rollback-teammate@defra.gov.uk',
+        displayName: 'Rollback Teammate'
+      }
+    })
+    const teammateId = signIn.result.user._id.toString()
+
+    const failed = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'test-fail-rollback-1',
+        'idempotency-key': randomUUID()
+      },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'sandbox',
+        credentialType: 'oauth'
+      }
+    })
+
+    expect(failed.statusCode).toBe(502)
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': teammateId,
+        'idempotency-key': randomUUID()
+      },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'sandbox',
+        credentialType: 'subscription-key'
+      }
+    })
+
+    expect(statusCode).toBe(201)
+    expect(result.credential.credentialType).toBe('subscription-key')
   })
 
   test('POST /v1/credentials returns 409 deployment-not-ready before the deployment is active', async () => {

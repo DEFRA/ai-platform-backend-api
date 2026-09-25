@@ -11,7 +11,8 @@ import {
 } from '#/common/helpers/mongo-lock.js'
 import {
   findActiveDeployment,
-  reserveCredentialType
+  reserveCredentialType,
+  releaseCredentialTypeReservation
 } from '#/services/team-deployment-service.js'
 import { getMemberRole } from '#/services/team-service.js'
 
@@ -116,6 +117,7 @@ async function issueCredentialForParams(
 
   let resolvedTeamId = null
   let resolvedCredentialType = null
+  let credentialTypeReservation = null
 
   if (tier === 'team') {
     const membership = await db
@@ -142,11 +144,12 @@ async function issueCredentialForParams(
 
     // Design C: one credential type per team per environment, fixed on
     // first use - throws 409 credential-type-fixed on a later mismatch.
-    resolvedCredentialType = await reserveCredentialType(db, {
+    credentialTypeReservation = await reserveCredentialType(db, {
       teamId,
       environment,
       credentialType
     })
+    resolvedCredentialType = credentialTypeReservation.credentialType
 
     const activeTeamCredential = await db
       .collection('credentials')
@@ -240,6 +243,19 @@ async function issueCredentialForParams(
       outcome: 'failure',
       code: 'upstream-unavailable'
     })
+
+    // Don't leave the team permanently locked into a credential type that
+    // was never actually issued - only undo the reservation if this call
+    // was the one that made it (a concurrent caller may have since made a
+    // real reservation of their own).
+    if (tier === 'team' && credentialTypeReservation?.wasNewlyReserved) {
+      await releaseCredentialTypeReservation(db, {
+        teamId,
+        environment,
+        credentialType: resolvedCredentialType
+      })
+    }
+
     throw boomWithCode(
       Boom.badGateway,
       'Failed to issue credential',
@@ -252,7 +268,10 @@ async function issueCredentialForParams(
     apimSubscriptionId: issued.apimSubscriptionId,
     keyHint: issued.keyHint,
     activatedAt: now,
-    expiresAt: issued.expiresAt
+    // Team credentials are shared indefinitely across the team and never
+    // renewed (see `renewCredential`'s tier guard) - only research-tier
+    // personal credentials expire.
+    expiresAt: tier === 'team' ? null : issued.expiresAt
   }
 
   await db
@@ -432,7 +451,7 @@ async function loadCredentialForAction(db, { id, userId }) {
     return null
   }
 
-  if (!credential.teamId) {
+  if (credential.tier !== 'team') {
     return credential.userId === userId ? credential : null
   }
 
@@ -449,7 +468,7 @@ async function loadCredentialForAction(db, { id, userId }) {
  * @param {object} credential
  */
 function requireAdminForTeamCredential(credential) {
-  if (credential.teamId && credential.actorRole !== 'admin') {
+  if (credential.tier === 'team' && credential.actorRole !== 'admin') {
     throw boomWithCode(
       Boom.forbidden,
       'Only a team admin can do this',
@@ -478,6 +497,14 @@ export async function renewCredential(
 
     if (!credential) {
       throw Boom.notFound()
+    }
+
+    if (credential.tier === 'team') {
+      throw boomWithCode(
+        Boom.badRequest,
+        'Team credentials do not expire and cannot be renewed',
+        'team-credential-no-renewal'
+      )
     }
 
     if (credential.status === 'revoked') {

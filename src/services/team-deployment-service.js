@@ -386,6 +386,7 @@ export async function findActiveDeployment(
  * environment", chosen once and changed only by a team-file edit.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, environment: string, credentialType: 'oauth'|'subscription-key'}} params
+ * @returns {Promise<{credentialType: 'oauth'|'subscription-key', wasNewlyReserved: boolean}>}
  */
 export async function reserveCredentialType(
   db,
@@ -406,7 +407,7 @@ export async function reserveCredentialType(
   )
 
   if (reserved) {
-    return credentialType
+    return { credentialType, wasNewlyReserved: true }
   }
 
   const doc = await db
@@ -422,5 +423,31 @@ export async function reserveCredentialType(
     )
   }
 
-  return existingType ?? credentialType
+  return { credentialType: existingType ?? credentialType, wasNewlyReserved: false }
 }
+
+/**
+ * Undoes a reservation made by `reserveCredentialType` when the credential
+ * issue that relied on it subsequently fails, so a retry (or another team
+ * member) isn't permanently locked into a credential type that was never
+ * actually issued. Only resets the gateway if it's still set to the type
+ * being released, so it can't clobber a genuine concurrent reservation.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, environment: string, credentialType: 'oauth'|'subscription-key'}} params
+ */
+export async function releaseCredentialTypeReservation(
+  db,
+  { teamId, environment, credentialType }
+) {
+  await db.collection('teamDeployments').updateOne(
+    { teamId, environment, 'gateway.credentialType': credentialType },
+    {
+      $set: {
+        'gateway.credentialType': null,
+        'oauthClient.enabled': false,
+        updatedAt: new Date().toISOString()
+      }
+    }
+  )
+}
+
