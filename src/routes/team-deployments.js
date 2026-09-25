@@ -32,7 +32,7 @@ export const teamDeployments = [
             .pattern(/^[a-z0-9-]+$/)
             .required(),
           environment: Joi.string()
-            .valid('dev', 'qa', 'preprod', 'prod', 'uat')
+            .valid('infradev', 'sandbox')
             .required()
         }).unknown(false)
       }
@@ -43,13 +43,17 @@ export const teamDeployments = [
       const { teamId } = request.params
       const { modelSlug, environment } = request.payload
 
-      const deployment = await requestDeployment(request.db, {
-        teamId,
-        modelSlug,
-        environment,
-        requestedBy,
-        idempotencyKey
-      })
+      const deployment = await requestDeployment(
+        request.db,
+        request.locker,
+        {
+          teamId,
+          modelSlug,
+          environment,
+          requestedBy,
+          idempotencyKey
+        }
+      )
 
       return h
         .response({ deployment })

@@ -9,7 +9,11 @@ import {
   requireLock,
   acquireLockWithRetry
 } from '#/common/helpers/mongo-lock.js'
-import { findActiveDeployment } from '#/services/team-deployment-service.js'
+import {
+  findActiveDeployment,
+  reserveCredentialType
+} from '#/services/team-deployment-service.js'
+import { getMemberRole } from '#/services/team-service.js'
 
 /**
  * Best-effort lookup of a user's team, tolerant of the day-1 interim trust
@@ -36,9 +40,11 @@ async function findTeamIdForUser(db, userId) {
  * an explicit `teamId` (never derived from `users.teamId`, which is a
  * single-team field incompatible with the many-to-many `teamMembers`
  * model) and only proceeds once that team's model deployment is `active`;
- * since the credential is shared across the whole team (one doc per
- * team+model, not per member), a team already holding an active credential
- * for this model gets that same credential back rather than a fresh one.
+ * the credential is shared across the whole team per environment (one doc
+ * per team+environment, covering every model in `allowedDeployments`, not
+ * per member and not per model) - a team already holding an active
+ * credential for this environment gets that same credential back, extended
+ * to cover the new model, rather than a fresh one.
  *
  * Note: the secret is never persisted, so a replayed idempotent request
  * returns the credential without a secret — this matches "the key is shown
@@ -46,7 +52,7 @@ async function findTeamIdForUser(db, userId) {
  * itself on retry.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string}} params
+ * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string, credentialType?: 'oauth'|'subscription-key'}} params
  * @param {import('#/adapters/credential-issuer.js').CredentialIssuer} [issuer]
  */
 export async function issueCredential(
@@ -55,18 +61,18 @@ export async function issueCredential(
   params,
   issuer = mockCredentialIssuer
 ) {
-  const { tier = 'research', teamId, modelSlug, environment } = params
+  const { tier = 'research', teamId, environment } = params
 
   if (tier !== 'team') {
     return issueCredentialForParams(db, params, issuer)
   }
 
-  // A team shares one credential per model+environment, so the
+  // A team shares one credential per environment, so the
   // check-for-active-then-insert below must not interleave with another
   // member's request or both would create an active credential.
   const lock = await acquireLockWithRetry(
     locker,
-    `team-credential:${teamId}:${modelSlug}:${environment}`
+    `team-credential:${teamId}:${environment}`
   )
 
   try {
@@ -85,7 +91,8 @@ async function issueCredentialForParams(
     idempotencyKey,
     tier = 'research',
     teamId,
-    environment
+    environment,
+    credentialType = 'subscription-key'
   },
   issuer = mockCredentialIssuer
 ) {
@@ -108,6 +115,7 @@ async function issueCredentialForParams(
   }
 
   let resolvedTeamId = null
+  let resolvedCredentialType = null
 
   if (tier === 'team') {
     const membership = await db
@@ -132,13 +140,38 @@ async function issueCredentialForParams(
       )
     }
 
+    // Design C: one credential type per team per environment, fixed on
+    // first use - throws 409 credential-type-fixed on a later mismatch.
+    resolvedCredentialType = await reserveCredentialType(db, {
+      teamId,
+      environment,
+      credentialType
+    })
+
     const activeTeamCredential = await db
       .collection('credentials')
-      .findOne({ teamId, modelSlug, tier: 'team', status: 'active' })
+      .findOne({ teamId, environment, tier: 'team', status: 'active' })
 
     if (activeTeamCredential) {
+      const allowedDeployments = new Set(
+        activeTeamCredential.allowedDeployments ?? []
+      )
+
+      if (!allowedDeployments.has(modelSlug)) {
+        allowedDeployments.add(modelSlug)
+        await db
+          .collection('credentials')
+          .updateOne(
+            { _id: activeTeamCredential._id },
+            { $addToSet: { allowedDeployments: modelSlug } }
+          )
+      }
+
       return {
-        credential: activeTeamCredential,
+        credential: {
+          ...activeTeamCredential,
+          allowedDeployments: [...allowedDeployments]
+        },
         secret: undefined,
         replay: true
       }
@@ -165,7 +198,11 @@ async function issueCredentialForParams(
   const pending = {
     userId,
     teamId: resolvedTeamId,
-    modelSlug,
+    modelSlug: tier === 'team' ? null : modelSlug,
+    ...(tier === 'team' && {
+      allowedDeployments: [modelSlug],
+      credentialType: resolvedCredentialType
+    }),
     tier,
     environment: environment || null,
     purpose: purpose || null,
@@ -185,7 +222,8 @@ async function issueCredentialForParams(
       modelSlug,
       tier,
       teamId: resolvedTeamId,
-      environment: environment || null
+      environment: environment || null,
+      credentialType: resolvedCredentialType ?? undefined
     })
   } catch {
     await db
@@ -334,8 +372,11 @@ export async function findCredentialForUser(db, { id, userId }) {
  * Finds a credential for read-only viewing - a user's own credential, OR a
  * shared team credential for a team they're an active member of (mirrors
  * `listCredentials`' access rule). Used only by the GET-by-id route; renew
- * and revoke keep the stricter owner-only `findCredentialForUser` above,
- * since team-credential rotate/revoke role enforcement is Route 3's plan.
+ * stays owner-only via `findCredentialForUser` above (team credentials
+ * don't renew as a concept - they don't expire on the research TTL/cap).
+ * Rotate/revoke use the role-aware `loadCredentialForAction` below instead,
+ * since any admin member (not just the original requester) may act on a
+ * shared team credential.
  * @param {import('mongodb').Db} db
  * @param {{id: string, userId: string}} params
  */
@@ -366,6 +407,55 @@ export async function findCredentialForViewing(db, { id, userId }) {
   }
 
   return withRenewalsRemaining(await applyLazyExpiry(db, credential))
+}
+
+/**
+ * Loads a credential for an admin-gated action (rotate/revoke) - the
+ * requester need not be the original requester, only an active member of
+ * the credential's team (research credentials, `teamId: null`, stay
+ * owner-only). Returns null (not 403) for a non-member/non-owner so
+ * existence isn't disclosed; the caller's role is attached as `actorRole`
+ * for `requireAdminForTeamCredential` to check.
+ * @param {import('mongodb').Db} db
+ * @param {{id: string, userId: string}} params
+ */
+async function loadCredentialForAction(db, { id, userId }) {
+  if (!ObjectId.isValid(id)) {
+    return null
+  }
+
+  const credential = await db
+    .collection('credentials')
+    .findOne({ _id: new ObjectId(id) })
+
+  if (!credential) {
+    return null
+  }
+
+  if (!credential.teamId) {
+    return credential.userId === userId ? credential : null
+  }
+
+  const role = await getMemberRole(db, { teamId: credential.teamId, userId })
+
+  return role ? { ...credential, actorRole: role } : null
+}
+
+/**
+ * Only a team admin may rotate or revoke a shared team credential; a
+ * `user`-role member may still view it. Research credentials (`teamId:
+ * null`) are unaffected - they stay self-service, checked by
+ * `loadCredentialForAction` returning null for anyone but the owner.
+ * @param {object} credential
+ */
+function requireAdminForTeamCredential(credential) {
+  if (credential.teamId && credential.actorRole !== 'admin') {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Only a team admin can do this',
+      'admin-required'
+    )
+  }
 }
 
 /**
@@ -439,7 +529,72 @@ export async function renewCredential(
 }
 
 /**
- * Revokes a credential, deleting its APIM subscription.
+ * Rotates a credential's secret in place, keeping its existing
+ * `expiresAt`/policy - distinct from `renewCredential`, which extends
+ * expiry. Team credentials require the requester to be an admin member
+ * (`admin-required`); research credentials stay self-service. No
+ * overlap/grace window in this slice - the old secret is invalidated
+ * immediately.
+ * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
+ * @param {{id: string, userId: string}} params
+ * @param {import('#/adapters/credential-issuer.js').CredentialIssuer} [issuer]
+ */
+export async function rotateCredential(
+  db,
+  locker,
+  { id, userId },
+  issuer = mockCredentialIssuer
+) {
+  const lock = await requireLock(locker, `credential:${id}`)
+
+  try {
+    const credential = await loadCredentialForAction(db, { id, userId })
+
+    if (!credential) {
+      throw Boom.notFound()
+    }
+
+    requireAdminForTeamCredential(credential)
+
+    if (credential.status === 'revoked') {
+      throw boomWithCode(
+        Boom.conflict,
+        'Credential has been revoked',
+        'credential-revoked'
+      )
+    }
+
+    const rotated = await issuer.rotate({
+      apimSubscriptionId: credential.apimSubscriptionId,
+      credentialType: credential.credentialType
+    })
+
+    const now = new Date().toISOString()
+    const updated = await db.collection('credentials').findOneAndUpdate(
+      { _id: credential._id },
+      { $set: { keyHint: rotated.keyHint, rotatedAt: now } },
+      { returnDocument: 'after' }
+    )
+
+    await recordAuditEvent(db, {
+      actorUserId: userId,
+      action: 'credential.rotate',
+      resource: 'credential',
+      resourceId: id,
+      outcome: 'success'
+    })
+
+    return { credential: withRenewalsRemaining(updated), secret: rotated.secret }
+  } finally {
+    await lock.free()
+  }
+}
+
+/**
+ * Revokes a credential, deleting its APIM subscription. A team credential
+ * may be revoked by any admin member of that team, not only whoever
+ * originally requested it.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{id: string, userId: string}} params
@@ -454,11 +609,13 @@ export async function revokeCredential(
   const lock = await requireLock(locker, `credential:${id}`)
 
   try {
-    const credential = await findCredentialForUser(db, { id, userId })
+    const credential = await loadCredentialForAction(db, { id, userId })
 
     if (!credential) {
       throw Boom.notFound()
     }
+
+    requireAdminForTeamCredential(credential)
 
     if (credential.status === 'revoked') {
       return credential

@@ -3,6 +3,7 @@ import { LockManager } from 'mongo-locks'
 
 import { config } from '#/config.js'
 import { seedModels } from '#/common/seed/seed-models.js'
+import { runBackfills } from '#/common/backfills/run-backfills.js'
 
 export const mongoDb = {
   plugin: {
@@ -21,6 +22,7 @@ export const mongoDb = {
 
       await createIndexes(db)
       await seedModels(db, server.logger)
+      await runBackfills(db, server.logger)
 
       server.logger.info(`MongoDb connected to ${databaseName}`)
 
@@ -104,15 +106,7 @@ async function createIndexes(db) {
   )
   await db
     .collection('teamDeployments')
-    .createIndex({ teamId: 1, modelSlug: 1, environment: 1 }, { unique: true })
-  await ensureIndex(
-    db.collection('teamDeployments'),
-    { teamId: 1, idempotencyKey: 1 },
-    {
-      unique: true,
-      partialFilterExpression: { idempotencyKey: { $type: 'string' } }
-    }
-  )
+    .createIndex({ teamId: 1, environment: 1 }, { unique: true })
   // Partial: excludes legacy/null idempotencyKey docs from the uniqueness check.
   await ensureIndex(
     db.collection('credentials'),

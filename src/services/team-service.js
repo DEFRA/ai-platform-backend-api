@@ -96,7 +96,9 @@ export async function createTeam(
 }
 
 /**
- * Lists the teams a user is an active member of.
+ * Lists the teams a user is an active member of, each with the caller's own
+ * `role` in that team - lets `/manage` role-gate rotate/revoke without a
+ * second call per team.
  * @param {import('mongodb').Db} db
  * @param {string} userId
  */
@@ -110,14 +112,37 @@ export async function listTeamsForUser(db, userId) {
     return []
   }
 
+  const roleByTeamId = new Map(
+    memberships.map((membership) => [membership.teamId, membership.role])
+  )
   const teamIds = memberships.map(
     (membership) => new ObjectId(membership.teamId)
   )
 
-  return db
+  const teams = await db
     .collection('teams')
     .find({ _id: { $in: teamIds } })
     .toArray()
+
+  return teams.map((team) => ({
+    ...team,
+    role: roleByTeamId.get(team._id.toString()) ?? null
+  }))
+}
+
+/**
+ * Returns the caller's role (`'admin'|'user'`) in a team, or null if they
+ * are not an active member - used to gate rotate/revoke on a shared team
+ * credential to admins only.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, userId: string}} params
+ */
+export async function getMemberRole(db, { teamId, userId }) {
+  const membership = await db
+    .collection('teamMembers')
+    .findOne({ teamId, userId, status: 'active' })
+
+  return membership?.role ?? null
 }
 
 /**

@@ -46,7 +46,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-1'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     expect(statusCode).toBe(201)
@@ -57,14 +57,16 @@ describe('#team-deployments routes', () => {
     expect(result.deployment.operationId).toBeTruthy()
   })
 
-  test('POST /v1/teams/{teamId}/deployments rejects a non-dev environment', async () => {
+  test('POST /v1/teams/{teamId}/deployments rejects a non-sandbox environment', async () => {
     const teamId = await createTeam('deploy-user-2')
 
+    // 'infradev' is a schema-valid design C environment (platform-internal,
+    // not team-facing) - only 'sandbox' is policy-allowed for teams in Phase 1.
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-2'),
-      payload: { modelSlug: 'gpt-4o', environment: 'qa' }
+      payload: { modelSlug: 'gpt-4o', environment: 'infradev' }
     })
 
     expect(statusCode).toBe(403)
@@ -78,7 +80,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-3'),
-      payload: { modelSlug: 'gpt-4o-mini', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o-mini', environment: 'sandbox' }
     })
 
     expect(statusCode).toBe(403)
@@ -92,7 +94,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('someone-else'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     expect(statusCode).toBe(404)
@@ -105,19 +107,54 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-5'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-5'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     expect(statusCode).toBe(409)
     expect(result.code).toBe('deployment-exists')
     expect(result.existingId).toBe(first.result.deployment._id.toString())
+  })
+
+  test('POST /v1/teams/{teamId}/deployments extends the same team+environment document with a second model', async () => {
+    const teamId = await createTeam('deploy-user-16')
+
+    const first = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('deploy-user-16'),
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+    })
+
+    const second = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('deploy-user-16'),
+      payload: { modelSlug: 'gpt-4-1', environment: 'sandbox' }
+    })
+
+    expect(second.statusCode).toBe(201)
+    expect(second.result.deployment._id).not.toBe(
+      first.result.deployment._id.toString()
+    )
+
+    const { result } = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: { 'x-user-id': 'deploy-user-16' }
+    })
+
+    expect(result.items.map((item) => item.modelSlug).sort()).toEqual([
+      'gpt-4-1',
+      'gpt-4o'
+    ])
+    expect(new Set(result.items.map((item) => item.teamId)).size).toBe(1)
   })
 
   test('POST /v1/teams/{teamId}/deployments replays the original deployment for a repeated idempotency key', async () => {
@@ -128,14 +165,14 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers,
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers,
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     expect(statusCode).toBe(201)
@@ -151,7 +188,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: { 'x-user-id': 'deploy-user-14' },
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     expect(statusCode).toBe(400)
@@ -164,7 +201,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-6'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
@@ -189,7 +226,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-7'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     const { statusCode } = await server.inject({
@@ -208,7 +245,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('test-checks-fail-8'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     await wait(100)
@@ -230,7 +267,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('test-deploy-fail-9'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     await wait(300)
@@ -252,7 +289,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-10'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     const { result, statusCode } = await server.inject({
@@ -276,7 +313,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-11'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     const { statusCode } = await server.inject({
@@ -295,7 +332,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-12'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     await wait(300)
@@ -316,7 +353,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-15'),
-      payload: { modelSlug: 'gpt-4o', environment: 'dev' }
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`

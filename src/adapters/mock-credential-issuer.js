@@ -14,26 +14,43 @@ const FORCED_FAILURE_USER_PREFIX = 'test-fail-'
  * @type {import('./credential-issuer.js').CredentialIssuer}
  */
 export const mockCredentialIssuer = {
-  async issue({ userId, modelSlug, tier = 'research', teamId, environment }) {
+  async issue({
+    userId,
+    modelSlug,
+    tier = 'research',
+    teamId,
+    environment,
+    credentialType = 'subscription-key'
+  }) {
     if (userId.startsWith(FORCED_FAILURE_USER_PREFIX)) {
       throw new Error('Mock issuer forced failure')
     }
 
-    const secret = `mock_${randomUUID().replace(/-/g, '')}`
     const ttlDays = config.get('research.credentialTtlDays')
     const expiresAt = new Date(
       Date.now() + ttlDays * 24 * 60 * 60 * 1000
     ).toISOString()
 
-    // A team subscription belongs to the team's deployment, not to the member
-    // who happened to request it, so it must not be keyed by userId.
-    const apimSubscriptionId =
-      tier === 'team'
-        ? `team-${teamId}-${modelSlug}-${environment}`
-        : `research-${userId}-${modelSlug}`
+    if (tier === 'team') {
+      // Shared across the whole team+environment, not per model or per
+      // member - one credential covers every model in the team's allow-list.
+      const secret =
+        credentialType === 'oauth'
+          ? `mock-oauth-${randomUUID().replace(/-/g, '')}`
+          : `mock-key-${randomUUID().replace(/-/g, '')}`
+
+      return {
+        apimSubscriptionId: `team-${teamId}-${environment}`,
+        secret,
+        keyHint: secret.slice(-4),
+        expiresAt
+      }
+    }
+
+    const secret = `mock_${randomUUID().replace(/-/g, '')}`
 
     return {
-      apimSubscriptionId,
+      apimSubscriptionId: `research-${userId}-${modelSlug}`,
       secret,
       keyHint: secret.slice(-4),
       expiresAt
@@ -42,6 +59,17 @@ export const mockCredentialIssuer = {
 
   async renew({ apimSubscriptionId }) {
     return { apimSubscriptionId }
+  },
+
+  async rotate({ apimSubscriptionId, credentialType = 'subscription-key' }) {
+    const isTeamCredential = apimSubscriptionId.startsWith('team-')
+    const secret = !isTeamCredential
+      ? `mock_${randomUUID().replace(/-/g, '')}`
+      : credentialType === 'oauth'
+        ? `mock-oauth-${randomUUID().replace(/-/g, '')}`
+        : `mock-key-${randomUUID().replace(/-/g, '')}`
+
+    return { apimSubscriptionId, secret, keyHint: secret.slice(-4) }
   },
 
   async revoke({ apimSubscriptionId }) {
