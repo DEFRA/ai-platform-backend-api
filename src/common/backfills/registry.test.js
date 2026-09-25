@@ -108,9 +108,7 @@ describe('#backfillRegistry', () => {
         .findOne({ teamId, environment: 'sandbox' })
 
       expect(consolidated.deployments).toHaveLength(2)
-      expect(consolidated.gateway.allowedDeployments).toEqual([
-        'claude-3-opus'
-      ])
+      expect(consolidated.gateway.allowedDeployments).toEqual(['claude-3-opus'])
       expect(
         consolidated.deployments.map((entry) => entry.modelSlug).sort()
       ).toEqual(['claude-3-opus', 'gpt-4o'])

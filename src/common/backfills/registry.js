@@ -40,7 +40,8 @@ export const backfillRegistry = [
       const groups = new Map()
 
       for (const doc of legacyDocs) {
-        const environment = doc.environment === 'dev' ? 'sandbox' : doc.environment
+        const environment =
+          doc.environment === 'dev' ? 'sandbox' : doc.environment
         const key = `${doc.teamId}::${environment}`
 
         if (!groups.has(key)) {
@@ -143,7 +144,8 @@ export const backfillRegistry = [
       const groups = new Map()
 
       for (const doc of legacyDocs) {
-        const environment = doc.environment === 'dev' ? 'sandbox' : doc.environment
+        const environment =
+          doc.environment === 'dev' ? 'sandbox' : doc.environment
         const key = `${doc.teamId}::${environment}`
 
         if (!groups.has(key)) {

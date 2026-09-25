@@ -423,7 +423,10 @@ export async function reserveCredentialType(
     )
   }
 
-  return { credentialType: existingType ?? credentialType, wasNewlyReserved: false }
+  return {
+    credentialType: existingType ?? credentialType,
+    wasNewlyReserved: false
+  }
 }
 
 /**
@@ -450,4 +453,3 @@ export async function releaseCredentialTypeReservation(
     }
   )
 }
-

@@ -40,7 +40,9 @@ export function createSchemaMigrationsStore(db) {
     async completeClaim(id, result) {
       await collection.updateOne(
         { _id: id },
-        { $set: { appliedAt: new Date().toISOString(), result: result ?? null } }
+        {
+          $set: { appliedAt: new Date().toISOString(), result: result ?? null }
+        }
       )
     }
   }
@@ -126,4 +128,3 @@ export async function runBackfills(
     }
   }
 }
-
