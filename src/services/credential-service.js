@@ -571,11 +571,13 @@ export async function rotateCredential(
     })
 
     const now = new Date().toISOString()
-    const updated = await db.collection('credentials').findOneAndUpdate(
-      { _id: credential._id },
-      { $set: { keyHint: rotated.keyHint, rotatedAt: now } },
-      { returnDocument: 'after' }
-    )
+    const updated = await db
+      .collection('credentials')
+      .findOneAndUpdate(
+        { _id: credential._id },
+        { $set: { keyHint: rotated.keyHint, rotatedAt: now } },
+        { returnDocument: 'after' }
+      )
 
     await recordAuditEvent(db, {
       actorUserId: userId,
@@ -585,7 +587,10 @@ export async function rotateCredential(
       outcome: 'success'
     })
 
-    return { credential: withRenewalsRemaining(updated), secret: rotated.secret }
+    return {
+      credential: withRenewalsRemaining(updated),
+      secret: rotated.secret
+    }
   } finally {
     await lock.free()
   }

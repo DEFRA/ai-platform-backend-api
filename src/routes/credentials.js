@@ -36,13 +36,11 @@ export const credentials = [
             then: Joi.required(),
             otherwise: Joi.forbidden()
           }),
-          environment: Joi.string()
-            .valid('infradev', 'sandbox')
-            .when('tier', {
-              is: 'team',
-              then: Joi.required(),
-              otherwise: Joi.forbidden()
-            }),
+          environment: Joi.string().valid('infradev', 'sandbox').when('tier', {
+            is: 'team',
+            then: Joi.required(),
+            otherwise: Joi.forbidden()
+          }),
           credentialType: Joi.string()
             .valid('oauth', 'subscription-key')
             .when('tier', {

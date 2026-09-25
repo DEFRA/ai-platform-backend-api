@@ -17,6 +17,7 @@ for every document already in the database:
    on the next deploy; there is no separate migration step to run by hand.
 
 Add a backfill entry whenever you:
+
 - Add a field to a document shape in any `src/services/*.js` file that persists to Mongo.
 - Add a `$setOnInsert` field to an upsert — it only applies to brand new documents; anything already
   matched by the upsert keeps its old shape, `$setOnInsert` never touches it.

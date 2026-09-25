@@ -507,7 +507,12 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: '/v1/credentials',
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { modelSlug: 'gpt-4o', tier: 'team', teamId, environment: 'sandbox' }
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'sandbox'
+      }
     })
 
     await server.inject({
