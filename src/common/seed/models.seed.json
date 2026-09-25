@@ -11,7 +11,8 @@
     "region": "uksouth",
     "dataZone": "uk",
     "eligible": true,
-    "tiers": ["research"],
+    "tiers": ["research", "team"],
+    "environments": ["sandbox"],
     "description": "OpenAI's flagship model, optimised for complex reasoning and long-context tasks.",
     "useCases": [
       "Complex reasoning",
@@ -36,7 +37,7 @@
     "dataZone": "uk",
     "eligible": true,
     "tiers": ["research", "team"],
-    "environments": ["dev"],
+    "environments": ["sandbox"],
     "description": "Multimodal OpenAI model balancing speed, cost and capability across text and vision tasks.",
     "useCases": [
       "Chat assistants",

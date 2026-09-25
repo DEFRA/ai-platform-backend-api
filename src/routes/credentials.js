@@ -6,6 +6,7 @@ import {
   listCredentials,
   findCredentialForViewing,
   renewCredential,
+  rotateCredential,
   revokeCredential
 } from '#/services/credential-service.js'
 
@@ -35,11 +36,16 @@ export const credentials = [
             then: Joi.required(),
             otherwise: Joi.forbidden()
           }),
-          environment: Joi.string()
-            .valid('dev', 'qa', 'preprod', 'prod', 'uat')
+          environment: Joi.string().valid('infradev', 'sandbox').when('tier', {
+            is: 'team',
+            then: Joi.required(),
+            otherwise: Joi.forbidden()
+          }),
+          credentialType: Joi.string()
+            .valid('oauth', 'subscription-key')
             .when('tier', {
               is: 'team',
-              then: Joi.required(),
+              then: Joi.optional().default('subscription-key'),
               otherwise: Joi.forbidden()
             }),
           purpose: Joi.string().trim().max(500).allow('').optional()
@@ -49,7 +55,8 @@ export const credentials = [
     handler: async (request, h) => {
       const userId = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
-      const { modelSlug, tier, teamId, environment, purpose } = request.payload
+      const { modelSlug, tier, teamId, environment, credentialType, purpose } =
+        request.payload
 
       const { credential, secret, replay } = await issueCredential(
         request.db,
@@ -60,6 +67,7 @@ export const credentials = [
           tier,
           teamId,
           environment,
+          credentialType,
           purpose,
           idempotencyKey
         }
@@ -120,6 +128,25 @@ export const credentials = [
       })
 
       return h.response(credential)
+    }
+  },
+  {
+    method: 'POST',
+    path: '/v1/credentials/{id}/rotate',
+    options: {
+      validate: { headers: userIdHeader, params: idParam }
+    },
+    handler: async (request, h) => {
+      const { credential, secret } = await rotateCredential(
+        request.db,
+        request.locker,
+        {
+          id: request.params.id,
+          userId: request.headers['x-user-id']
+        }
+      )
+
+      return h.response({ credential, secret })
     }
   },
   {

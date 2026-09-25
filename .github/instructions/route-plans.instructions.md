@@ -17,7 +17,7 @@ list on a given route:
 
 - [ai-platform-frontend/docs/plans/route1-plan.md](../../../ai-platform-frontend/docs/plans/route1-plan.md) — research tier shared model access: `users`/`models`/`credentials` routes and services. Implemented.
 - [ai-platform-frontend/docs/plans/route2-plan.md](../../../ai-platform-frontend/docs/plans/route2-plan.md) — team tier, first person in a team: `teams`, `team-deployments`, the `TenantOrchestrator` port. Implemented.
-- [ai-platform-frontend/docs/plans/route3-plan.md](../../../ai-platform-frontend/docs/plans/route3-plan.md) — team tier, joining a team: role enforcement (`getMemberRole`), the `rotate` operation. Not yet implemented.
+- [ai-platform-frontend/docs/plans/route3-plan.md](../../../ai-platform-frontend/docs/plans/route3-plan.md) — team tier, joining a team: role enforcement (`getMemberRole`), the `rotate` operation. Implemented.
 - [ai-platform-frontend/docs/plans/route0-welcome-plan.md](../../../ai-platform-frontend/docs/plans/route0-welcome-plan.md) — frontend-only home page, no backend changes.
 
 Each plan's "STATUS" line at the top records whether it has been built. Cross-repo context:

@@ -172,6 +172,47 @@ describe('#teams routes', () => {
     expect(statusCode).toBe(200)
     expect(result.items).toHaveLength(1)
     expect(result.items[0].name).toBe('My Team 4')
+    expect(result.items[0].role).toBe('admin')
+  })
+
+  test('GET /v1/teams returns role: user for an invited active member', async () => {
+    const headers = {
+      'x-user-id': 'team-user-4b',
+      'idempotency-key': randomUUID()
+    }
+
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers,
+      payload: { name: 'My Team 4b' }
+    })
+    const teamId = created.result.team._id.toString()
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/members`,
+      headers,
+      payload: { email: 'list-role-teammate@defra.gov.uk' }
+    })
+    const signIn = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        email: 'list-role-teammate@defra.gov.uk',
+        displayName: 'List Role Teammate'
+      }
+    })
+
+    const { result, statusCode } = await server.inject({
+      method: 'GET',
+      url: '/v1/teams',
+      headers: { 'x-user-id': signIn.result.user._id.toString() }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.items).toHaveLength(1)
+    expect(result.items[0].role).toBe('user')
   })
 
   test('GET /v1/teams/{id} returns the team and members for an active member', async () => {

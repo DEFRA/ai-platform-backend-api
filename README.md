@@ -2,6 +2,7 @@
 
 Core delivery platform Node.js Backend Template.
 
+- [Documentation](#documentation)
 - [Requirements](#requirements)
   - [Node.js](#nodejs)
 - [Local development](#local-development)
@@ -16,6 +17,7 @@ Core delivery platform Node.js Backend Template.
 - [API endpoints](#api-endpoints)
 - [Development helpers](#development-helpers)
   - [MongoDB Locks](#mongodb-locks)
+  - [Schema backfills](#schema-backfills)
   - [Proxy](#proxy)
 - [Docker](#docker)
   - [Development image](#development-image)
@@ -25,6 +27,11 @@ Core delivery platform Node.js Backend Template.
   - [SonarCloud](#sonarcloud)
 - [Licence](#licence)
   - [About the licence](#about-the-licence)
+
+## Documentation
+
+- [Implemented features](../ai-platform-frontend/docs/implemented-features.md) — what's been built
+  so far across this repo and `ai-platform-frontend`, for new joiners.
 
 ## Requirements
 
@@ -164,6 +171,57 @@ async function doStuff(server) {
 ```
 
 Helper methods are also available in `/src/helpers/mongo-lock.js`.
+
+### Schema backfills
+
+MongoDB has no enforced schema, so a schema change is really two steps: ship code that reads/writes
+the new shape (tolerating old documents), then update any already-persisted documents to match. The
+second step is a **backfill** - a one-off data migration registered in
+[`src/common/backfills/registry.js`](src/common/backfills/registry.js) and applied by
+[`runBackfills`](src/common/backfills/run-backfills.js), which runs automatically on every server
+start (alongside `createIndexes`/`seedModels` in `src/plugins/mongodb.js`).
+
+Each registry entry is applied **at most once per environment**: `runBackfills` claims an entry by
+inserting its `id` into the `schemaMigrations` collection (a unique key, so if two instances start at
+the same time only one wins the race and runs it), calls `run(db)`, then records `appliedAt` and the
+returned result. On every later start the entry is already claimed, so it's skipped - safe to leave
+shipped entries in the registry permanently as a changelog of what has run.
+
+**Example**: say a new `credentials` field `issuedVia` is added, and existing documents predate it and
+need it backfilled to `'legacy'`. Add an entry to `registry.js`:
+
+```javascript
+export const backfillRegistry = [
+  {
+    id: '2026-10-01-credentials-issued-via-legacy',
+    description: "Sets issuedVia: 'legacy' on credentials docs missing it",
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('credentials')
+        .updateMany(
+          { issuedVia: { $exists: false } },
+          { $set: { issuedVia: 'legacy' } }
+        )
+
+      return { modifiedCount }
+    }
+  }
+]
+```
+
+Notes on writing a new entry:
+
+- `id` should be unique and sortable (a date prefix works well) - it's both the claim key and the
+  permanent record of what ran.
+- `run` only needs to be idempotent against documents it hasn't reached yet, not against re-runs of
+  the whole backfill (the `schemaMigrations` claim already prevents that) - a narrowing filter like
+  `{ field: { $exists: false } }` is enough.
+- Never assume every document is already in the new shape; code that reads the field should still
+  fall back (e.g. `doc.issuedVia ?? 'legacy'`) until you're confident the backfill has run everywhere,
+  then remove the fallback in a later change.
+
+A template entry marked `EXAMPLE - remove as required` is included in `registry.js` showing the same
+shape against the `example-data` collection.
 
 ### Proxy
 
