@@ -36,7 +36,7 @@
 - **Dependency injection via server.app**: Services access MongoDB, config, and other dependencies through the injected `server.app` container, not via direct imports or global state.
 - **Azure/APIM integration** (if applicable): Calls to Azure APIM go through dedicated adapter functions (e.g. `adapters/azure/apim-management-client.js`) behind a port interface (e.g. `CredentialIssuer` with `issue()`, `renew()`, `revoke()`, `suspend()`). Services never call Azure directly.
 - **Sensitive data handling**:
-  - Never log or persist full subscription keys or tokens. Return the full credential secret only once in the initial create response where the API contract requires it; use `keyHint` (last 4 characters) everywhere else.
+  - Never log or persist full subscription keys or tokens. Return the full credential secret only at the two approved one-time-reveal points the API contract requires — initial credential creation, and credential rotation (rotation deliberately mints a new secret and invalidates the old one, so revealing it once at that point is equivalent to creation, not a repeat exposure); use `keyHint` (last 4 characters) everywhere else, including subsequent reads/lists of the same credential.
   - Use `Idempotency-Key` headers on endpoints that create resources to prevent duplicates on retries.
 - **Error handling**: Use `@hapi/boom` with stable `code` fields so the frontend can map errors to user-facing messages.
 - **Authentication**: Routes that require authentication validate/read `x-user-id` in route validation/handlers (or via a shared pre-handler if introduced). Maintenance routes validate `x-maintenance-token`.
