@@ -5,7 +5,8 @@ import {
   createTeam,
   listTeamsForUser,
   findTeamById,
-  addMember
+  addMember,
+  removeMember
 } from '#/services/team-service.js'
 
 const userIdHeader = Joi.object({
@@ -13,6 +14,11 @@ const userIdHeader = Joi.object({
 }).unknown(true)
 
 const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
+
+const memberIdParam = Joi.object({
+  id: Joi.string().required(),
+  memberId: Joi.string().required()
+}).unknown(false)
 
 const idempotentHeaders = Joi.object({
   'x-user-id': Joi.string().required(),
@@ -113,6 +119,22 @@ export const teams = [
         .response({ member })
         .header('Location', `/v1/teams/${request.params.id}/members`)
         .code(201)
+    }
+  },
+  {
+    method: 'DELETE',
+    path: '/v1/teams/{id}/members/{memberId}',
+    options: {
+      validate: { headers: userIdHeader, params: memberIdParam }
+    },
+    handler: async (request, h) => {
+      await removeMember(request.db, {
+        teamId: request.params.id,
+        actorUserId: request.headers['x-user-id'],
+        memberId: request.params.memberId
+      })
+
+      return h.response().code(204)
     }
   }
 ]

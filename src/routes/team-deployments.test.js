@@ -219,6 +219,59 @@ describe('#team-deployments routes', () => {
     expect(second.result.deployment.activatedAt).toBeTruthy()
   })
 
+  test('GET /v1/teams/{teamId}/deployments/{id} exposes the four fixed progress step labels', async () => {
+    const teamId = await createTeam('deploy-user-6b')
+
+    const created = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('deploy-user-6b'),
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+    })
+
+    expect(created.result.deployment.progressSteps.map((step) => step.label)).toEqual([
+      'Request recorded',
+      'Team checked',
+      'Setting up access in Azure',
+      'Creating your key'
+    ])
+    expect(created.result.deployment.progressSteps[0].state).toBe('current')
+    expect(created.result.deployment.progressSteps[1].state).toBe('pending')
+
+    const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
+    const headers = { 'x-user-id': 'deploy-user-6b' }
+
+    await wait(300)
+
+    const afterActive = await server.inject({ method: 'GET', url, headers })
+
+    expect(afterActive.result.deployment.status).toBe('active')
+    expect(
+      afterActive.result.deployment.progressSteps.map((step) => step.state)
+    ).toEqual(['done', 'done', 'done', 'current'])
+  })
+
+  test('GET /v1/teams/{teamId}/deployments/{id} has no progress steps for a failed deployment', async () => {
+    const teamId = await createTeam('test-checks-fail-6c')
+
+    const created = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('test-checks-fail-6c'),
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+    })
+
+    const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
+    const headers = { 'x-user-id': 'test-checks-fail-6c' }
+
+    await wait(300)
+
+    const { result } = await server.inject({ method: 'GET', url, headers })
+
+    expect(result.deployment.status).toBe('checks-failed')
+    expect(result.deployment.progressSteps).toBeNull()
+  })
+
   test('GET /v1/teams/{teamId}/deployments/{id} returns 404 for a non-member', async () => {
     const teamId = await createTeam('deploy-user-7')
 
