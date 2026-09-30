@@ -1,0 +1,17 @@
+# Dependencies and lockfiles
+node_modules/
+package-lock.json
+
+# Build output and caches
+.cache/
+.vite/
+coverage/
+.eslintcache
+
+# Version control and tooling metadata
+.git/
+.husky/
+.sonarlint/
+
+# Local secrets
+.env
