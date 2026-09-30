@@ -444,4 +444,226 @@ describe('#teams routes', () => {
     expect(bound.status).toBe('active')
     expect(bound.userId).not.toBeNull()
   })
+
+  test('GET /v1/teams/{id} includes a member\u2019s display name once they have signed in', async () => {
+    const headers = {
+      'x-user-id': 'team-user-11',
+      'idempotency-key': randomUUID()
+    }
+
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers,
+      payload: { name: 'My Team 11' }
+    })
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${created.result.team._id}/members`,
+      headers: postHeaders('team-user-11'),
+      payload: { email: 'named.member@defra.gov.uk' }
+    })
+
+    await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        email: 'named.member@defra.gov.uk',
+        displayName: 'Named Member'
+      }
+    })
+
+    const { result } = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${created.result.team._id}`,
+      headers: { 'x-user-id': 'team-user-11' }
+    })
+
+    const named = result.members.find(
+      (member) => member.email === 'named.member@defra.gov.uk'
+    )
+
+    expect(named.displayName).toBe('Named Member')
+  })
+
+  test('GET /v1/teams/{id} returns a null display name for a member who has not signed in yet', async () => {
+    const headers = {
+      'x-user-id': 'team-user-11b',
+      'idempotency-key': randomUUID()
+    }
+
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers,
+      payload: { name: 'My Team 11b' }
+    })
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${created.result.team._id}/members`,
+      headers: postHeaders('team-user-11b'),
+      payload: { email: 'not.signed.in@defra.gov.uk' }
+    })
+
+    const { result } = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${created.result.team._id}`,
+      headers: { 'x-user-id': 'team-user-11b' }
+    })
+
+    const invited = result.members.find(
+      (member) => member.email === 'not.signed.in@defra.gov.uk'
+    )
+
+    expect(invited.displayName).toBeNull()
+  })
+
+  test('DELETE /v1/teams/{id}/members/{memberId} lets an admin remove a member', async () => {
+    const headers = {
+      'x-user-id': 'team-user-12',
+      'idempotency-key': randomUUID()
+    }
+
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers,
+      payload: { name: 'My Team 12' }
+    })
+    const teamId = created.result.team._id.toString()
+
+    const invited = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/members`,
+      headers: postHeaders('team-user-12'),
+      payload: { email: 'removable@defra.gov.uk' }
+    })
+
+    const { statusCode } = await server.inject({
+      method: 'DELETE',
+      url: `/v1/teams/${teamId}/members/${invited.result.member._id}`,
+      headers: { 'x-user-id': 'team-user-12' }
+    })
+
+    expect(statusCode).toBe(204)
+
+    const team = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${teamId}`,
+      headers: { 'x-user-id': 'team-user-12' }
+    })
+    const removed = team.result.members.find(
+      (member) => member.email === 'removable@defra.gov.uk'
+    )
+
+    expect(removed.status).toBe('removed')
+  })
+
+  test('DELETE /v1/teams/{id}/members/{memberId} rejects a non-admin', async () => {
+    const headers = {
+      'x-user-id': 'team-user-13',
+      'idempotency-key': randomUUID()
+    }
+
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers,
+      payload: { name: 'My Team 13' }
+    })
+    const teamId = created.result.team._id.toString()
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/members`,
+      headers: postHeaders('team-user-13'),
+      payload: { email: 'non-admin-actor@defra.gov.uk' }
+    })
+    await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        email: 'non-admin-actor@defra.gov.uk',
+        displayName: 'Non Admin Actor'
+      }
+    })
+
+    const team = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${teamId}`,
+      headers: { 'x-user-id': 'team-user-13' }
+    })
+    const nonAdminMember = team.result.members.find(
+      (member) => member.email === 'non-admin-actor@defra.gov.uk'
+    )
+
+    const { result, statusCode } = await server.inject({
+      method: 'DELETE',
+      url: `/v1/teams/${teamId}/members/${nonAdminMember._id}`,
+      headers: { 'x-user-id': nonAdminMember.userId }
+    })
+
+    expect(statusCode).toBe(403)
+    expect(result.code).toBe('admin-required')
+  })
+
+  test('DELETE /v1/teams/{id}/members/{memberId} refuses to remove the last admin', async () => {
+    const headers = {
+      'x-user-id': 'team-user-14',
+      'idempotency-key': randomUUID()
+    }
+
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers,
+      payload: { name: 'My Team 14' }
+    })
+    const teamId = created.result.team._id.toString()
+
+    const team = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${teamId}`,
+      headers: { 'x-user-id': 'team-user-14' }
+    })
+    const adminMember = team.result.members[0]
+
+    const { result, statusCode } = await server.inject({
+      method: 'DELETE',
+      url: `/v1/teams/${teamId}/members/${adminMember._id}`,
+      headers: { 'x-user-id': 'team-user-14' }
+    })
+
+    expect(statusCode).toBe(409)
+    expect(result.code).toBe('last-admin')
+  })
+
+  test('DELETE /v1/teams/{id}/members/{memberId} returns 404 for a non-member actor', async () => {
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: {
+        'x-user-id': 'team-user-15',
+        'idempotency-key': randomUUID()
+      },
+      payload: { name: 'My Team 15' }
+    })
+    const teamId = created.result.team._id.toString()
+
+    const team = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${teamId}`,
+      headers: { 'x-user-id': 'team-user-15' }
+    })
+
+    const { statusCode } = await server.inject({
+      method: 'DELETE',
+      url: `/v1/teams/${teamId}/members/${team.result.members[0]._id}`,
+      headers: { 'x-user-id': 'someone-else-again' }
+    })
+
+    expect(statusCode).toBe(404)
+  })
 })

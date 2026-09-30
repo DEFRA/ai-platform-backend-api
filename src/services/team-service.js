@@ -175,7 +175,41 @@ export async function findTeamById(db, { id, userId }) {
     .find({ teamId: id })
     .toArray()
 
-  return { team, members }
+  return { team, members: await withMemberDisplayNames(db, members) }
+}
+
+/**
+ * A member has no display name until they've signed in at least once (their
+ * `users` record is what carries it) - joined in here rather than stored
+ * redundantly on `teamMembers`, so a later name change in `users` is always
+ * reflected without a backfill.
+ * @param {import('mongodb').Db} db
+ * @param {object[]} members
+ */
+async function withMemberDisplayNames(db, members) {
+  const userIds = members
+    .filter((member) => member.userId && ObjectId.isValid(member.userId))
+    .map((member) => new ObjectId(member.userId))
+
+  if (userIds.length === 0) {
+    return members.map((member) => ({ ...member, displayName: null }))
+  }
+
+  const users = await db
+    .collection('users')
+    .find({ _id: { $in: userIds } })
+    .toArray()
+
+  const displayNameByUserId = new Map(
+    users.map((user) => [user._id.toString(), user.displayName])
+  )
+
+  return members.map((member) => ({
+    ...member,
+    displayName: member.userId
+      ? (displayNameByUserId.get(member.userId) ?? null)
+      : null
+  }))
 }
 
 /**
@@ -272,4 +306,78 @@ export async function addMember(
   })
 
   return { _id: insertedId, ...member }
+}
+
+/**
+ * Removes a member from a team. Only an active admin may do this, and a
+ * team must always keep at least one active admin - the removal is a status
+ * change (`'removed'`), not a delete, so the audit trail and idempotency
+ * history survive.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, actorUserId: string, memberId: string}} params
+ */
+export async function removeMember(db, { teamId, actorUserId, memberId }) {
+  const actorMembership = await db
+    .collection('teamMembers')
+    .findOne({ teamId, userId: actorUserId, status: 'active' })
+
+  if (!actorMembership) {
+    throw Boom.notFound()
+  }
+
+  if (actorMembership.role !== 'admin') {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Only a team admin can remove members',
+      'admin-required'
+    )
+  }
+
+  if (!ObjectId.isValid(memberId)) {
+    throw Boom.notFound()
+  }
+
+  const member = await db.collection('teamMembers').findOne({
+    _id: new ObjectId(memberId),
+    teamId
+  })
+
+  if (!member || !['active', 'invited'].includes(member.status)) {
+    throw Boom.notFound()
+  }
+
+  if (member.role === 'admin') {
+    const activeAdminCount = await db.collection('teamMembers').countDocuments({
+      teamId,
+      role: 'admin',
+      status: 'active'
+    })
+
+    if (activeAdminCount <= 1) {
+      throw boomWithCode(
+        Boom.conflict,
+        'A team must keep at least one admin',
+        'last-admin'
+      )
+    }
+  }
+
+  await db.collection('teamMembers').updateOne(
+    { _id: member._id },
+    {
+      $set: {
+        status: 'removed',
+        removedAt: new Date().toISOString(),
+        removedBy: actorUserId
+      }
+    }
+  )
+
+  await recordAuditEvent(db, {
+    actorUserId,
+    action: 'team.removeMember',
+    resource: 'team',
+    resourceId: teamId,
+    outcome: 'success'
+  })
 }

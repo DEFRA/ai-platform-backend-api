@@ -13,6 +13,52 @@ const TERMINAL_FAILURE_STATUSES = ['checks-failed', 'deploy-failed']
 // team-facing, so it is a valid schema value but never policy-allowed here.
 const TEAM_FACING_ENVIRONMENT = 'sandbox'
 
+// User-facing progress steps for the "being set up" wait page - the mapping
+// from design C's real GitOps states (never shown to the user directly) to
+// these four friendly, fixed labels is a business rule, so it lives here
+// rather than being guessed at again in the frontend.
+const PROGRESS_STEP_LABELS = [
+  'Request recorded',
+  'Team checked',
+  'Setting up access in Azure',
+  'Creating your key'
+]
+
+const PROGRESS_STEP_INDEX_BY_STATUS = {
+  requested: 0,
+  'pr-raised': 1,
+  merged: 2,
+  deploying: 2,
+  deployed: 2,
+  verified: 3,
+  active: 3
+}
+
+/**
+ * Builds the four fixed-label progress steps shown on the team-request wait
+ * page, marking each `done`/`current`/`pending` relative to the deployment's
+ * current raw status. Returns `null` for a terminal failure status - the
+ * frontend shows its own failure messaging instead of a step list there.
+ * @param {string} status
+ */
+function buildProgressSteps(status) {
+  if (TERMINAL_FAILURE_STATUSES.includes(status)) {
+    return null
+  }
+
+  const currentIndex = PROGRESS_STEP_INDEX_BY_STATUS[status] ?? 0
+
+  return PROGRESS_STEP_LABELS.map((label, index) => ({
+    label,
+    state:
+      index < currentIndex
+        ? 'done'
+        : index === currentIndex
+          ? 'current'
+          : 'pending'
+  }))
+}
+
 /**
  * Maps a `teamDeployments` document + one of its `deployments[]` entries to
  * the flat shape routes/frontend already expect (an `_id` per deployment,
@@ -27,6 +73,7 @@ function toDeploymentView(doc, entry) {
     environment: doc.environment,
     modelSlug: entry.modelSlug,
     status: entry.status,
+    progressSteps: buildProgressSteps(entry.status),
     operationId: entry.operationId,
     requestedBy: entry.requestedBy,
     idempotencyKey: entry.idempotencyKey,
