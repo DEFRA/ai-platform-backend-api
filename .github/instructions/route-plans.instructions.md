@@ -20,6 +20,11 @@ list on a given route:
 - [ai-platform-frontend/docs/plans/route3-plan.md](../../../ai-platform-frontend/docs/plans/route3-plan.md) — team tier, joining a team: role enforcement (`getMemberRole`), the `rotate` operation. Implemented.
 - [ai-platform-frontend/docs/plans/route0-welcome-plan.md](../../../ai-platform-frontend/docs/plans/route0-welcome-plan.md) — frontend-only home page, no backend changes.
 
+Cross-cutting plans under `docs/plans/integration/` are not journey routes, but they replace the
+ports and adapters the routes above call:
+
+- [ai-platform-frontend/docs/plans/integration/research-tier-integration-plan.md](../../../ai-platform-frontend/docs/plans/integration/research-tier-integration-plan.md) — replaces `mock-credential-issuer.js` with a real Azure APIM ARM adapter, moves the model catalogue from `models.seed.json` to a GitHub-hosted `CatalogueSource` port, and adds Key Vault credential persistence with an audited reveal endpoint. Not started. Read before touching `adapters/`, `models-service.js`, `credential-service.js` or the seed data — it corrects several natural but wrong assumptions about how APIM is called.
+
 Each plan's "STATUS" line at the top records whether it has been built. Cross-repo context:
 
 - [ai-platform-frontend/docs/ui-flow-three-routes.md](../../../ai-platform-frontend/docs/ui-flow-three-routes.md) — the source UI flow diagrams (route paths, API contract, known gaps), with the original images, captured in text since the originals aren't in any repo.
