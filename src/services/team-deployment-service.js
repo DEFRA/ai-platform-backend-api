@@ -51,7 +51,11 @@ function buildProgressSteps(status) {
   return PROGRESS_STEP_LABELS.map((label, index) => ({
     label,
     state:
-      index < currentIndex ? 'done' : index === currentIndex ? 'current' : 'pending'
+      index < currentIndex
+        ? 'done'
+        : index === currentIndex
+          ? 'current'
+          : 'pending'
   }))
 }
 

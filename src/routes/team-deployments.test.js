@@ -229,7 +229,9 @@ describe('#team-deployments routes', () => {
       payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
-    expect(created.result.deployment.progressSteps.map((step) => step.label)).toEqual([
+    expect(
+      created.result.deployment.progressSteps.map((step) => step.label)
+    ).toEqual([
       'Request recorded',
       'Team checked',
       'Setting up access in Azure',
