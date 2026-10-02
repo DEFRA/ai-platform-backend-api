@@ -230,5 +230,67 @@ export const backfillRegistry = [
 
       return { modifiedCount }
     }
+  },
+  // The research-tier integration plan's Phase 1 added `issuerKey` so
+  // lifecycle operations (renew/rotate/revoke/suspend) on an already-issued
+  // credential know which `CredentialIssuer` adapter minted it, instead of
+  // sniffing id prefixes. Every credential issued before this field existed
+  // was minted by the mock issuer.
+  {
+    id: '2026-10-01-credentials-issuer-key-default',
+    description: 'Sets issuerKey: "mock" on credentials docs missing it',
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('credentials')
+        .updateMany(
+          { issuerKey: { $exists: false } },
+          { $set: { issuerKey: 'mock' } }
+        )
+
+      return { modifiedCount }
+    }
+  },
+  // Phase 2 of the research-tier integration plan replaced the flat
+  // `seedModels` re-seed with `syncCatalogue`, which writes `lifecycle`,
+  // `catalogueSha` and `release` onto every synced model - fields pre-Phase-2
+  // documents (the CDP dev environment holds real data) never had.
+  {
+    id: '2026-10-01-models-catalogue-metadata-default',
+    description:
+      'Sets default lifecycle/catalogueSha/release/syncedAt on models docs predating catalogue sync',
+    async run(db) {
+      const { modifiedCount } = await db.collection('models').updateMany(
+        { lifecycle: { $exists: false } },
+        {
+          $set: {
+            lifecycle: { status: 'available', retirementDate: null },
+            catalogueSha: null,
+            release: null,
+            syncedAt: null
+          }
+        }
+      )
+
+      return { modifiedCount }
+    }
+  },
+  // `apimSubscriptionId` is being renamed to the provider-neutral
+  // `externalGatewaySubscriptionId` (2 Oct 2026), since "APIM" stops being
+  // accurate the moment a second `CredentialIssuer` provider exists. The old
+  // field is kept (not unset) and still read as a fallback in
+  // `credential-service.js`/`maintenance-service.js` until this has run
+  // everywhere - this backfill only adds the new field alongside it.
+  {
+    id: '2026-10-02-credentials-external-gateway-subscription-id',
+    description:
+      'Copies apimSubscriptionId into the new externalGatewaySubscriptionId field on credentials docs missing it',
+    async run(db) {
+      const { modifiedCount } = await db.collection('credentials').updateMany(
+        { externalGatewaySubscriptionId: { $exists: false } },
+        [{ $set: { externalGatewaySubscriptionId: '$apimSubscriptionId' } }]
+      )
+
+      return { modifiedCount }
+    }
   }
 ]

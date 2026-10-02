@@ -40,7 +40,7 @@ export const mockCredentialIssuer = {
           : `mock-key-${randomUUID().replace(/-/g, '')}`
 
       return {
-        apimSubscriptionId: `team-${teamId}-${environment}`,
+        externalId: `team-${teamId}-${environment}`,
         secret,
         keyHint: secret.slice(-4),
         expiresAt
@@ -50,33 +50,33 @@ export const mockCredentialIssuer = {
     const secret = `mock_${randomUUID().replace(/-/g, '')}`
 
     return {
-      apimSubscriptionId: `research-${userId}-${modelSlug}`,
+      externalId: `research-${userId}-${modelSlug}`,
       secret,
       keyHint: secret.slice(-4),
       expiresAt
     }
   },
 
-  async renew({ apimSubscriptionId }) {
-    return { apimSubscriptionId }
+  async renew({ externalId }) {
+    return { externalId }
   },
 
-  async rotate({ apimSubscriptionId, credentialType = 'subscription-key' }) {
-    const isTeamCredential = apimSubscriptionId.startsWith('team-')
+  async rotate({ externalId, credentialType = 'subscription-key' }) {
+    const isTeamCredential = externalId.startsWith('team-')
     const secret = !isTeamCredential
       ? `mock_${randomUUID().replace(/-/g, '')}`
       : credentialType === 'oauth'
         ? `mock-oauth-${randomUUID().replace(/-/g, '')}`
         : `mock-key-${randomUUID().replace(/-/g, '')}`
 
-    return { apimSubscriptionId, secret, keyHint: secret.slice(-4) }
+    return { externalId, secret, keyHint: secret.slice(-4) }
   },
 
-  async revoke({ apimSubscriptionId }) {
-    return { apimSubscriptionId }
+  async revoke({ externalId }) {
+    return { externalId }
   },
 
-  async suspend({ apimSubscriptionId }) {
-    return { apimSubscriptionId }
+  async suspend({ externalId }) {
+    return { externalId }
   }
 }

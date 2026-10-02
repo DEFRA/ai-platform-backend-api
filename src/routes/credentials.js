@@ -7,7 +7,8 @@ import {
   findCredentialForViewing,
   renewCredential,
   rotateCredential,
-  revokeCredential
+  revokeCredential,
+  revealCredential
 } from '#/services/credential-service.js'
 
 const userIdHeader = Joi.object({
@@ -162,6 +163,31 @@ export const credentials = [
       })
 
       return h.response().code(204)
+    }
+  },
+  {
+    method: 'POST',
+    path: '/v1/credentials/{id}/reveal',
+    options: {
+      validate: {
+        headers: userIdHeader,
+        params: idParam,
+        payload: Joi.object({
+          reason: Joi.string().trim().max(500).required()
+        }).unknown(false)
+      }
+    },
+    handler: async (request, h) => {
+      const secret = await revealCredential(request.db, {
+        id: request.params.id,
+        actorUserId: request.headers['x-user-id'],
+        reason: request.payload.reason
+      })
+
+      return h
+        .response({ secret })
+        .header('Cache-Control', 'no-store')
+        .header('Pragma', 'no-cache')
     }
   }
 ]

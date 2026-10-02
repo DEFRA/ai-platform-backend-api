@@ -13,7 +13,14 @@ export default defineConfig({
       reportsDirectory: './coverage',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.js'],
-      exclude: [...configDefaults.exclude, 'coverage']
+      // A shared CredentialIssuer contract suite, not application code - it
+      // is exercised (and so already covered) via the adapter test files
+      // that call it, not directly.
+      exclude: [
+        ...configDefaults.exclude,
+        'coverage',
+        'src/adapters/credential-issuer-contract.js'
+      ]
     },
     setupFiles: ['.vite/mongo-memory-server.js', '.vite/setup-files.js']
   }

@@ -1,0 +1,9 @@
+[
+  {
+    "id": "openai",
+    "displayName": "OpenAI (Azure)",
+    "offerings": ["azure-openai"],
+    "adapter": "azure",
+    "terms": null
+  }
+]

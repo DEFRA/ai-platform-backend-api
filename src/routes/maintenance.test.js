@@ -58,5 +58,39 @@ describe('#maintenance routes', () => {
     expect(result.expired).toBeGreaterThanOrEqual(1)
     expect(result.suspended).toBeGreaterThanOrEqual(1)
     expect(result).toHaveProperty('reconciled')
+    expect(result).toHaveProperty('vaultReconciled')
+  })
+
+  test('POST /maintenance/expire-credentials retries a credential flagged vaultState: unwritten', async () => {
+    const headers = {
+      'x-user-id': 'maintenance-vault-user',
+      'idempotency-key': randomUUID()
+    }
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers,
+      payload: { modelSlug: 'gpt-4o' }
+    })
+    const id = new ObjectId(issued.result.credential._id)
+
+    await server.db
+      .collection('credentials')
+      .updateOne({ _id: id }, { $set: { vaultState: 'unwritten' } })
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: '/maintenance/expire-credentials',
+      headers: { 'x-maintenance-token': 'test-maintenance-token' }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.vaultReconciled).toBeGreaterThanOrEqual(1)
+
+    const credential = await server.db
+      .collection('credentials')
+      .findOne({ _id: id })
+
+    expect(credential.vaultState).toBeUndefined()
   })
 })

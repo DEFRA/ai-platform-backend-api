@@ -451,7 +451,9 @@ describe('#credentials routes', () => {
     expect(result.credential.tier).toBe('team')
     expect(result.credential.teamId).toBe(teamId)
     // Shared per team+environment, never per model or per requesting member.
-    expect(result.credential.apimSubscriptionId).toBe(`team-${teamId}-sandbox`)
+    expect(result.credential.externalGatewaySubscriptionId).toBe(
+      `team-${teamId}-sandbox`
+    )
     expect(result.credential.allowedDeployments).toEqual(['gpt-4o'])
     expect(result.credential.credentialType).toBe('subscription-key')
     expect(result.secret).toEqual(expect.stringContaining('mock-key-'))
@@ -982,5 +984,152 @@ describe('#credentials routes', () => {
 
     expect(statusCode).toBe(403)
     expect(result.code).toBe('admin-required')
+  })
+
+  test('POST /v1/credentials/{id}/reveal returns the secret with a reason', async () => {
+    const headers = { 'x-user-id': 'user-reveal-1', 'idempotency-key': randomUUID() }
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers,
+      payload: { modelSlug: 'gpt-4o' }
+    })
+
+    const { result, statusCode, headers: responseHeaders } = await server.inject({
+      method: 'POST',
+      url: `/v1/credentials/${issued.result.credential._id}/reveal`,
+      headers: { 'x-user-id': 'user-reveal-1' },
+      payload: { reason: 'Re-sharing with a teammate' }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.secret).toBe(issued.result.secret)
+    expect(responseHeaders['cache-control']).toBe('no-store')
+    expect(responseHeaders.pragma).toBe('no-cache')
+  })
+
+  test('POST /v1/credentials/{id}/reveal requires a reason', async () => {
+    const headers = { 'x-user-id': 'user-reveal-2', 'idempotency-key': randomUUID() }
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers,
+      payload: { modelSlug: 'gpt-4o' }
+    })
+
+    const { statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/credentials/${issued.result.credential._id}/reveal`,
+      headers: { 'x-user-id': 'user-reveal-2' },
+      payload: {}
+    })
+
+    expect(statusCode).toBe(400)
+  })
+
+  test('POST /v1/credentials/{id}/reveal returns 404 for another user\u2019s credential', async () => {
+    const headers = { 'x-user-id': 'user-reveal-3', 'idempotency-key': randomUUID() }
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers,
+      payload: { modelSlug: 'gpt-4o' }
+    })
+
+    const { statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/credentials/${issued.result.credential._id}/reveal`,
+      headers: { 'x-user-id': 'someone-else-entirely' },
+      payload: { reason: 'Trying to view someone else\u2019s key' }
+    })
+
+    expect(statusCode).toBe(404)
+  })
+
+  test('POST /v1/credentials/{id}/reveal returns 409 credential-revoked for a revoked credential', async () => {
+    const headers = { 'x-user-id': 'user-reveal-4', 'idempotency-key': randomUUID() }
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers,
+      payload: { modelSlug: 'gpt-4o' }
+    })
+
+    await server.inject({
+      method: 'DELETE',
+      url: `/v1/credentials/${issued.result.credential._id}`,
+      headers: { 'x-user-id': 'user-reveal-4' }
+    })
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/credentials/${issued.result.credential._id}/reveal`,
+      headers: { 'x-user-id': 'user-reveal-4' },
+      payload: { reason: 'Checking after revoke' }
+    })
+
+    expect(statusCode).toBe(409)
+    expect(result.code).toBe('credential-revoked')
+  })
+
+  test('POST /v1/credentials/{id}/reveal refuses a user-role team member', async () => {
+    const adminId = 'team-cred-reveal-1'
+    const teamId = await createTeamWithActiveDeployment(adminId)
+
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': adminId, 'idempotency-key': randomUUID() },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'sandbox'
+      }
+    })
+
+    const memberId = await inviteAndSignIn(
+      teamId,
+      adminId,
+      'reveal-member@defra.gov.uk',
+      'Reveal Member'
+    )
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/credentials/${issued.result.credential._id}/reveal`,
+      headers: { 'x-user-id': memberId },
+      payload: { reason: 'Trying to view the shared key' }
+    })
+
+    expect(statusCode).toBe(403)
+    expect(result.code).toBe('admin-required')
+  })
+
+  test('POST /v1/credentials/{id}/reveal lets a team admin view the shared secret', async () => {
+    const adminId = 'team-cred-reveal-2'
+    const teamId = await createTeamWithActiveDeployment(adminId)
+
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': adminId, 'idempotency-key': randomUUID() },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'sandbox'
+      }
+    })
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/credentials/${issued.result.credential._id}/reveal`,
+      headers: { 'x-user-id': adminId },
+      payload: { reason: 'Re-sharing with a new teammate' }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.secret).toBe(issued.result.secret)
   })
 })

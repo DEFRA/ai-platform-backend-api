@@ -19,6 +19,7 @@ Core delivery platform Node.js Backend Template.
   - [MongoDB Locks](#mongodb-locks)
   - [Schema backfills](#schema-backfills)
   - [Proxy](#proxy)
+  - [Testing against live Azure resources (sandbox)](#testing-against-live-azure-resources-sandbox)
 - [Docker](#docker)
   - [Development image](#development-image)
   - [Production image](#production-image)
@@ -234,6 +235,82 @@ HTTPS_PROXY=...
 NO_PROXY=...
 
 No additional proxy configuration is required in the service.
+
+### Testing against live Azure resources (sandbox)
+
+By default the credential issuer and vault run in-memory (`PROVISIONING_MODE=mock`, the default) -
+no Azure access needed. To run locally against the **real** sandbox APIM/Key Vault from the
+[research tier integration plan](../ai-platform-frontend/docs/plans/integration/research-tier-integration-plan.md)'s
+Phase 0, create a `.env` file in the repo root (already gitignored; `npm run dev`'s
+`--env-file-if-exists=.env` loads it automatically - no other wiring needed) with:
+
+| Variable                     | Value                                                                  |
+| :--------------------------- | :---------------------------------------------------------------------|
+| `PROVISIONING_MODE`          | `azure`                                                                |
+| `AZURE_ARM_TENANT_ID`        | The ARM app registration's tenant ID                                   |
+| `AZURE_ARM_CLIENT_ID`        | The ARM app registration's client ID                                  |
+| `AZURE_ARM_CLIENT_SECRET`    | The ARM app registration's client secret                              |
+| `AZURE_ARM_SUBSCRIPTION_ID`  | The sandbox subscription ID (`az account show --query id -o tsv`)     |
+| `AZURE_ARM_RESOURCE_GROUP`   | `SNDAIEEXPRGP1401` (per the plan's Phase 0 STATUS note)                |
+| `APIM_SERVICE_NAME`          | `DEPLOYTESTDEFRA` (per the plan's Phase 0 STATUS note)                 |
+| `AZURE_KEY_VAULT_NAME`       | `kv-aip-sandbox-tenants` (per the plan's 0.9 step)                     |
+
+`APIM_RESEARCH_API_ID` needs no override - its `research` default already matches the API built in
+0.6/0.7. `CATALOGUE_SOURCE` can stay on its `file` default: the seed fixture already carries the
+real Foundry model slugs recorded in Phase 2 (`gpt-4o`, `gpt-4.1-nano`, etc.), so there's no need to
+also set `CATALOGUE_SOURCE=github`/`GITHUB_TOKEN` just to smoke test credential issuing.
+
+**Issuing, rotating, revoking and revealing a credential only talks to ARM
+(`management.azure.com`) and Key Vault (`{vault}.vault.azure.net`) - both public management-plane
+endpoints reachable from any normal machine.** Calling the model itself goes through a third,
+separate endpoint - the `research` API's own gateway - which for this sandbox instance is also
+**public**: `DEPLOYTESTDEFRA`'s gateway is the APIM default hostname
+`https://deploytestdefra.azure-api.net` (confirmed when the plan's 0.8 smoke test curl succeeded
+from an ordinary machine, no VPN/Bastion/jump box needed). So the full loop - issue a credential,
+call the model with it in Postman/curl, reveal it again later, rotate or revoke it - is all
+testable from a normal dev machine.
+
+A minimal smoke test once the env vars above are set and `npm run dev` is running:
+
+```bash
+# Issue a credential - creates a real APIM subscription and a real Key Vault secret
+curl -s -X POST http://localhost:3001/v1/credentials \
+  -H 'x-user-id: smoke-test-user' -H "idempotency-key: $(uuidgen)" \
+  -H 'Content-Type: application/json' -d '{"modelSlug": "gpt-4o"}'
+```
+
+Take the `secret` from that response and call the model directly against the gateway (this is the
+request to import into Postman - `POST`, these two headers, the body below):
+
+```bash
+# chat-completions operation - {deployment-id} is the modelSlug, e.g. gpt-4o
+curl -s -X POST "https://deploytestdefra.azure-api.net/research/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview" \
+  -H "Ocp-Apim-Subscription-Key: <secret>" -H "Content-Type: application/json" \
+  -d '{"messages":[{"role":"user","content":"hello"}]}'
+
+# responses operation - model is a body field, not a URL segment, and needs a newer api-version
+curl -s -X POST "https://deploytestdefra.azure-api.net/research/openai/responses?api-version=2025-03-01-preview" \
+  -H "Ocp-Apim-Subscription-Key: <secret>" -H "Content-Type: application/json" \
+  -d '{"model":"gpt-4o","input":"hello"}'
+```
+
+Allowed `{deployment-id}`/`model` values: `gpt-4.1-nano`, `gpt-5-nano`, `gpt-5-nano-2`, `gpt-5-mini`,
+`gpt-5.3-codex`, `gpt-4o`, `gpt-4o-2` (anything else, e.g. the excluded `text-embedding-ada-002`,
+returns `403 model-not-granted`; no key returns `401`).
+
+```bash
+# Reveal it again later (replace {id} with the credential _id from the issue response above)
+curl -s -X POST http://localhost:3001/v1/credentials/{id}/reveal \
+  -H 'x-user-id: smoke-test-user' -H 'Content-Type: application/json' \
+  -d '{"reason": "Smoke testing the live sandbox"}'
+
+# Revoke it - deletes the APIM subscription and soft-deletes the Key Vault secret
+curl -s -X DELETE http://localhost:3001/v1/credentials/{id} -H 'x-user-id: smoke-test-user'
+```
+
+Verify independently in the Azure portal (or `az rest`/`az keyvault secret list`) that the APIM
+subscription and Key Vault secret actually appeared and disappeared, rather than trusting only the
+API's own response.
 
 ## Docker
 
