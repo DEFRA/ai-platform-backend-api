@@ -9,6 +9,7 @@ import { mongoDb } from '#/plugins/mongodb.js'
 import { failAction } from '#/common/helpers/fail-action.js'
 import { pulse } from '#/plugins/pulse.js'
 import { requestTracing } from '#/plugins/request-tracing.js'
+import { credentialExpiryScheduler } from '#/plugins/credential-expiry-scheduler.js'
 import { metrics } from '@defra/cdp-metrics'
 
 export async function createServer() {
@@ -39,12 +40,13 @@ export async function createServer() {
   })
 
   // Hapi Plugins:
-  // requestLogger  - automatically logs incoming requests
-  // requestTracing - trace header logging and propagation
-  // secureContext  - loads CA certificates from environment config
-  // pulse          - provides shutdown handlers
-  // mongoDb        - sets up mongo connection pool and attaches to `server` and `request` objects
-  // router         - routes used in the app
+  // requestLogger             - automatically logs incoming requests
+  // requestTracing            - trace header logging and propagation
+  // secureContext              - loads CA certificates from environment config
+  // pulse                      - provides shutdown handlers
+  // mongoDb                    - sets up mongo connection pool and attaches to `server` and `request` objects
+  // router                     - routes used in the app
+  // credentialExpiryScheduler  - in-process interval sweep for credential expiry/reconciliation
   await server.register([
     requestLogger,
     requestTracing,
@@ -55,7 +57,8 @@ export async function createServer() {
       plugin: mongoDb,
       options: config.get('mongo')
     },
-    router
+    router,
+    credentialExpiryScheduler
   ])
 
   // Enriches Boom error responses with the stable `code` (see boomWithCode), any extra

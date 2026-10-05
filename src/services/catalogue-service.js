@@ -3,6 +3,9 @@ import { invalidateModelsCache } from '#/services/models-service.js'
 // Pinned data-plane api-version per apiProfile, verified against the sandbox
 // gateway (docs/plans/integration/research-tier-integration-plan.md in
 // ai-platform-frontend): `responses` 404s on the chat-completions default.
+// Takes precedence over whatever the source supplies for that profile (see
+// normalizeModel below) - a source has been seen shipping a stale generic
+// apiVersion even on a model explicitly marked apiProfile: 'responses'.
 const DEFAULT_API_VERSION_BY_PROFILE = { responses: '2025-03-01-preview' }
 const DEFAULT_API_VERSION = '2024-05-01-preview'
 
@@ -21,8 +24,8 @@ function normalizeModel(model) {
     eligibilityReason: model.eligibilityReason ?? model.eligibility?.reason,
     region: model.region ?? model.regions?.[0],
     apiVersion:
-      model.apiVersion ??
       DEFAULT_API_VERSION_BY_PROFILE[model.apiProfile] ??
+      model.apiVersion ??
       DEFAULT_API_VERSION
   }
 }

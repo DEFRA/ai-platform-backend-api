@@ -11,7 +11,7 @@
  * `src/common/backfills/registry.js`).
  * @typedef {object} CredentialIssuer
  * @property {(params: {userId: string, modelSlug: string, tier: 'research'|'team', teamId?: string|null, environment?: string|null, credentialType?: 'oauth'|'subscription-key'}) => Promise<{externalId: string, secret: string, keyHint: string, expiresAt: string}>} issue
- * @property {(params: {externalId: string}) => Promise<{externalId: string}>} renew
+ * @property {(params: {externalId: string, expiresAt: string}) => Promise<{externalId: string}>} renew
  * @property {(params: {externalId: string, credentialType?: 'oauth'|'subscription-key'}) => Promise<{externalId: string, secret: string, keyHint: string}>} rotate
  * @property {(params: {externalId: string}) => Promise<{externalId: string}>} revoke
  * @property {(params: {externalId: string}) => Promise<{externalId: string}>} suspend

@@ -42,13 +42,22 @@ export function createApimCredentialIssuer({
     async issue({ userId, modelSlug, tier = 'research', teamId, environment }) {
       const sid = sidFor({ userId, modelSlug, tier, teamId, environment })
       const researchApiId = config.get('apim.researchApiId')
+      const ttlDays = config.get('research.credentialTtlDays')
+      const expiresAt = new Date(
+        Date.now() + ttlDays * 24 * 60 * 60 * 1000
+      ).toISOString()
 
       await armClient.request('PUT', subscriptionPath(sid), {
         body: {
           properties: {
             scope: `${buildServiceBasePath()}/apis/${researchApiId}`,
             displayName: sid,
-            state: 'active'
+            state: 'active',
+            // Mirrors the Mongo-side expiresAt below, so APIM's own
+            // context.Subscription.EndDate (policy-readable) agrees with
+            // Mongo from the moment a credential is first issued - not just
+            // after its first renewal.
+            expirationDate: expiresAt
           }
         }
       })
@@ -59,11 +68,6 @@ export function createApimCredentialIssuer({
         subscriptionPath(sid, '/listSecrets')
       )
 
-      const ttlDays = config.get('research.credentialTtlDays')
-      const expiresAt = new Date(
-        Date.now() + ttlDays * 24 * 60 * 60 * 1000
-      ).toISOString()
-
       return {
         externalId: sid,
         secret: secrets.primaryKey,
@@ -72,18 +76,23 @@ export function createApimCredentialIssuer({
       }
     },
 
-    async renew({ externalId }) {
-      // APIM's expirationDate is audit metadata only - it deactivates
-      // nothing, so this does not need to know the Mongo-side expiresAt the
-      // service computes separately. The backend keeps owning TTL
-      // enforcement and the real suspend/reactivate state transition.
-      const ttlDays = config.get('research.credentialTtlDays')
-      const expirationDate = new Date(
-        Date.now() + ttlDays * 24 * 60 * 60 * 1000
-      ).toISOString()
+    async renew({ externalId, expiresAt }) {
+      // Two separate PATCH calls, not one combined body - ARM rejects
+      // {state: 'active', expirationDate} in a single request with
+      // "Only 'active' subscriptions can be renewed" when the subscription
+      // is currently suspended (confirmed against real APIM). State must
+      // already be active before expirationDate can be set, since a
+      // renew() following expireCredentials()'s suspend() is exactly how a
+      // lapsed research credential comes back to life (per the design:
+      // renewal is blocked only by revoked status or the renewal cap,
+      // never by having already expired).
+      await armClient.request('PATCH', subscriptionPath(externalId), {
+        body: { properties: { state: 'active' } },
+        ifMatch: '*'
+      })
 
       await armClient.request('PATCH', subscriptionPath(externalId), {
-        body: { properties: { expirationDate } },
+        body: { properties: { expirationDate: expiresAt } },
         ifMatch: '*'
       })
 

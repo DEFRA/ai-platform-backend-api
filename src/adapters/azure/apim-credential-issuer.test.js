@@ -90,6 +90,58 @@ describe('createApimCredentialIssuer', () => {
     expect(capturedBody.properties.scope).not.toContain('/products/')
   })
 
+  test('issue sets expirationDate to the same expiresAt it returns, so context.Subscription.EndDate agrees with Mongo from creation', async () => {
+    nock.cleanAll()
+
+    let capturedBody
+    nock(ARM_BASE_URL)
+      .put(subscriptionPattern(), (body) => {
+        capturedBody = body
+        return true
+      })
+      .reply(200, {})
+    nock(ARM_BASE_URL)
+      .post(subscriptionPattern('/listSecrets'))
+      .reply(200, { primaryKey: 'real-primary-key-1234' })
+
+    const issuer = createAzureIssuer()
+    const issued = await issuer.issue({
+      userId: 'user-1',
+      modelSlug: 'gpt-4o',
+      tier: 'research'
+    })
+
+    expect(capturedBody.properties.expirationDate).toBe(issued.expiresAt)
+  })
+
+  test('renew reactivates (state: active) before updating expirationDate, as two separate PATCH calls', async () => {
+    // ARM rejects {state: 'active', expirationDate} in one combined PATCH
+    // with "Only 'active' subscriptions can be renewed" when the
+    // subscription is currently suspended - confirmed against real APIM.
+    nock.cleanAll()
+
+    const capturedBodies = []
+    nock(ARM_BASE_URL)
+      .patch(subscriptionPattern(), (body) => {
+        capturedBodies.push(body)
+        return true
+      })
+      .reply(200, {})
+    nock(ARM_BASE_URL)
+      .patch(subscriptionPattern(), (body) => {
+        capturedBodies.push(body)
+        return true
+      })
+      .reply(200, {})
+
+    const issuer = createAzureIssuer()
+    const expiresAt = new Date('2030-01-01T00:00:00.000Z').toISOString()
+    await issuer.renew({ externalId: 'research-user-1-gpt-4o', expiresAt })
+
+    expect(capturedBodies[0].properties.state).toBe('active')
+    expect(capturedBodies[1].properties.expirationDate).toBe(expiresAt)
+  })
+
   test('issue uses a team-scoped externalId shared across the team+environment, not per model', async () => {
     const issuer = createAzureIssuer()
     const issued = await issuer.issue({

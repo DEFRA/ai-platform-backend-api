@@ -626,17 +626,19 @@ export async function renewCredential(
       )
     }
 
-    if (credential.status === 'expired') {
-      const { issuer } = registry.forCredential(credential)
-      await issuer.renew({
-        externalId: externalGatewaySubscriptionIdOf(credential)
-      })
-    }
-
     const ttlDays = config.get('research.credentialTtlDays')
     const expiresAt = new Date(
       Date.now() + ttlDays * 24 * 60 * 60 * 1000
     ).toISOString()
+
+    // Always pushed to APIM (not just when already-expired) so
+    // context.Subscription.EndDate never drifts behind Mongo's expiresAt -
+    // see apim-credential-issuer.js's renew().
+    const { issuer } = registry.forCredential(credential)
+    await issuer.renew({
+      externalId: externalGatewaySubscriptionIdOf(credential),
+      expiresAt
+    })
 
     const updated = await db.collection('credentials').findOneAndUpdate(
       { _id: credential._id },

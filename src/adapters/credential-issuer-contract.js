@@ -51,7 +51,10 @@ export function describeCredentialIssuerContract(
       const issued = await issuer.issue(issueParams)
 
       await expect(
-        issuer.renew({ externalId: issued.externalId })
+        issuer.renew({
+          externalId: issued.externalId,
+          expiresAt: new Date(Date.now() + 86400000).toISOString()
+        })
       ).resolves.toMatchObject({ externalId: issued.externalId })
       await expect(
         issuer.suspend({ externalId: issued.externalId })

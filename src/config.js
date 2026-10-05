@@ -170,6 +170,20 @@ export const config = convict({
     default: null,
     env: 'MAINTENANCE_TOKEN'
   },
+  maintenanceScheduler: {
+    enabled: {
+      doc: 'Whether the in-process scheduler runs credential expiry/reconciliation sweeps on an interval',
+      format: Boolean,
+      default: !isTest,
+      env: 'MAINTENANCE_SCHEDULER_ENABLED'
+    },
+    intervalMs: {
+      doc: 'Interval in ms between in-process credential expiry/reconciliation sweeps',
+      format: 'nat',
+      default: 5 * 60 * 1000,
+      env: 'MAINTENANCE_SCHEDULER_INTERVAL_MS'
+    }
+  },
   provisioning: {
     mode: {
       doc: 'Credential issuing provider: mock generates fake keys locally, azure calls Azure Resource Manager against real APIM',

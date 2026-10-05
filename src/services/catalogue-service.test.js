@@ -102,6 +102,33 @@ describe('#syncCatalogue', () => {
     expect(doc.apiVersion).toBe('2025-03-01-preview')
   })
 
+  test('overrides a source-supplied apiVersion for a responses-profile model, since the source has shipped a stale generic value for one', async () => {
+    const existingModels = await db
+      .collection('models')
+      .find({}, { projection: { _id: 0 } })
+      .toArray()
+    const source = stubSource({
+      models: [
+        ...existingModels,
+        {
+          slug: 'sync-test-responses-stale-version',
+          apiProfile: 'responses',
+          apiVersion: '2024-05-01-preview'
+        }
+      ],
+      providers: [],
+      catalogueSha: 'sha-github-3',
+      release: 'v1.0.6'
+    })
+
+    await syncCatalogue(db, source, server.locker, server.logger)
+
+    const doc = await db
+      .collection('models')
+      .findOne({ slug: 'sync-test-responses-stale-version' })
+    expect(doc.apiVersion).toBe('2025-03-01-preview')
+  })
+
   test('retires a model no longer present in the catalogue, without deleting it', async () => {
     await db.collection('models').insertOne({
       slug: 'sync-test-retiring',
