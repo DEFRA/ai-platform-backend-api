@@ -46,4 +46,26 @@ describe('#mockCredentialVault', () => {
       mockCredentialVault.get({ credentialId: 'cred-4' })
     ).resolves.toBe('second')
   })
+
+  test('updateExpiry leaves the secret value untouched', async () => {
+    await mockCredentialVault.put({ credentialId: 'cred-5', secret: 'abc' })
+
+    await mockCredentialVault.updateExpiry({
+      credentialId: 'cred-5',
+      expiresOn: new Date('2030-01-01')
+    })
+
+    await expect(
+      mockCredentialVault.get({ credentialId: 'cred-5' })
+    ).resolves.toBe('abc')
+  })
+
+  test('updateExpiry throws for a credentialId never written', async () => {
+    await expect(
+      mockCredentialVault.updateExpiry({
+        credentialId: 'never-written-expiry',
+        expiresOn: new Date()
+      })
+    ).rejects.toThrow()
+  })
 })

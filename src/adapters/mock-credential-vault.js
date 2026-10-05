@@ -8,15 +8,27 @@ const secretsByCredentialId = new Map()
  * @type {import('./credential-vault.js').CredentialVault}
  */
 export const mockCredentialVault = {
-  async put({ credentialId, secret }) {
-    secretsByCredentialId.set(credentialId, secret)
+  async put({ credentialId, secret, expiresOn }) {
+    secretsByCredentialId.set(credentialId, { secret, expiresOn })
   },
 
   async get({ credentialId }) {
-    return secretsByCredentialId.get(credentialId) ?? null
+    return secretsByCredentialId.get(credentialId)?.secret ?? null
   },
 
   async remove({ credentialId }) {
     secretsByCredentialId.delete(credentialId)
+  },
+
+  async updateExpiry({ credentialId, expiresOn }) {
+    const found = secretsByCredentialId.get(credentialId)
+
+    if (!found) {
+      const error = new Error('not found')
+      error.code = 'SecretNotFound'
+      throw error
+    }
+
+    secretsByCredentialId.set(credentialId, { ...found, expiresOn })
   }
 }

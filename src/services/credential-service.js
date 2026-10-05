@@ -572,16 +572,22 @@ function requireAdminForTeamCredential(credential) {
 
 /**
  * Renews a credential within the renewal cap, reactivating it in APIM if it was suspended.
+ * Also pushes the extended `expiresAt` to the Key Vault secret's own expiry attribute -
+ * tolerating a vault failure the same way `writeSecretToVault` does (flag `vaultState:
+ * 'unwritten'`, picked up by `reconcilePendingCredentials`, which re-writes the secret
+ * using the already-renewed `expiresAt` from Mongo).
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{id: string, userId: string}} params
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function renewCredential(
   db,
   locker,
   { id, userId },
-  registry = credentialIssuerRegistry
+  registry = credentialIssuerRegistry,
+  vault = credentialVault
 ) {
   const lock = await requireLock(locker, `credential:${id}`)
 
@@ -636,6 +642,27 @@ export async function renewCredential(
       },
       { returnDocument: 'after' }
     )
+
+    try {
+      await vault.updateExpiry({
+        credentialId: id,
+        expiresOn: new Date(expiresAt)
+      })
+
+      if (updated.vaultState === 'unwritten') {
+        await db
+          .collection('credentials')
+          .updateOne({ _id: credential._id }, { $unset: { vaultState: '' } })
+      }
+    } catch {
+      await db
+        .collection('credentials')
+        .updateOne(
+          { _id: credential._id },
+          { $set: { vaultState: 'unwritten' } }
+        )
+      updated.vaultState = 'unwritten'
+    }
 
     await recordAuditEvent(db, {
       actorUserId: userId,

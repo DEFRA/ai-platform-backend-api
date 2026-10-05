@@ -1,5 +1,32 @@
 import { invalidateModelsCache } from '#/services/models-service.js'
 
+// Pinned data-plane api-version per apiProfile, verified against the sandbox
+// gateway (docs/plans/integration/research-tier-integration-plan.md in
+// ai-platform-frontend): `responses` 404s on the chat-completions default.
+const DEFAULT_API_VERSION_BY_PROFILE = { responses: '2025-03-01-preview' }
+const DEFAULT_API_VERSION = '2024-05-01-preview'
+
+// The github source passes `ai-platform-infra`'s raw catalogue/models/*.json
+// through unmodified (pinned by its own tests), which nests eligibility as
+// `{eligibility: {eligible, reason}}`, only carries a `regions` array, and
+// has no `apiVersion` field at all - whereas the rest of this codebase
+// (queries, routes, the frontend) reads flat `eligible`/`eligibilityReason`/
+// `region`/`apiVersion`, the shape the file fixture already uses. Normalise
+// here, at the single write path both sources go through, rather than
+// changing either adapter's pinned output shape.
+function normalizeModel(model) {
+  return {
+    ...model,
+    eligible: model.eligible ?? model.eligibility?.eligible,
+    eligibilityReason: model.eligibilityReason ?? model.eligibility?.reason,
+    region: model.region ?? model.regions?.[0],
+    apiVersion:
+      model.apiVersion ??
+      DEFAULT_API_VERSION_BY_PROFILE[model.apiProfile] ??
+      DEFAULT_API_VERSION
+  }
+}
+
 /**
  * Syncs the model catalogue from a `CatalogueSource` into MongoDB: upserts
  * every model by slug with `catalogueSha`/`release`/`syncedAt`, and retires
@@ -38,7 +65,8 @@ export async function syncCatalogue(db, source, locker, logger) {
     const now = new Date().toISOString()
     const modelsCollection = db.collection('models')
 
-    for (const model of models) {
+    for (const rawModel of models) {
+      const model = normalizeModel(rawModel)
       await modelsCollection.updateOne(
         { slug: model.slug },
         {

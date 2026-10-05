@@ -1,10 +1,7 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
-import {
-  listEligibleModels,
-  findModelBySlug
-} from '#/services/models-service.js'
+import { listModels, findModelBySlug } from '#/services/models-service.js'
 
 export const models = [
   {
@@ -14,13 +11,18 @@ export const models = [
       validate: {
         query: Joi.object({
           provider: Joi.string().trim().lowercase(),
-          tier: Joi.string().trim().lowercase()
+          tier: Joi.string().trim().lowercase(),
+          includeIneligible: Joi.boolean().default(false)
         }).unknown(false)
       }
     },
     handler: async (request, h) => {
-      const { provider, tier } = request.query
-      const items = await listEligibleModels(request.db, { provider, tier })
+      const { provider, tier, includeIneligible } = request.query
+      const items = await listModels(request.db, {
+        provider,
+        tier,
+        includeIneligible
+      })
 
       return h.response({ items })
     }

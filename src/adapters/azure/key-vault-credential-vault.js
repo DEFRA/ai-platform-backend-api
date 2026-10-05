@@ -70,6 +70,18 @@ export function createKeyVaultCredentialVault({ client } = {}) {
           throw error
         }
       }
+    },
+
+    // Updates the current version's expiry attribute in place - unlike
+    // `put`, this does NOT create a new secret version, since the value
+    // (and so the APIM/Foundry key it represents) hasn't changed, only how
+    // long Key Vault considers it valid (a renew, not a rotate).
+    async updateExpiry({ credentialId, expiresOn }) {
+      const name = secretNameFor(credentialId)
+      const current = await getClient().getSecret(name)
+      await getClient().updateSecretProperties(name, current.properties.version, {
+        expiresOn
+      })
     }
   }
 }

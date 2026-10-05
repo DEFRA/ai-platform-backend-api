@@ -5,7 +5,7 @@ function fakeClient() {
 
   return {
     async setSecret(name, value, options) {
-      secrets.set(name, { value, options })
+      secrets.set(name, { value, options, version: 'v1' })
       return { value, properties: { name } }
     },
     async getSecret(name) {
@@ -18,7 +18,11 @@ function fakeClient() {
         throw error
       }
 
-      return { value: found.value }
+      return { value: found.value, properties: { name, version: found.version } }
+    },
+    async updateSecretProperties(name, version, options) {
+      const found = secrets.get(name)
+      secrets.set(name, { ...found, options: { ...found.options, ...options } })
     },
     async beginDeleteSecret(name) {
       secrets.delete(name)
@@ -96,5 +100,25 @@ describe('#createKeyVaultCredentialVault', () => {
     await expect(
       vault.remove({ credentialId: 'never-written' })
     ).resolves.toBeUndefined()
+  })
+
+  test('updateExpiry updates the current version in place without changing the secret value', async () => {
+    const client = fakeClient()
+    const vault = createKeyVaultCredentialVault({ client })
+    const expiresOn = new Date('2030-01-01')
+
+    await vault.put({ credentialId: 'cred-3', secret: 'abc' })
+    await vault.updateExpiry({ credentialId: 'cred-3', expiresOn })
+
+    const stored = await client.getSecret('cred-cred-3')
+    expect(stored.value).toBe('abc')
+  })
+
+  test('updateExpiry rethrows when the secret does not exist', async () => {
+    const vault = createKeyVaultCredentialVault({ client: fakeClient() })
+
+    await expect(
+      vault.updateExpiry({ credentialId: 'never-written', expiresOn: new Date() })
+    ).rejects.toThrow()
   })
 })

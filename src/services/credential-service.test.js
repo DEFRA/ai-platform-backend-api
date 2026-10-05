@@ -3,6 +3,7 @@ import { randomUUID } from 'node:crypto'
 import {
   issueCredential,
   rotateCredential,
+  renewCredential,
   revokeCredential,
   revealCredential
 } from '#/services/credential-service.js'
@@ -21,6 +22,7 @@ function stubVault(overrides = {}) {
     remove: vi.fn(async ({ credentialId }) => {
       secretsByCredentialId.delete(credentialId)
     }),
+    updateExpiry: vi.fn(async () => {}),
     ...overrides
   }
 }
@@ -214,6 +216,70 @@ describe('#credential-service vault wiring', () => {
         vault
       )
     ).rejects.toMatchObject({ output: { statusCode: 404 } })
+  })
+
+  test('renewCredential updates the vault secret expiry and clears a prior vaultState: unwritten flag', async () => {
+    const userId = `vault-renew-user-${randomUUID()}`
+    const failingVault = stubVault({
+      put: vi.fn().mockRejectedValue(new Error('vault unavailable'))
+    })
+    const issued = await issueCredential(
+      db,
+      locker,
+      { userId, modelSlug: 'gpt-4o', idempotencyKey: randomUUID() },
+      credentialIssuerRegistry,
+      failingVault
+    )
+
+    const vault = stubVault()
+    const renewed = await renewCredential(
+      db,
+      locker,
+      { id: issued.credential._id.toString(), userId },
+      credentialIssuerRegistry,
+      vault
+    )
+
+    expect(vault.updateExpiry).toHaveBeenCalledWith({
+      credentialId: issued.credential._id.toString(),
+      expiresOn: new Date(renewed.expiresAt)
+    })
+
+    const stored = await db
+      .collection('credentials')
+      .findOne({ _id: issued.credential._id })
+
+    expect(stored.vaultState).toBeUndefined()
+  })
+
+  test('renewCredential flags vaultState: unwritten when the vault expiry update fails', async () => {
+    const vault = stubVault({
+      updateExpiry: vi.fn().mockRejectedValue(new Error('vault unavailable'))
+    })
+    const userId = `vault-renew-fail-user-${randomUUID()}`
+    const issued = await issueCredential(
+      db,
+      locker,
+      { userId, modelSlug: 'gpt-4o', idempotencyKey: randomUUID() },
+      credentialIssuerRegistry,
+      vault
+    )
+
+    const renewed = await renewCredential(
+      db,
+      locker,
+      { id: issued.credential._id.toString(), userId },
+      credentialIssuerRegistry,
+      vault
+    )
+
+    expect(renewed.status).toBe('active')
+
+    const stored = await db
+      .collection('credentials')
+      .findOne({ _id: issued.credential._id })
+
+    expect(stored.vaultState).toBe('unwritten')
   })
 })
 

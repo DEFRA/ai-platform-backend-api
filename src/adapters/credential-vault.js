@@ -10,6 +10,7 @@
  * @property {(params: {credentialId: string, secret: string, tags?: Record<string, string>, expiresOn?: Date}) => Promise<void>} put
  * @property {(params: {credentialId: string}) => Promise<string|null>} get
  * @property {(params: {credentialId: string}) => Promise<void>} remove
+ * @property {(params: {credentialId: string, expiresOn: Date}) => Promise<void>} updateExpiry
  */
 
 export {}
