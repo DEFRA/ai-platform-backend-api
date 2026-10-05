@@ -18,7 +18,10 @@ function fakeClient() {
         throw error
       }
 
-      return { value: found.value, properties: { name, version: found.version } }
+      return {
+        value: found.value,
+        properties: { name, version: found.version }
+      }
     },
     async updateSecretProperties(name, version, options) {
       const found = secrets.get(name)
@@ -74,9 +77,7 @@ describe('#createKeyVaultCredentialVault', () => {
     }
     const vault = createKeyVaultCredentialVault({ client })
 
-    await expect(vault.get({ credentialId: 'cred-1' })).rejects.toThrow(
-      'boom'
-    )
+    await expect(vault.get({ credentialId: 'cred-1' })).rejects.toThrow('boom')
   })
 
   test('remove then get returns null', async () => {
@@ -118,7 +119,10 @@ describe('#createKeyVaultCredentialVault', () => {
     const vault = createKeyVaultCredentialVault({ client: fakeClient() })
 
     await expect(
-      vault.updateExpiry({ credentialId: 'never-written', expiresOn: new Date() })
+      vault.updateExpiry({
+        credentialId: 'never-written',
+        expiresOn: new Date()
+      })
     ).rejects.toThrow()
   })
 })

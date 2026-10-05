@@ -244,16 +244,16 @@ no Azure access needed. To run locally against the **real** sandbox APIM/Key Vau
 Phase 0, create a `.env` file in the repo root (already gitignored; `npm run dev`'s
 `--env-file-if-exists=.env` loads it automatically - no other wiring needed) with:
 
-| Variable                     | Value                                                                  |
-| :--------------------------- | :---------------------------------------------------------------------|
-| `PROVISIONING_MODE`          | `azure`                                                                |
-| `AZURE_ARM_TENANT_ID`        | The ARM app registration's tenant ID                                   |
-| `AZURE_ARM_CLIENT_ID`        | The ARM app registration's client ID                                  |
-| `AZURE_ARM_CLIENT_SECRET`    | The ARM app registration's client secret                              |
-| `AZURE_ARM_SUBSCRIPTION_ID`  | The sandbox subscription ID (`az account show --query id -o tsv`)     |
-| `AZURE_ARM_RESOURCE_GROUP`   | `SNDAIEEXPRGP1401` (per the plan's Phase 0 STATUS note)                |
-| `APIM_SERVICE_NAME`          | `DEPLOYTESTDEFRA` (per the plan's Phase 0 STATUS note)                 |
-| `AZURE_KEY_VAULT_NAME`       | `kv-aip-sandbox-tenants` (per the plan's 0.9 step)                     |
+| Variable                    | Value                                                             |
+| :-------------------------- | :---------------------------------------------------------------- |
+| `PROVISIONING_MODE`         | `azure`                                                           |
+| `AZURE_ARM_TENANT_ID`       | The ARM app registration's tenant ID                              |
+| `AZURE_ARM_CLIENT_ID`       | The ARM app registration's client ID                              |
+| `AZURE_ARM_CLIENT_SECRET`   | The ARM app registration's client secret                          |
+| `AZURE_ARM_SUBSCRIPTION_ID` | The sandbox subscription ID (`az account show --query id -o tsv`) |
+| `AZURE_ARM_RESOURCE_GROUP`  | `SNDAIEEXPRGP1401` (per the plan's Phase 0 STATUS note)           |
+| `APIM_SERVICE_NAME`         | `DEPLOYTESTDEFRA` (per the plan's Phase 0 STATUS note)            |
+| `AZURE_KEY_VAULT_NAME`      | `kv-aip-sandbox-tenants` (per the plan's 0.9 step)                |
 
 `APIM_RESEARCH_API_ID` needs no override - its `research` default already matches the API built in
 0.6/0.7. `CATALOGUE_SOURCE` can stay on its `file` default: the seed fixture already carries the

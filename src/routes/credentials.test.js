@@ -987,7 +987,10 @@ describe('#credentials routes', () => {
   })
 
   test('POST /v1/credentials/{id}/reveal returns the secret with a reason', async () => {
-    const headers = { 'x-user-id': 'user-reveal-1', 'idempotency-key': randomUUID() }
+    const headers = {
+      'x-user-id': 'user-reveal-1',
+      'idempotency-key': randomUUID()
+    }
     const issued = await server.inject({
       method: 'POST',
       url: '/v1/credentials',
@@ -995,7 +998,11 @@ describe('#credentials routes', () => {
       payload: { modelSlug: 'gpt-4o' }
     })
 
-    const { result, statusCode, headers: responseHeaders } = await server.inject({
+    const {
+      result,
+      statusCode,
+      headers: responseHeaders
+    } = await server.inject({
       method: 'POST',
       url: `/v1/credentials/${issued.result.credential._id}/reveal`,
       headers: { 'x-user-id': 'user-reveal-1' },
@@ -1009,7 +1016,10 @@ describe('#credentials routes', () => {
   })
 
   test('POST /v1/credentials/{id}/reveal requires a reason', async () => {
-    const headers = { 'x-user-id': 'user-reveal-2', 'idempotency-key': randomUUID() }
+    const headers = {
+      'x-user-id': 'user-reveal-2',
+      'idempotency-key': randomUUID()
+    }
     const issued = await server.inject({
       method: 'POST',
       url: '/v1/credentials',
@@ -1028,7 +1038,10 @@ describe('#credentials routes', () => {
   })
 
   test('POST /v1/credentials/{id}/reveal returns 404 for another user\u2019s credential', async () => {
-    const headers = { 'x-user-id': 'user-reveal-3', 'idempotency-key': randomUUID() }
+    const headers = {
+      'x-user-id': 'user-reveal-3',
+      'idempotency-key': randomUUID()
+    }
     const issued = await server.inject({
       method: 'POST',
       url: '/v1/credentials',
@@ -1047,7 +1060,10 @@ describe('#credentials routes', () => {
   })
 
   test('POST /v1/credentials/{id}/reveal returns 409 credential-revoked for a revoked credential', async () => {
-    const headers = { 'x-user-id': 'user-reveal-4', 'idempotency-key': randomUUID() }
+    const headers = {
+      'x-user-id': 'user-reveal-4',
+      'idempotency-key': randomUUID()
+    }
     const issued = await server.inject({
       method: 'POST',
       url: '/v1/credentials',

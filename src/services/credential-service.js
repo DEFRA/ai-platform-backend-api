@@ -44,7 +44,9 @@ async function findTeamIdForUser(db, userId) {
  * @param {object} credential
  */
 export function externalGatewaySubscriptionIdOf(credential) {
-  return credential.externalGatewaySubscriptionId ?? credential.apimSubscriptionId
+  return (
+    credential.externalGatewaySubscriptionId ?? credential.apimSubscriptionId
+  )
 }
 
 /**
@@ -66,7 +68,10 @@ async function buildVaultTags(db, { teamId, environment }) {
   if (teamId && ObjectId.isValid(teamId)) {
     const team = await db
       .collection('teams')
-      .findOne({ _id: new ObjectId(teamId) }, { projection: { serviceCode: 1 } })
+      .findOne(
+        { _id: new ObjectId(teamId) },
+        { projection: { serviceCode: 1 } }
+      )
 
     if (team?.serviceCode) {
       tags['aip-service-code'] = team.serviceCode
@@ -97,7 +102,9 @@ export async function writeSecretToVault(db, vault, credential, secret) {
       credentialId: credential._id.toString(),
       secret,
       tags,
-      expiresOn: credential.expiresAt ? new Date(credential.expiresAt) : undefined
+      expiresOn: credential.expiresAt
+        ? new Date(credential.expiresAt)
+        : undefined
     })
 
     if (credential.vaultState === 'unwritten') {
@@ -110,10 +117,7 @@ export async function writeSecretToVault(db, vault, credential, secret) {
   } catch {
     await db
       .collection('credentials')
-      .updateOne(
-        { _id: credential._id },
-        { $set: { vaultState: 'unwritten' } }
-      )
+      .updateOne({ _id: credential._id }, { $set: { vaultState: 'unwritten' } })
 
     return false
   }

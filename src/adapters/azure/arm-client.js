@@ -35,7 +35,9 @@ export function createArmClient({ getCredential = getArmCredential } = {}) {
     if (!response.ok) {
       // Never include the response body - on `listSecrets` it can carry the
       // subscription key, and this message may end up in logs or an error path.
-      throw new Error(`ARM request failed: ${method} ${path} -> ${response.status}`)
+      throw new Error(
+        `ARM request failed: ${method} ${path} -> ${response.status}`
+      )
     }
 
     // ARM doesn't reliably use 204 for an empty body - a subscription DELETE
