@@ -278,11 +278,18 @@ export const config = convict({
       env: 'GITHUB_TOKEN'
     },
     appId: {
-      doc: 'GitHub App ID, an alternative to github.token',
+      doc: 'GitHub App ID, an alternative to github.token - superseded by github.clientId if both are set',
       format: String,
       nullable: true,
       default: null,
       env: 'GITHUB_APP_ID'
+    },
+    clientId: {
+      doc: 'GitHub App Client ID, preferred over github.appId per GitHub current guidance',
+      format: String,
+      nullable: true,
+      default: null,
+      env: 'GITHUB_CLIENT_ID'
     },
     installationId: {
       doc: 'GitHub App installation ID, required alongside github.appId',
@@ -335,4 +342,18 @@ if (config.get('provisioning.mode') === 'azure') {
       `PROVISIONING_MODE=azure requires ${missing.join(', ')} to be set`
     )
   }
+}
+
+const isGithubAppAuth = config.get('github.appId') || config.get('github.clientId')
+
+if (isGithubAppAuth && !config.get('github.installationId')) {
+  throw new Error(
+    'GITHUB_APP_ID/GITHUB_CLIENT_ID requires GITHUB_APP_INSTALLATION_ID to be set'
+  )
+}
+
+if (isGithubAppAuth && !config.get('github.privateKey')) {
+  throw new Error(
+    'GITHUB_APP_ID/GITHUB_CLIENT_ID requires GITHUB_APP_PRIVATE_KEY to be set'
+  )
 }

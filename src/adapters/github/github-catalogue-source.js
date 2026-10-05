@@ -1,11 +1,29 @@
 import { Octokit } from 'octokit'
+import { createAppAuth } from '@octokit/auth-app'
 
 import { config } from '#/config.js'
 
 function createOctokit() {
+  // Client ID is GitHub's current recommendation over the numeric App ID -
+  // @octokit/auth-app's `appId` field accepts either value interchangeably.
+  const appId = config.get('github.clientId') || config.get('github.appId')
+  const privateKey = config.get('github.privateKey')
+
   // This adapter already has its own resilience strategy (fall back to the
   // last good mirror on any failure) - octokit's bundled retry plugin would
   // only add latency on top of that, so it's disabled here.
+  if (appId && privateKey) {
+    return new Octokit({
+      authStrategy: createAppAuth,
+      auth: {
+        appId,
+        privateKey,
+        installationId: config.get('github.installationId')
+      },
+      request: { retries: 0 }
+    })
+  }
+
   return new Octokit({
     auth: config.get('github.token'),
     request: { retries: 0 }
