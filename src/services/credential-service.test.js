@@ -1,13 +1,29 @@
 import { randomUUID } from 'node:crypto'
 
-import {
-  issueCredential,
-  rotateCredential,
-  renewCredential,
-  revokeCredential,
-  revealCredential
-} from '#/services/credential-service.js'
-import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
+// credential-service.js and credential-issuer-registry.js both import
+// #/config.js, which snapshots MONGO_URI via convict on first import -
+// these must stay dynamic imports loaded from inside beforeAll (after the
+// in-memory Mongo server's setup file has set that env var), never static
+// top-level imports, or the real server below connects to the wrong URI.
+let issueCredential
+let rotateCredential
+let renewCredential
+let revokeCredential
+let revealCredential
+let credentialIssuerRegistry
+
+async function loadCredentialService() {
+  ;({
+    issueCredential,
+    rotateCredential,
+    renewCredential,
+    revokeCredential,
+    revealCredential
+  } = await import('#/services/credential-service.js'))
+  ;({ credentialIssuerRegistry } = await import(
+    '#/adapters/credential-issuer-registry.js'
+  ))
+}
 
 function stubVault(overrides = {}) {
   const secretsByCredentialId = new Map()
@@ -35,6 +51,7 @@ describe('#credential-service vault wiring', () => {
   beforeAll(async () => {
     // Dynamic import needed due to config being updated by vitest-mongodb
     const { createServer } = await import('#/server.js')
+    await loadCredentialService()
 
     server = await createServer()
     await server.initialize()
@@ -291,6 +308,7 @@ describe('#credential-service externalGatewaySubscriptionId fallback', () => {
   beforeAll(async () => {
     // Dynamic import needed due to config being updated by vitest-mongodb
     const { createServer } = await import('#/server.js')
+    await loadCredentialService()
 
     server = await createServer()
     await server.initialize()
