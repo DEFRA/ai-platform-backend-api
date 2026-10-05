@@ -3,7 +3,8 @@ import { ObjectId } from 'mongodb'
 import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { findModelBySlug } from '#/services/models-service.js'
-import { mockCredentialIssuer } from '#/adapters/mock-credential-issuer.js'
+import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
+import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import {
   requireLock,
@@ -36,6 +37,93 @@ async function findTeamIdForUser(db, userId) {
 }
 
 /**
+ * Reads the provider-neutral gateway subscription id, falling back to the
+ * pre-rename `apimSubscriptionId` field for documents the backfill hasn't
+ * reached yet (see `src/common/backfills/registry.js`). Exported so
+ * `maintenance-service.js` reads the same fallback, not a second copy of it.
+ * @param {object} credential
+ */
+export function externalGatewaySubscriptionIdOf(credential) {
+  return (
+    credential.externalGatewaySubscriptionId ?? credential.apimSubscriptionId
+  )
+}
+
+/**
+ * Tags attached to a credential's Key Vault secret, per the design's
+ * "tagged aip-team, aip-service-code and aip-environment". `aip-team` is
+ * the literal platform team name for a research-tier credential with no
+ * team of its own, or the owning team's id otherwise; `aip-service-code`
+ * is best-effort (omitted if the team has none recorded) rather than a
+ * required field, since it is metadata for operators, not an access check.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string|null, environment: string|null}} credential
+ */
+async function buildVaultTags(db, { teamId, environment }) {
+  const tags = {
+    'aip-team': teamId ?? 'research',
+    'aip-environment': environment ?? config.get('cdpEnvironment')
+  }
+
+  if (teamId && ObjectId.isValid(teamId)) {
+    const team = await db
+      .collection('teams')
+      .findOne(
+        { _id: new ObjectId(teamId) },
+        { projection: { serviceCode: 1 } }
+      )
+
+    if (team?.serviceCode) {
+      tags['aip-service-code'] = team.serviceCode
+    }
+  }
+
+  return tags
+}
+
+/**
+ * Writes a credential's secret to the vault, tolerating a vault failure by
+ * flagging the credential `vaultState: 'unwritten'` rather than failing the
+ * caller's request - the user already holds the secret from the issuer, and
+ * `reconcilePendingCredentials` retries unwritten writes later. Exported so
+ * that retry can reuse the exact same tagging/flag-clearing logic instead of
+ * duplicating it.
+ * @param {import('mongodb').Db} db
+ * @param {import('#/adapters/credential-vault.js').CredentialVault} vault
+ * @param {object} credential
+ * @param {string} secret
+ * @returns {Promise<boolean>} whether the vault write succeeded
+ */
+export async function writeSecretToVault(db, vault, credential, secret) {
+  try {
+    const tags = await buildVaultTags(db, credential)
+
+    await vault.put({
+      credentialId: credential._id.toString(),
+      secret,
+      tags,
+      expiresOn: credential.expiresAt
+        ? new Date(credential.expiresAt)
+        : undefined
+    })
+
+    if (credential.vaultState === 'unwritten') {
+      await db
+        .collection('credentials')
+        .updateOne({ _id: credential._id }, { $unset: { vaultState: '' } })
+    }
+
+    return true
+  } catch {
+    await db
+      .collection('credentials')
+      .updateOne({ _id: credential._id }, { $set: { vaultState: 'unwritten' } })
+
+    return false
+  }
+}
+
+/**
  * Issues a Research or Team tier credential, or replays the result of a
  * prior call with the same Idempotency-Key. A Team tier request must carry
  * an explicit `teamId` (never derived from `users.teamId`, which is a
@@ -54,18 +142,19 @@ async function findTeamIdForUser(db, userId) {
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string, credentialType?: 'oauth'|'subscription-key'}} params
- * @param {import('#/adapters/credential-issuer.js').CredentialIssuer} [issuer]
+ * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  */
 export async function issueCredential(
   db,
   locker,
   params,
-  issuer = mockCredentialIssuer
+  registry = credentialIssuerRegistry,
+  vault = credentialVault
 ) {
   const { tier = 'research', teamId, environment } = params
 
   if (tier !== 'team') {
-    return issueCredentialForParams(db, params, issuer)
+    return issueCredentialForParams(db, params, registry, vault)
   }
 
   // A team shares one credential per environment, so the
@@ -77,7 +166,7 @@ export async function issueCredential(
   )
 
   try {
-    return await issueCredentialForParams(db, params, issuer)
+    return await issueCredentialForParams(db, params, registry, vault)
   } finally {
     await lock.free()
   }
@@ -95,7 +184,8 @@ async function issueCredentialForParams(
     environment,
     credentialType = 'subscription-key'
   },
-  issuer = mockCredentialIssuer
+  registry = credentialIssuerRegistry,
+  vault = credentialVault
 ) {
   const existing = await db
     .collection('credentials')
@@ -114,6 +204,8 @@ async function issueCredentialForParams(
       'model-not-eligible'
     )
   }
+
+  const { issuerKey, issuer } = registry.forModel(model)
 
   let resolvedTeamId = null
   let resolvedCredentialType = null
@@ -212,6 +304,7 @@ async function issueCredentialForParams(
     type: 'apim-subscription',
     status: 'pending',
     idempotencyKey,
+    issuerKey,
     createdAt: now,
     renewalCount: 0
   }
@@ -265,7 +358,7 @@ async function issueCredentialForParams(
 
   const active = {
     status: 'active',
-    apimSubscriptionId: issued.apimSubscriptionId,
+    externalGatewaySubscriptionId: issued.externalId,
     keyHint: issued.keyHint,
     activatedAt: now,
     // Team credentials are shared indefinitely across the team and never
@@ -278,6 +371,10 @@ async function issueCredentialForParams(
     .collection('credentials')
     .updateOne({ _id: insertedId }, { $set: active })
 
+  const activeCredential = { _id: insertedId, ...pending, ...active }
+
+  await writeSecretToVault(db, vault, activeCredential, issued.secret)
+
   await recordAuditEvent(db, {
     actorUserId: userId,
     action: 'credential.issue',
@@ -287,7 +384,7 @@ async function issueCredentialForParams(
   })
 
   return {
-    credential: { _id: insertedId, ...pending, ...active },
+    credential: activeCredential,
     secret: issued.secret
   }
 }
@@ -479,16 +576,22 @@ function requireAdminForTeamCredential(credential) {
 
 /**
  * Renews a credential within the renewal cap, reactivating it in APIM if it was suspended.
+ * Also pushes the extended `expiresAt` to the Key Vault secret's own expiry attribute -
+ * tolerating a vault failure the same way `writeSecretToVault` does (flag `vaultState:
+ * 'unwritten'`, picked up by `reconcilePendingCredentials`, which re-writes the secret
+ * using the already-renewed `expiresAt` from Mongo).
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{id: string, userId: string}} params
- * @param {import('#/adapters/credential-issuer.js').CredentialIssuer} [issuer]
+ * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function renewCredential(
   db,
   locker,
   { id, userId },
-  issuer = mockCredentialIssuer
+  registry = credentialIssuerRegistry,
+  vault = credentialVault
 ) {
   const lock = await requireLock(locker, `credential:${id}`)
 
@@ -524,7 +627,10 @@ export async function renewCredential(
     }
 
     if (credential.status === 'expired') {
-      await issuer.renew({ apimSubscriptionId: credential.apimSubscriptionId })
+      const { issuer } = registry.forCredential(credential)
+      await issuer.renew({
+        externalId: externalGatewaySubscriptionIdOf(credential)
+      })
     }
 
     const ttlDays = config.get('research.credentialTtlDays')
@@ -540,6 +646,27 @@ export async function renewCredential(
       },
       { returnDocument: 'after' }
     )
+
+    try {
+      await vault.updateExpiry({
+        credentialId: id,
+        expiresOn: new Date(expiresAt)
+      })
+
+      if (updated.vaultState === 'unwritten') {
+        await db
+          .collection('credentials')
+          .updateOne({ _id: credential._id }, { $unset: { vaultState: '' } })
+      }
+    } catch {
+      await db
+        .collection('credentials')
+        .updateOne(
+          { _id: credential._id },
+          { $set: { vaultState: 'unwritten' } }
+        )
+      updated.vaultState = 'unwritten'
+    }
 
     await recordAuditEvent(db, {
       actorUserId: userId,
@@ -565,13 +692,15 @@ export async function renewCredential(
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{id: string, userId: string}} params
- * @param {import('#/adapters/credential-issuer.js').CredentialIssuer} [issuer]
+ * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function rotateCredential(
   db,
   locker,
   { id, userId },
-  issuer = mockCredentialIssuer
+  registry = credentialIssuerRegistry,
+  vault = credentialVault
 ) {
   const lock = await requireLock(locker, `credential:${id}`)
 
@@ -592,8 +721,9 @@ export async function rotateCredential(
       )
     }
 
+    const { issuer } = registry.forCredential(credential)
     const rotated = await issuer.rotate({
-      apimSubscriptionId: credential.apimSubscriptionId,
+      externalId: externalGatewaySubscriptionIdOf(credential),
       credentialType: credential.credentialType
     })
 
@@ -605,6 +735,10 @@ export async function rotateCredential(
         { $set: { keyHint: rotated.keyHint, rotatedAt: now } },
         { returnDocument: 'after' }
       )
+
+    // Creates a new Key Vault version; the old version stays recoverable
+    // inside the 90-day soft-delete window.
+    await writeSecretToVault(db, vault, updated, rotated.secret)
 
     await recordAuditEvent(db, {
       actorUserId: userId,
@@ -630,13 +764,15 @@ export async function rotateCredential(
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{id: string, userId: string}} params
- * @param {import('#/adapters/credential-issuer.js').CredentialIssuer} [issuer]
+ * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function revokeCredential(
   db,
   locker,
   { id, userId },
-  issuer = mockCredentialIssuer
+  registry = credentialIssuerRegistry,
+  vault = credentialVault
 ) {
   const lock = await requireLock(locker, `credential:${id}`)
 
@@ -653,7 +789,19 @@ export async function revokeCredential(
       return credential
     }
 
-    await issuer.revoke({ apimSubscriptionId: credential.apimSubscriptionId })
+    const { issuer } = registry.forCredential(credential)
+    await issuer.revoke({
+      externalId: externalGatewaySubscriptionIdOf(credential)
+    })
+
+    // Soft-deletes for 90 days. Best-effort: the credential is already
+    // revoked in APIM, which is the access control that matters - a vault
+    // write failure here is hygiene, not a security hole.
+    try {
+      await vault.remove({ credentialId: credential._id.toString() })
+    } catch {
+      // intentionally swallowed, see comment above
+    }
 
     const now = new Date().toISOString()
     const updated = await db.collection('credentials').findOneAndUpdate(
@@ -680,4 +828,66 @@ export async function revokeCredential(
   } finally {
     await lock.free()
   }
+}
+
+/**
+ * Reveals a credential's plaintext secret for view/re-share - a
+ * state-changing, audited action (never a GET: the secret must never sit in
+ * a URL, query string or access log). Authorisation reuses
+ * `loadCredentialForAction`: owner-only for a research credential, team-admin
+ * only for a team credential (`admin-required`). A platform-operator
+ * override is also in the design pack, but no such role exists anywhere
+ * else in this codebase yet (no operator collection/flag) - deferred until
+ * that lands rather than invented here.
+ * @param {import('mongodb').Db} db
+ * @param {{id: string, actorUserId: string, reason: string}} params
+ * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
+ */
+export async function revealCredential(
+  db,
+  { id, actorUserId, reason },
+  vault = credentialVault
+) {
+  const credential = await loadCredentialForAction(db, {
+    id,
+    userId: actorUserId
+  })
+
+  if (!credential) {
+    throw Boom.notFound()
+  }
+
+  requireAdminForTeamCredential(credential)
+
+  if (credential.status === 'revoked') {
+    throw boomWithCode(
+      Boom.conflict,
+      'Credential has been revoked',
+      'credential-revoked'
+    )
+  }
+
+  if (credential.status === 'failed' || credential.vaultState === 'unwritten') {
+    // Either never had a secret, or the vault write is still pending
+    // reconciliation - matches findCredentialForViewing's "don't disclose
+    // more than a 404" behaviour rather than a more specific error.
+    throw Boom.notFound()
+  }
+
+  const secret = await vault.get({ credentialId: credential._id.toString() })
+
+  if (!secret) {
+    throw Boom.notFound()
+  }
+
+  await recordAuditEvent(db, {
+    actorUserId,
+    action: 'credential.reveal',
+    resource: 'credential',
+    resourceId: id,
+    outcome: 'success',
+    reason
+  })
+
+  return secret
 }

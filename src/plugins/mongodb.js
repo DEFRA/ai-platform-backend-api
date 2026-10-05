@@ -2,8 +2,16 @@ import { MongoClient } from 'mongodb'
 import { LockManager } from 'mongo-locks'
 
 import { config } from '#/config.js'
-import { seedModels } from '#/common/seed/seed-models.js'
+import { createFileCatalogueSource } from '#/adapters/file-catalogue-source.js'
+import { createGithubCatalogueSource } from '#/adapters/github/github-catalogue-source.js'
+import { syncCatalogue } from '#/services/catalogue-service.js'
 import { runBackfills } from '#/common/backfills/run-backfills.js'
+
+function resolveCatalogueSource() {
+  return config.get('catalogue.source') === 'github'
+    ? createGithubCatalogueSource()
+    : createFileCatalogueSource()
+}
 
 export const mongoDb = {
   plugin: {
@@ -26,7 +34,7 @@ export const mongoDb = {
       // backfill itself drops the legacy indexes those old rows relied on.
       await runBackfills(db, server.logger)
       await createIndexes(db)
-      await seedModels(db, server.logger)
+      await syncCatalogue(db, resolveCatalogueSource(), locker, server.logger)
 
       server.logger.info(`MongoDb connected to ${databaseName}`)
 

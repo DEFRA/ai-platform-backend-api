@@ -58,6 +58,108 @@ describe('#backfillRegistry', () => {
     })
   })
 
+  describe('2026-10-01-credentials-issuer-key-default', () => {
+    test('sets issuerKey: "mock" on a credential doc missing it', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'pre-registry-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'active'
+      })
+
+      const { modifiedCount } = await findBackfill(
+        '2026-10-01-credentials-issuer-key-default'
+      ).run(db)
+
+      expect(modifiedCount).toBeGreaterThanOrEqual(1)
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated.issuerKey).toBe('mock')
+    })
+
+    test('leaves a credential doc with an existing issuerKey untouched', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'azure-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'active',
+        issuerKey: 'azure'
+      })
+
+      await findBackfill('2026-10-01-credentials-issuer-key-default').run(db)
+
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated.issuerKey).toBe('azure')
+    })
+  })
+
+  describe('2026-10-02-credentials-external-gateway-subscription-id', () => {
+    test('copies apimSubscriptionId into externalGatewaySubscriptionId on a credential doc missing it', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'pre-rename-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'active',
+        apimSubscriptionId: 'research-pre-rename-user-gpt-4o'
+      })
+
+      const { modifiedCount } = await findBackfill(
+        '2026-10-02-credentials-external-gateway-subscription-id'
+      ).run(db)
+
+      expect(modifiedCount).toBeGreaterThanOrEqual(1)
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated.externalGatewaySubscriptionId).toBe(
+        'research-pre-rename-user-gpt-4o'
+      )
+      // The old field is kept, not unset, until the fallback reads are removed.
+      expect(updated.apimSubscriptionId).toBe('research-pre-rename-user-gpt-4o')
+    })
+
+    test('leaves a credential doc that never had apimSubscriptionId (e.g. pending) without the new field', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'never-issued-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'pending'
+      })
+
+      await findBackfill(
+        '2026-10-02-credentials-external-gateway-subscription-id'
+      ).run(db)
+
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated.externalGatewaySubscriptionId).toBeUndefined()
+    })
+
+    test('leaves a credential doc with an existing externalGatewaySubscriptionId untouched', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'already-migrated-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'active',
+        apimSubscriptionId: 'old-value',
+        externalGatewaySubscriptionId: 'already-set'
+      })
+
+      await findBackfill(
+        '2026-10-02-credentials-external-gateway-subscription-id'
+      ).run(db)
+
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated.externalGatewaySubscriptionId).toBe('already-set')
+    })
+  })
+
   describe('2026-09-25-consolidate-legacy-team-deployments', () => {
     test('merges legacy one-row-per-model docs into one deployments[] doc, renaming dev to sandbox', async () => {
       const teamId = 'legacy-deployments-team-1'

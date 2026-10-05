@@ -28,20 +28,28 @@ export function invalidateModelsCache() {
 }
 
 /**
- * Lists eligible models, optionally filtered by provider and/or tier.
- * Reads are cached in-process for 5 minutes, keyed by the filters used.
+ * Lists models, optionally filtered by provider and/or tier. Excludes
+ * ineligible/retired models unless `includeIneligible` is set - the connect
+ * journeys rely on the default (eligible-only) so people can never pick a
+ * model they can't actually use; the catalogue browse page passes
+ * `includeIneligible: true` so it can grey ineligible ones out instead of
+ * hiding them (Phase 5 item 2). Reads are cached in-process for 5 minutes,
+ * keyed by the filters used.
  * @param {import('mongodb').Db} db
- * @param {{provider?: string, tier?: string}} [filters]
+ * @param {{provider?: string, tier?: string, includeIneligible?: boolean}} [filters]
  */
-export async function listEligibleModels(db, { provider, tier } = {}) {
-  const key = cacheKey('list', { provider, tier })
+export async function listModels(
+  db,
+  { provider, tier, includeIneligible = false } = {}
+) {
+  const key = cacheKey('list', { provider, tier, includeIneligible })
   const cached = readCache(key)
 
   if (cached) {
     return cached
   }
 
-  const query = { eligible: true }
+  const query = includeIneligible ? {} : { eligible: true }
 
   if (provider) {
     query.provider = provider

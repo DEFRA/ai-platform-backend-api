@@ -1,5 +1,5 @@
 import {
-  listEligibleModels,
+  listModels,
   findModelBySlug,
   invalidateModelsCache
 } from '#/services/models-service.js'
@@ -28,25 +28,47 @@ describe('#models-service caching', () => {
     invalidateModelsCache()
   })
 
-  test('listEligibleModels caches results for the same filters', async () => {
+  test('listModels caches results for the same filters', async () => {
     const models = [{ slug: 'a', eligible: true }]
     const db = fakeDb(models)
     const findSpy = vi.spyOn(db, 'collection')
 
-    await listEligibleModels(db, { provider: 'openai' })
-    await listEligibleModels(db, { provider: 'openai' })
+    await listModels(db, { provider: 'openai' })
+    await listModels(db, { provider: 'openai' })
 
     expect(findSpy).toHaveBeenCalledTimes(1)
   })
 
-  test('listEligibleModels re-queries for different filters', async () => {
+  test('listModels re-queries for different filters', async () => {
     const db = fakeDb([{ slug: 'a', eligible: true }])
     const findSpy = vi.spyOn(db, 'collection')
 
-    await listEligibleModels(db, { provider: 'openai' })
-    await listEligibleModels(db, { provider: 'anthropic' })
+    await listModels(db, { provider: 'openai' })
+    await listModels(db, { provider: 'anthropic' })
 
     expect(findSpy).toHaveBeenCalledTimes(2)
+  })
+
+  test('listModels excludes ineligible models by default', async () => {
+    const db = fakeDb([
+      { slug: 'a', eligible: true },
+      { slug: 'b', eligible: false }
+    ])
+
+    const items = await listModels(db)
+
+    expect(items.map((model) => model.slug)).toEqual(['a'])
+  })
+
+  test('listModels with includeIneligible returns ineligible models too', async () => {
+    const db = fakeDb([
+      { slug: 'a', eligible: true },
+      { slug: 'b', eligible: false }
+    ])
+
+    const items = await listModels(db, { includeIneligible: true })
+
+    expect(items.map((model) => model.slug).sort()).toEqual(['a', 'b'])
   })
 
   test('findModelBySlug caches results, including misses', async () => {

@@ -28,8 +28,10 @@ export const maintenance = {
       request.db,
       request.locker
     )
-    const { reconciled } = await reconcilePendingCredentials(request.db)
+    const { reconciled, vaultReconciled } = await reconcilePendingCredentials(
+      request.db
+    )
 
-    return h.response({ expired, suspended, reconciled })
+    return h.response({ expired, suspended, reconciled, vaultReconciled })
   }
 }

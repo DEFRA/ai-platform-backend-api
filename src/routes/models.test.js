@@ -45,6 +45,30 @@ describe('#models routes', () => {
     expect(statusCode).toBe(400)
   })
 
+  test('GET /v1/models excludes ineligible models by default', async () => {
+    const { result } = await server.inject({
+      method: 'GET',
+      url: '/v1/models'
+    })
+
+    expect(
+      result.items.some((model) => model.slug === 'text-embedding-ada-002')
+    ).toBe(false)
+  })
+
+  test('GET /v1/models?includeIneligible=true includes ineligible models', async () => {
+    const { result } = await server.inject({
+      method: 'GET',
+      url: '/v1/models?includeIneligible=true'
+    })
+
+    const model = result.items.find(
+      (item) => item.slug === 'text-embedding-ada-002'
+    )
+    expect(model).toBeDefined()
+    expect(model.eligible).toBe(false)
+  })
+
   test('GET /v1/models/{slug} returns model detail', async () => {
     const { result, statusCode } = await server.inject({
       method: 'GET',
