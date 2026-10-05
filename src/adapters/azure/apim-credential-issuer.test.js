@@ -21,9 +21,8 @@ process.env.APIM_SERVICE_NAME = 'apim-1'
 process.env.APIM_RESEARCH_API_ID = 'research'
 
 const { createArmClient } = await import('#/adapters/azure/arm-client.js')
-const { createApimCredentialIssuer } = await import(
-  '#/adapters/azure/apim-credential-issuer.js'
-)
+const { createApimCredentialIssuer } =
+  await import('#/adapters/azure/apim-credential-issuer.js')
 
 const SERVICE_BASE_PATH =
   '/subscriptions/sub-1/resourceGroups/rg-1/providers/Microsoft.ApiManagement/service/apim-1'
@@ -79,9 +78,15 @@ describe('createApimCredentialIssuer', () => {
       .reply(200, { primaryKey: 'real-primary-key-1234' })
 
     const issuer = createAzureIssuer()
-    await issuer.issue({ userId: 'user-1', modelSlug: 'gpt-4o', tier: 'research' })
+    await issuer.issue({
+      userId: 'user-1',
+      modelSlug: 'gpt-4o',
+      tier: 'research'
+    })
 
-    expect(capturedBody.properties.scope).toBe(`${SERVICE_BASE_PATH}/apis/research`)
+    expect(capturedBody.properties.scope).toBe(
+      `${SERVICE_BASE_PATH}/apis/research`
+    )
     expect(capturedBody.properties.scope).not.toContain('/products/')
   })
 

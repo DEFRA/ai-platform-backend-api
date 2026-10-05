@@ -33,7 +33,8 @@ function stubVault(overrides = {}) {
       secretsByCredentialId.set(credentialId, secret)
     }),
     get: vi.fn(
-      async ({ credentialId }) => secretsByCredentialId.get(credentialId) ?? null
+      async ({ credentialId }) =>
+        secretsByCredentialId.get(credentialId) ?? null
     ),
     remove: vi.fn(async ({ credentialId }) => {
       secretsByCredentialId.delete(credentialId)

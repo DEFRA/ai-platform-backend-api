@@ -79,9 +79,13 @@ export function createKeyVaultCredentialVault({ client } = {}) {
     async updateExpiry({ credentialId, expiresOn }) {
       const name = secretNameFor(credentialId)
       const current = await getClient().getSecret(name)
-      await getClient().updateSecretProperties(name, current.properties.version, {
-        expiresOn
-      })
+      await getClient().updateSecretProperties(
+        name,
+        current.properties.version,
+        {
+          expiresOn
+        }
+      )
     }
   }
 }

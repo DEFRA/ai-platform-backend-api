@@ -285,10 +285,11 @@ export const backfillRegistry = [
     description:
       'Copies apimSubscriptionId into the new externalGatewaySubscriptionId field on credentials docs missing it',
     async run(db) {
-      const { modifiedCount } = await db.collection('credentials').updateMany(
-        { externalGatewaySubscriptionId: { $exists: false } },
-        [{ $set: { externalGatewaySubscriptionId: '$apimSubscriptionId' } }]
-      )
+      const { modifiedCount } = await db
+        .collection('credentials')
+        .updateMany({ externalGatewaySubscriptionId: { $exists: false } }, [
+          { $set: { externalGatewaySubscriptionId: '$apimSubscriptionId' } }
+        ])
 
       return { modifiedCount }
     }
