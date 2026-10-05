@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { ObjectId } from 'mongodb'
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -82,6 +84,35 @@ describe('#credentials routes', () => {
 
     expect(statusCode).toBe(409)
     expect(result.code).toBe('active-credential-exists')
+  })
+
+  test('POST /v1/credentials rejects re-issuing for a model with an expired credential, pointing to renew', async () => {
+    const headers = { 'x-user-id': 'user-expired', 'idempotency-key': randomUUID() }
+    const payload = { modelSlug: 'gpt-3-5-turbo' }
+
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers,
+      payload
+    })
+
+    await server.db
+      .collection('credentials')
+      .updateOne(
+        { _id: new ObjectId(issued.result.credential._id) },
+        { $set: { status: 'expired' } }
+      )
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { ...headers, 'idempotency-key': randomUUID() },
+      payload
+    })
+
+    expect(statusCode).toBe(409)
+    expect(result.code).toBe('credential-expired-use-renew')
   })
 
   test('POST /v1/credentials rejects a model that does not exist', async () => {

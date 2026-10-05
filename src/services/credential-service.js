@@ -274,15 +274,28 @@ async function issueCredentialForParams(
 
     resolvedTeamId = teamId
   } else {
-    const activeCredential = await db
+    const existingCredential = await db
       .collection('credentials')
-      .findOne({ userId, modelSlug, status: 'active' })
+      .findOne({ userId, modelSlug, status: { $in: ['active', 'expired'] } })
 
-    if (activeCredential) {
+    if (existingCredential?.status === 'active') {
       throw boomWithCode(
         Boom.conflict,
         'An active credential already exists for this model',
         'active-credential-exists'
+      )
+    }
+
+    // An expired credential's APIM subscription id is deterministic
+    // (sidFor()), so re-issuing would silently reactivate that same
+    // subscription under a brand-new credential document/vault secret
+    // instead of renewing the existing one - renew() is the correct way
+    // to bring it back without fragmenting Key Vault state.
+    if (existingCredential?.status === 'expired') {
+      throw boomWithCode(
+        Boom.conflict,
+        'Your credential for this model has expired. Renew it instead of requesting a new one.',
+        'credential-expired-use-renew'
       )
     }
 
