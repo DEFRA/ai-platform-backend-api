@@ -20,9 +20,8 @@ async function loadCredentialService() {
     revokeCredential,
     revealCredential
   } = await import('#/services/credential-service.js'))
-  ;({ credentialIssuerRegistry } = await import(
-    '#/adapters/credential-issuer-registry.js'
-  ))
+  ;({ credentialIssuerRegistry } =
+    await import('#/adapters/credential-issuer-registry.js'))
 }
 
 function stubVault(overrides = {}) {
