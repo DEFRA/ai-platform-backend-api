@@ -31,7 +31,9 @@ export const credentialExpiryScheduler = {
         try {
           const { expired, suspended } = await expireCredentials(
             server.db,
-            server.locker
+            server.locker,
+            undefined,
+            server.logger
           )
           const { reconciled, vaultReconciled } =
             await reconcilePendingCredentials(server.db)

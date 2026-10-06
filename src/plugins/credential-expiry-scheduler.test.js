@@ -40,7 +40,12 @@ describe('#credentialExpiryScheduler', () => {
 
     await vi.advanceTimersByTimeAsync(1000)
 
-    expect(expireCredentials).toHaveBeenCalledWith(server.db, server.locker)
+    expect(expireCredentials).toHaveBeenCalledWith(
+      server.db,
+      server.locker,
+      undefined,
+      server.logger
+    )
     expect(reconcilePendingCredentials).toHaveBeenCalledWith(server.db)
     expect(server.logger.debug).toHaveBeenCalledWith(
       { expired: 1, suspended: 1, reconciled: 0, vaultReconciled: 0 },

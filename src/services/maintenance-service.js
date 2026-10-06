@@ -14,11 +14,13 @@ const PENDING_RECONCILE_AFTER_MS = 10 * 60 * 1000
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {import('pino').Logger} [logger]
  */
 export async function expireCredentials(
   db,
   locker,
-  registry = credentialIssuerRegistry
+  registry = credentialIssuerRegistry,
+  logger
 ) {
   const now = new Date().toISOString()
   const dueCredentials = await db
@@ -33,16 +35,19 @@ export async function expireCredentials(
     const lock = await requireLock(locker, `credential:${credential._id}`)
 
     try {
-      await db
-        .collection('credentials')
-        .updateOne({ _id: credential._id }, { $set: { status: 'expired' } })
-      expired += 1
-
+      // Suspend in APIM before marking expired in Mongo - if suspend fails,
+      // status stays 'active' so the next sweep retries it, rather than
+      // getting stuck 'expired' here while still active upstream forever.
       const { issuer } = registry.forCredential(credential)
       await issuer.suspend({
         externalId: externalGatewaySubscriptionIdOf(credential)
       })
       suspended += 1
+
+      await db
+        .collection('credentials')
+        .updateOne({ _id: credential._id }, { $set: { status: 'expired' } })
+      expired += 1
 
       await recordAuditEvent(db, {
         actorUserId: credential.userId,
@@ -51,6 +56,12 @@ export async function expireCredentials(
         resourceId: credential._id.toString(),
         outcome: 'success'
       })
+    } catch (error) {
+      // One credential's issuer failure must not abort the rest of the batch.
+      logger?.error(
+        error,
+        `Failed to expire credential ${credential._id}, will retry next sweep`
+      )
     } finally {
       await lock.free()
     }
