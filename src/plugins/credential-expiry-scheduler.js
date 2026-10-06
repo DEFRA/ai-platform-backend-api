@@ -17,10 +17,15 @@ export const credentialExpiryScheduler = {
     version: '1.0.0',
     register: function (server) {
       if (!config.get('maintenanceScheduler.enabled')) {
+        server.logger.info('Credential expiry scheduler disabled')
         return
       }
 
       const intervalMs = config.get('maintenanceScheduler.intervalMs')
+      server.logger.info(
+        { intervalMs },
+        'Credential expiry scheduler started'
+      )
 
       const timer = setInterval(async () => {
         try {
@@ -31,6 +36,12 @@ export const credentialExpiryScheduler = {
           const { reconciled, vaultReconciled } =
             await reconcilePendingCredentials(server.db)
 
+          // Always log at debug so a sweep's absence of work is still observable;
+          // escalate to info only when the sweep actually changed something.
+          server.logger.debug(
+            { expired, suspended, reconciled, vaultReconciled },
+            'Credential expiry sweep ran'
+          )
           if (expired || suspended || reconciled || vaultReconciled) {
             server.logger.info(
               { expired, suspended, reconciled, vaultReconciled },

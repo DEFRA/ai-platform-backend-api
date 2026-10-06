@@ -34,7 +34,14 @@ export const mongoDb = {
       // backfill itself drops the legacy indexes those old rows relied on.
       await runBackfills(db, server.logger)
       await createIndexes(db)
-      await syncCatalogue(db, resolveCatalogueSource(), locker, server.logger)
+
+      // A catalogue source outage (e.g. GitHub unreachable) must not crash
+      // the whole server - the existing catalogue in Mongo stays usable.
+      try {
+        await syncCatalogue(db, resolveCatalogueSource(), locker, server.logger)
+      } catch (error) {
+        server.logger.error(error, 'Catalogue sync failed, continuing startup')
+      }
 
       server.logger.info(`MongoDb connected to ${databaseName}`)
 

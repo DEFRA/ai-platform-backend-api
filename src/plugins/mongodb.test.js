@@ -74,4 +74,27 @@ describe('#mongoDb', () => {
       await client.close()
     })
   })
+
+  describe('Catalogue sync resilience', () => {
+    afterEach(() => {
+      vi.doUnmock('#/services/catalogue-service.js')
+      vi.resetModules()
+    })
+
+    test('server still starts and decorates db/locker when catalogue sync fails', async () => {
+      vi.doMock('#/services/catalogue-service.js', () => ({
+        syncCatalogue: vi.fn().mockRejectedValue(new Error('github unreachable'))
+      }))
+
+      // Dynamic import needed due to config being updated by vitest-mongodb and the mock above
+      const { createServer } = await import('#/server.js')
+      const failingServer = await createServer()
+
+      await expect(failingServer.initialize()).resolves.not.toThrow()
+      expect(failingServer.db).toBeInstanceOf(Db)
+      expect(failingServer.locker).toBeInstanceOf(LockManager)
+
+      await failingServer.stop({ timeout: 1000 })
+    })
+  })
 })

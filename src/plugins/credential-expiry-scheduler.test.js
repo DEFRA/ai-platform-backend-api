@@ -27,16 +27,25 @@ describe('#credentialExpiryScheduler', () => {
     const server = {
       db: {},
       locker: {},
-      logger: { info: vi.fn(), error: vi.fn() },
+      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       events: { on: vi.fn() }
     }
 
     credentialExpiryScheduler.plugin.register(server)
 
+    expect(server.logger.info).toHaveBeenCalledWith(
+      { intervalMs: 1000 },
+      'Credential expiry scheduler started'
+    )
+
     await vi.advanceTimersByTimeAsync(1000)
 
     expect(expireCredentials).toHaveBeenCalledWith(server.db, server.locker)
     expect(reconcilePendingCredentials).toHaveBeenCalledWith(server.db)
+    expect(server.logger.debug).toHaveBeenCalledWith(
+      { expired: 1, suspended: 1, reconciled: 0, vaultReconciled: 0 },
+      'Credential expiry sweep ran'
+    )
     expect(server.logger.info).toHaveBeenCalledWith(
       { expired: 1, suspended: 1, reconciled: 0, vaultReconciled: 0 },
       'Credential expiry sweep completed'
@@ -61,12 +70,15 @@ describe('#credentialExpiryScheduler', () => {
     const server = {
       db: {},
       locker: {},
-      logger: { info: vi.fn(), error: vi.fn() },
+      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       events: { on: vi.fn() }
     }
 
     credentialExpiryScheduler.plugin.register(server)
 
+    expect(server.logger.info).toHaveBeenCalledWith(
+      'Credential expiry scheduler disabled'
+    )
     expect(server.events.on).not.toHaveBeenCalled()
     expect(expireCredentials).not.toHaveBeenCalled()
   })
@@ -88,7 +100,7 @@ describe('#credentialExpiryScheduler', () => {
     const server = {
       db: {},
       locker: {},
-      logger: { info: vi.fn(), error: vi.fn() },
+      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       events: { on: vi.fn() }
     }
 
@@ -125,7 +137,7 @@ describe('#credentialExpiryScheduler', () => {
     const server = {
       db: {},
       locker: {},
-      logger: { info: vi.fn(), error: vi.fn() },
+      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
       events: { on: vi.fn((event, handler) => { stopHandler = handler }) }
     }
 
