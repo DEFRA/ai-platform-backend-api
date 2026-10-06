@@ -163,6 +163,68 @@ describe('#credentials routes', () => {
     expect(listResult.items[0].failureReason).toBe('issuer-error')
   })
 
+  test('POST /v1/credentials retrying after a failed issue reuses the same credential document rather than creating another one', async () => {
+    const userId = `test-fail-user-${randomUUID()}`
+    const payload = { modelSlug: 'gpt-4o' }
+
+    const first = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+      payload
+    })
+
+    const second = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+      payload
+    })
+
+    expect(first.statusCode).toBe(502)
+    expect(second.statusCode).toBe(502)
+
+    const { result: listResult } = await server.inject({
+      method: 'GET',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': userId }
+    })
+
+    expect(listResult.items).toHaveLength(1)
+    expect(listResult.items[0].status).toBe('failed')
+  })
+
+  test('POST /v1/credentials issued concurrently for the same user and model still collapses to one credential document', async () => {
+    const userId = `test-fail-user-${randomUUID()}`
+    const payload = { modelSlug: 'gpt-4o' }
+
+    const [first, second] = await Promise.all([
+      server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+        payload
+      }),
+      server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+        payload
+      })
+    ])
+
+    expect(first.statusCode).toBe(502)
+    expect(second.statusCode).toBe(502)
+
+    const { result: listResult } = await server.inject({
+      method: 'GET',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': userId }
+    })
+
+    expect(listResult.items).toHaveLength(1)
+  })
+
   test('POST /v1/credentials requires an Idempotency-Key header', async () => {
     const { statusCode } = await server.inject({
       method: 'POST',

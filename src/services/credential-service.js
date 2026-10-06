@@ -151,10 +151,24 @@ export async function issueCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const { tier = 'research', teamId, environment } = params
+  const { tier = 'research', teamId, environment, userId, modelSlug } = params
 
   if (tier !== 'team') {
-    return issueCredentialForParams(db, params, registry, vault)
+    // Guards the check-for-reusable-pending/failed-doc-then-write below
+    // (see issueCredentialForParams) from the same interleaving race the
+    // team-tier lock below prevents - without it, two concurrent requests
+    // for the same user+model could both reuse and overwrite one shared
+    // document with two different attempts' results.
+    const lock = await acquireLockWithRetry(
+      locker,
+      `research-credential:${userId}:${modelSlug}`
+    )
+
+    try {
+      return await issueCredentialForParams(db, params, registry, vault)
+    } finally {
+      await lock.free()
+    }
   }
 
   // A team shares one credential per environment, so the
@@ -322,7 +336,31 @@ async function issueCredentialForParams(
     renewalCount: 0
   }
 
-  const { insertedId } = await db.collection('credentials').insertOne(pending)
+  // A research-tier retry after a failed (or crash-abandoned pending)
+  // attempt reuses that same document instead of inserting a new one -
+  // otherwise every retry of the same model request leaves behind another
+  // permanent 'failed' row, so /manage's "Keys you can use" table fills up
+  // with duplicate entries for one logical request (none of which can be
+  // usefully renewed or revoked, since they were never actually issued).
+  const reusableCredential =
+    tier === 'research'
+      ? await db.collection('credentials').findOne({
+          userId,
+          modelSlug,
+          tier: 'research',
+          status: { $in: ['pending', 'failed'] }
+        })
+      : null
+
+  let insertedId
+  if (reusableCredential) {
+    insertedId = reusableCredential._id
+    await db
+      .collection('credentials')
+      .updateOne({ _id: insertedId }, { $set: pending, $unset: { failureReason: '' } })
+  } else {
+    ;({ insertedId } = await db.collection('credentials').insertOne(pending))
+  }
 
   let issued
   try {
