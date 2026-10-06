@@ -3,11 +3,25 @@ import { createAppAuth } from '@octokit/auth-app'
 
 import { config } from '#/config.js'
 
+/**
+ * CDP's secret store (and many others) rejects values containing real
+ * newlines, so the private key is stored base64-encoded as a single line -
+ * decode it here, since @octokit/auth-app needs a genuine multi-line PEM to
+ * sign JWTs.
+ * @param {string | null} base64PrivateKey
+ * @returns {string | null}
+ */
+export function toPemPrivateKey(base64PrivateKey) {
+  return base64PrivateKey
+    ? Buffer.from(base64PrivateKey, 'base64').toString('utf8')
+    : null
+}
+
 function createOctokit() {
   // Client ID is GitHub's current recommendation over the numeric App ID -
   // @octokit/auth-app's `appId` field accepts either value interchangeably.
   const appId = config.get('github.clientId') || config.get('github.appId')
-  const privateKey = config.get('github.privateKey')
+  const privateKey = toPemPrivateKey(config.get('github.privateKey'))
 
   // This adapter already has its own resilience strategy (fall back to the
   // last good mirror on any failure) - octokit's bundled retry plugin would

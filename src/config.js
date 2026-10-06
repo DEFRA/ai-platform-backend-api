@@ -313,7 +313,7 @@ export const config = convict({
       env: 'GITHUB_APP_INSTALLATION_ID'
     },
     privateKey: {
-      doc: 'GitHub App private key, required alongside github.appId',
+      doc: 'GitHub App private key, base64-encoded (required alongside github.appId)',
       format: String,
       nullable: true,
       default: null,

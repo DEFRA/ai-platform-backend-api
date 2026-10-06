@@ -9,7 +9,7 @@ beforeAll(() => {
   globalThis.fetch = realFetch
 })
 
-const { createGithubCatalogueSource } =
+const { createGithubCatalogueSource, toPemPrivateKey } =
   await import('#/adapters/github/github-catalogue-source.js')
 const { Octokit } = await import('octokit')
 
@@ -68,6 +68,17 @@ function mockSuccessfulFetch({ ref = 'v0.1.0', etag = 'etag-1' } = {}) {
       encoding: 'base64'
     })
 }
+
+describe('#toPemPrivateKey', () => {
+  test('decodes a base64-encoded PEM back into a genuine multi-line PEM', () => {
+    const pem = '-----BEGIN RSA PRIVATE KEY-----\nabc123\n-----END RSA PRIVATE KEY-----\n'
+    expect(toPemPrivateKey(Buffer.from(pem).toString('base64'))).toBe(pem)
+  })
+
+  test('returns null when given null', () => {
+    expect(toPemPrivateKey(null)).toBeNull()
+  })
+})
 
 describe('#createGithubCatalogueSource', () => {
   afterEach(() => {
