@@ -83,7 +83,9 @@ describe('#mongoDb', () => {
 
     test('server still starts and decorates db/locker when catalogue sync fails', async () => {
       vi.doMock('#/services/catalogue-service.js', () => ({
-        syncCatalogue: vi.fn().mockRejectedValue(new Error('github unreachable'))
+        syncCatalogue: vi
+          .fn()
+          .mockRejectedValue(new Error('github unreachable'))
       }))
 
       // Dynamic import needed due to config being updated by vitest-mongodb and the mock above

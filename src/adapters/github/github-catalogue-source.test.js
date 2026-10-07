@@ -71,7 +71,8 @@ function mockSuccessfulFetch({ ref = 'v0.1.0', etag = 'etag-1' } = {}) {
 
 describe('#toPemPrivateKey', () => {
   test('decodes a base64-encoded PEM back into a genuine multi-line PEM', () => {
-    const pem = '-----BEGIN RSA PRIVATE KEY-----\nabc123\n-----END RSA PRIVATE KEY-----\n'
+    const pem =
+      '-----BEGIN RSA PRIVATE KEY-----\nabc123\n-----END RSA PRIVATE KEY-----\n'
     expect(toPemPrivateKey(Buffer.from(pem).toString('base64'))).toBe(pem)
   })
 

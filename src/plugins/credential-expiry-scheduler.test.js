@@ -11,18 +11,18 @@ describe('#credentialExpiryScheduler', () => {
     vi.stubEnv('MAINTENANCE_SCHEDULER_INTERVAL_MS', '1000')
 
     vi.doMock('#/services/maintenance-service.js', () => ({
-      expireCredentials: vi.fn().mockResolvedValue({ expired: 1, suspended: 1 }),
+      expireCredentials: vi
+        .fn()
+        .mockResolvedValue({ expired: 1, suspended: 1 }),
       reconcilePendingCredentials: vi
         .fn()
         .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 })
     }))
 
-    const { credentialExpiryScheduler } = await import(
-      '#/plugins/credential-expiry-scheduler.js'
-    )
-    const { expireCredentials, reconcilePendingCredentials } = await import(
-      '#/services/maintenance-service.js'
-    )
+    const { credentialExpiryScheduler } =
+      await import('#/plugins/credential-expiry-scheduler.js')
+    const { expireCredentials, reconcilePendingCredentials } =
+      await import('#/services/maintenance-service.js')
 
     const server = {
       db: {},
@@ -65,12 +65,10 @@ describe('#credentialExpiryScheduler', () => {
       reconcilePendingCredentials: vi.fn()
     }))
 
-    const { credentialExpiryScheduler } = await import(
-      '#/plugins/credential-expiry-scheduler.js'
-    )
-    const { expireCredentials } = await import(
-      '#/services/maintenance-service.js'
-    )
+    const { credentialExpiryScheduler } =
+      await import('#/plugins/credential-expiry-scheduler.js')
+    const { expireCredentials } =
+      await import('#/services/maintenance-service.js')
 
     const server = {
       db: {},
@@ -98,9 +96,8 @@ describe('#credentialExpiryScheduler', () => {
       reconcilePendingCredentials: vi.fn()
     }))
 
-    const { credentialExpiryScheduler } = await import(
-      '#/plugins/credential-expiry-scheduler.js'
-    )
+    const { credentialExpiryScheduler } =
+      await import('#/plugins/credential-expiry-scheduler.js')
 
     const server = {
       db: {},
@@ -125,25 +122,29 @@ describe('#credentialExpiryScheduler', () => {
     vi.stubEnv('MAINTENANCE_SCHEDULER_INTERVAL_MS', '1000')
 
     vi.doMock('#/services/maintenance-service.js', () => ({
-      expireCredentials: vi.fn().mockResolvedValue({ expired: 0, suspended: 0 }),
+      expireCredentials: vi
+        .fn()
+        .mockResolvedValue({ expired: 0, suspended: 0 }),
       reconcilePendingCredentials: vi
         .fn()
         .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 })
     }))
 
-    const { credentialExpiryScheduler } = await import(
-      '#/plugins/credential-expiry-scheduler.js'
-    )
-    const { expireCredentials } = await import(
-      '#/services/maintenance-service.js'
-    )
+    const { credentialExpiryScheduler } =
+      await import('#/plugins/credential-expiry-scheduler.js')
+    const { expireCredentials } =
+      await import('#/services/maintenance-service.js')
 
     let stopHandler
     const server = {
       db: {},
       locker: {},
       logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
-      events: { on: vi.fn((event, handler) => { stopHandler = handler }) }
+      events: {
+        on: vi.fn((event, handler) => {
+          stopHandler = handler
+        })
+      }
     }
 
     credentialExpiryScheduler.plugin.register(server)

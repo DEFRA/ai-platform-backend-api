@@ -37,12 +37,12 @@ export const mongoDb = {
 
       // A catalogue source outage (e.g. GitHub unreachable) must not crash
       // the whole server - the existing catalogue in Mongo stays usable.
-      
+
       /*
         Provider file: providers/{id}.json is now the model vendor. It lists offerings[] as { id, displayName, cloud, adapter }. OpenAI has one offering, azure-openai on azure through azure-apim. A future Anthropic file would list bedrock-anthropic on aws through aws-bedrock.
         Model file: each model now carries provider, offering, cloud and adapter. For example, gpt-4o is OpenAI, offered on Azure, through azure-apim.      
       */
-      
+
       try {
         await syncCatalogue(db, resolveCatalogueSource(), locker, server.logger)
       } catch (error) {

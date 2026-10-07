@@ -22,10 +22,7 @@ export const credentialExpiryScheduler = {
       }
 
       const intervalMs = config.get('maintenanceScheduler.intervalMs')
-      server.logger.info(
-        { intervalMs },
-        'Credential expiry scheduler started'
-      )
+      server.logger.info({ intervalMs }, 'Credential expiry scheduler started')
 
       const timer = setInterval(async () => {
         try {
