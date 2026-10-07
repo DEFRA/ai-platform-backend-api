@@ -2,6 +2,7 @@ import convict from 'convict'
 import convictFormatWithValidator from 'convict-format-with-validator'
 
 import { convictValidateMongoUri } from '#/common/helpers/convict/validate-mongo-uri.js'
+import { AZURE_APIM, DEFAULT_ADAPTER } from '#/adapters/adapter-keys.js'
 
 convict.addFormat(convictValidateMongoUri)
 convict.addFormats(convictFormatWithValidator)
@@ -186,10 +187,22 @@ export const config = convict({
   },
   provisioning: {
     mode: {
-      doc: 'Credential issuing provider: mock generates fake keys locally, azure calls Azure Resource Manager against real APIM',
-      format: ['mock', 'azure'],
+      doc: 'mock generates fake keys locally; live issues through the real gateway of each enabled adapter. "azure" is a deprecated alias for live',
+      format: ['mock', 'live', 'azure'],
       default: 'mock',
       env: 'PROVISIONING_MODE'
+    },
+    adapters: {
+      doc: 'Comma-separated catalogue adapter ids this environment can issue credentials through when provisioning.mode is live',
+      format: Array,
+      default: [DEFAULT_ADAPTER],
+      env: 'ENABLED_ADAPTERS'
+    },
+    mockTiers: {
+      doc: 'Comma-separated tiers (research, team) that use the mock issuer and vault even when provisioning.mode is live, e.g. to demo the team tier without a real team gateway. Not allowed in prod',
+      format: Array,
+      default: [],
+      env: 'MOCK_TIERS'
     }
   },
   // Backend -> Azure ARM app registration, for the credential issuer only -
@@ -335,10 +348,23 @@ const REQUIRED_ARM_AUTH_KEYS = [
   'keyVault.vaultName'
 ]
 
-// Design fact: "Production refuses to start with a mock adapter selected for
-// any of the direct paths." Fail fast here rather than at the first issued
-// credential, and fail fast again if azure mode is selected without the
-// config it needs rather than surfacing a 401 from ARM.
+// Every adapter the backend can run, with the config it needs when enabled.
+// A new gateway (e.g. aws-bedrock) adds its entry here, then its issuer and
+// vault factories in the two adapter registries.
+const REQUIRED_CONFIG_BY_ADAPTER = {
+  [AZURE_APIM]: REQUIRED_ARM_AUTH_KEYS
+}
+
+// PROVISIONING_MODE=azure predates multi-cloud; the already-deployed CDP
+// config still sets it, so it must keep working.
+if (config.get('provisioning.mode') === 'azure') {
+  config.set('provisioning.mode', 'live')
+}
+
+// Production refuses to start with a mock adapter selected for any of the
+// direct paths (design fact). Fail fast here rather than at the first issued
+// credential, and fail fast again if a live adapter is enabled without the
+// config it needs rather than surfacing a 401 from its gateway.
 if (
   config.get('cdpEnvironment') === 'prod' &&
   config.get('provisioning.mode') === 'mock'
@@ -348,17 +374,45 @@ if (
   )
 }
 
-if (config.get('provisioning.mode') === 'azure') {
-  const missing = REQUIRED_ARM_AUTH_KEYS.filter((key) => !config.get(key))
+const unknownMockTiers = config
+  .get('provisioning.mockTiers')
+  .filter((tier) => !['research', 'team'].includes(tier))
 
-  if (missing.length > 0) {
-    throw new Error(
-      `PROVISIONING_MODE=azure requires ${missing.join(', ')} to be set`
-    )
+if (unknownMockTiers.length > 0) {
+  throw new Error(
+    `MOCK_TIERS contains unknown tier "${unknownMockTiers[0]}" (known: research, team)`
+  )
+}
+
+if (
+  config.get('cdpEnvironment') === 'prod' &&
+  config.get('provisioning.mockTiers').length > 0
+) {
+  throw new Error('MOCK_TIERS must be empty in the prod environment')
+}
+
+if (config.get('provisioning.mode') === 'live') {
+  for (const adapter of config.get('provisioning.adapters')) {
+    const requiredKeys = REQUIRED_CONFIG_BY_ADAPTER[adapter]
+
+    if (!requiredKeys) {
+      throw new Error(
+        `ENABLED_ADAPTERS contains unknown adapter "${adapter}" (known: ${Object.keys(REQUIRED_CONFIG_BY_ADAPTER).join(', ')})`
+      )
+    }
+
+    const missing = requiredKeys.filter((key) => !config.get(key))
+
+    if (missing.length > 0) {
+      throw new Error(
+        `Adapter ${adapter} requires ${missing.join(', ')} to be set`
+      )
+    }
   }
 }
 
-const isGithubAppAuth = config.get('github.appId') || config.get('github.clientId')
+const isGithubAppAuth =
+  config.get('github.appId') || config.get('github.clientId')
 
 if (isGithubAppAuth && !config.get('github.installationId')) {
   throw new Error(

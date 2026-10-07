@@ -1,4 +1,5 @@
 import { invalidateModelsCache } from '#/services/models-service.js'
+import { DEFAULT_ADAPTER } from '#/adapters/adapter-keys.js'
 
 // Pinned data-plane api-version per apiProfile, verified against the sandbox
 // gateway (docs/plans/integration/research-tier-integration-plan.md in
@@ -9,6 +10,25 @@ import { invalidateModelsCache } from '#/services/models-service.js'
 const DEFAULT_API_VERSION_BY_PROFILE = { responses: '2025-03-01-preview' }
 const DEFAULT_API_VERSION = '2024-05-01-preview'
 
+// Catalogue releases up to v0.1.1 predate `cloud`/`adapter` and were Azure-only.
+const LEGACY_CLOUD = 'azure'
+
+// `provider/offering` -> `{id, cloud, adapter}`; legacy releases list
+// offerings as plain strings, which carry no cloud/adapter and are skipped.
+function indexOfferings(providers) {
+  const index = new Map()
+
+  for (const provider of providers) {
+    for (const offering of provider.offerings ?? []) {
+      if (typeof offering === 'object') {
+        index.set(`${provider.id}/${offering.id}`, offering)
+      }
+    }
+  }
+
+  return index
+}
+
 // The github source passes `ai-platform-infra`'s raw catalogue/models/*.json
 // through unmodified (pinned by its own tests), which nests eligibility as
 // `{eligibility: {eligible, reason}}`, only carries a `regions` array, and
@@ -17,9 +37,11 @@ const DEFAULT_API_VERSION = '2024-05-01-preview'
 // `region`/`apiVersion`, the shape the file fixture already uses. Normalise
 // here, at the single write path both sources go through, rather than
 // changing either adapter's pinned output shape.
-function normalizeModel(model) {
+function normalizeModel(model, offering) {
   return {
     ...model,
+    cloud: model.cloud ?? offering?.cloud ?? LEGACY_CLOUD,
+    adapter: model.adapter ?? offering?.adapter ?? DEFAULT_ADAPTER,
     eligible: model.eligible ?? model.eligibility?.eligible,
     eligibilityReason: model.eligibilityReason ?? model.eligibility?.reason,
     region: model.region ?? model.regions?.[0],
@@ -67,9 +89,28 @@ export async function syncCatalogue(db, source, locker, logger) {
 
     const now = new Date().toISOString()
     const modelsCollection = db.collection('models')
+    const offerings = indexOfferings(providers)
+    let synced = 0
 
     for (const rawModel of models) {
-      const model = normalizeModel(rawModel)
+      const offering = offerings.get(
+        `${rawModel.provider}/${rawModel.offering}`
+      )
+      const model = normalizeModel(rawModel, offering)
+
+      // A model contradicting its provider's offering would issue credentials
+      // through the wrong cloud - keep the last good copy rather than sync it.
+      if (
+        offering &&
+        (model.cloud !== offering.cloud || model.adapter !== offering.adapter)
+      ) {
+        logger.warn(
+          `Skipping catalogue model ${model.slug}: cloud/adapter disagree with offering ${model.provider}/${model.offering}`
+        )
+        continue
+      }
+
+      synced++
       await modelsCollection.updateOne(
         { slug: model.slug },
         {
@@ -110,10 +151,10 @@ export async function syncCatalogue(db, source, locker, logger) {
     invalidateModelsCache()
 
     logger.info(
-      `Synced ${models.length} catalogue models (release ${release}), retired ${retired}`
+      `Synced ${synced} catalogue models (release ${release}), retired ${retired}`
     )
 
-    return { synced: models.length, retired }
+    return { synced, retired }
   } finally {
     await lock.free()
   }

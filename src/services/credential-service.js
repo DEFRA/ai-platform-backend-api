@@ -100,6 +100,7 @@ export async function writeSecretToVault(db, vault, credential, secret) {
 
     await vault.put({
       credentialId: credential._id.toString(),
+      issuerKey: credential.issuerKey,
       secret,
       tags,
       expiresOn: credential.expiresAt
@@ -219,7 +220,23 @@ async function issueCredentialForParams(
     )
   }
 
-  const { issuerKey, issuer } = registry.forModel(model)
+  let resolvedIssuer
+
+  try {
+    resolvedIssuer = registry.forModel(model, tier)
+  } catch (error) {
+    if (error.code === 'adapter-not-enabled') {
+      throw boomWithCode(
+        Boom.notImplemented,
+        'This model is not available through any gateway enabled in this environment',
+        'adapter-not-enabled'
+      )
+    }
+
+    throw error
+  }
+
+  const { issuerKey, issuer } = resolvedIssuer
 
   let resolvedTeamId = null
   let resolvedCredentialType = null
@@ -332,6 +349,13 @@ async function issueCredentialForParams(
     status: 'pending',
     idempotencyKey,
     issuerKey,
+    // Catalogue snapshot at issue time, so "which cloud/gateway is this
+    // credential for" needs no join. A team credential spans several models,
+    // so only the research tier records a single provider/offering.
+    provider: tier === 'team' ? null : (model.provider ?? null),
+    offering: tier === 'team' ? null : (model.offering ?? null),
+    cloud: model.cloud ?? null,
+    adapter: model.adapter ?? null,
     createdAt: now,
     renewalCount: 0
   }
@@ -357,7 +381,10 @@ async function issueCredentialForParams(
     insertedId = reusableCredential._id
     await db
       .collection('credentials')
-      .updateOne({ _id: insertedId }, { $set: pending, $unset: { failureReason: '' } })
+      .updateOne(
+        { _id: insertedId },
+        { $set: pending, $unset: { failureReason: '' } }
+      )
   } else {
     ;({ insertedId } = await db.collection('credentials').insertOne(pending))
   }
@@ -703,6 +730,7 @@ export async function renewCredential(
     try {
       await vault.updateExpiry({
         credentialId: id,
+        issuerKey: credential.issuerKey,
         expiresOn: new Date(expiresAt)
       })
 
@@ -851,7 +879,10 @@ export async function revokeCredential(
     // revoked in APIM, which is the access control that matters - a vault
     // write failure here is hygiene, not a security hole.
     try {
-      await vault.remove({ credentialId: credential._id.toString() })
+      await vault.remove({
+        credentialId: credential._id.toString(),
+        issuerKey: credential.issuerKey
+      })
     } catch {
       // intentionally swallowed, see comment above
     }
@@ -927,7 +958,10 @@ export async function revealCredential(
     throw Boom.notFound()
   }
 
-  const secret = await vault.get({ credentialId: credential._id.toString() })
+  const secret = await vault.get({
+    credentialId: credential._id.toString(),
+    issuerKey: credential.issuerKey
+  })
 
   if (!secret) {
     throw Boom.notFound()

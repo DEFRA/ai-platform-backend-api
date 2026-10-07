@@ -236,6 +236,24 @@ NO_PROXY=...
 
 No additional proxy configuration is required in the service.
 
+### Gateways and adapters
+
+Each catalogue model names the `cloud` it runs on and the `adapter` that issues and stores its
+credentials (e.g. `azure` / `azure-apim`, later `aws` / `aws-bedrock`). `PROVISIONING_MODE` is only
+`mock` (fake keys, in-memory vault, whatever the model's adapter) or `live`. In `live` mode
+`ENABLED_ADAPTERS` (comma-separated, default `azure-apim`) lists the adapters this environment can
+use; startup fails if an enabled adapter's config is missing, and a model whose adapter isn't
+enabled is refused with `501 adapter-not-enabled`. A credential records the `issuerKey` that
+minted it, and its renew/rotate/revoke/reveal use that issuer and its matching vault.
+`MOCK_TIERS` (comma-separated `research`/`team`, default empty, refused in prod) keeps the named
+tiers on the mock issuer and vault even in `live` mode, e.g. `MOCK_TIERS=team` to demo the team
+tier without a real team gateway while the research tier uses the real adapters.
+
+To add a gateway such as Bedrock: write the issuer and vault adapters, add them to
+`issuerFactories` and `vaultFactories` in `credential-issuer-registry.js` /
+`credential-vault-registry.js`, and add its required config keys to
+`REQUIRED_CONFIG_BY_ADAPTER` in `config.js`. Nothing in the services changes.
+
 ### Testing against live Azure resources (sandbox)
 
 By default the credential issuer and vault run in-memory (`PROVISIONING_MODE=mock`, the default) -
@@ -246,7 +264,7 @@ Phase 0, create a `.env` file in the repo root (already gitignored; `npm run dev
 
 | Variable                    | Value                                                             |
 | :-------------------------- | :---------------------------------------------------------------- |
-| `PROVISIONING_MODE`         | `azure`                                                           |
+| `PROVISIONING_MODE`         | `live` (`azure` is a deprecated alias and still works)            |
 | `AZURE_ARM_TENANT_ID`       | The ARM app registration's tenant ID                              |
 | `AZURE_ARM_CLIENT_ID`       | The ARM app registration's client ID                              |
 | `AZURE_ARM_CLIENT_SECRET`   | The ARM app registration's client secret                          |

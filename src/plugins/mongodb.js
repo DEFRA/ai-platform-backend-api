@@ -37,6 +37,12 @@ export const mongoDb = {
 
       // A catalogue source outage (e.g. GitHub unreachable) must not crash
       // the whole server - the existing catalogue in Mongo stays usable.
+      
+      /*
+        Provider file: providers/{id}.json is now the model vendor. It lists offerings[] as { id, displayName, cloud, adapter }. OpenAI has one offering, azure-openai on azure through azure-apim. A future Anthropic file would list bedrock-anthropic on aws through aws-bedrock.
+        Model file: each model now carries provider, offering, cloud and adapter. For example, gpt-4o is OpenAI, offered on Azure, through azure-apim.      
+      */
+      
       try {
         await syncCatalogue(db, resolveCatalogueSource(), locker, server.logger)
       } catch (error) {
@@ -103,6 +109,10 @@ async function createIndexes(db) {
   await db.collection('example-data').createIndex({ id: 1 })
 
   await db.collection('models').createIndex({ slug: 1 }, { unique: true })
+  // Backs the provider filter on GET /v1/models and provider -> offering lookups.
+  await db.collection('models').createIndex({ provider: 1, offering: 1 })
+  // `syncCatalogue` upserts providers by `id`.
+  await db.collection('providers').createIndex({ id: 1 }, { unique: true })
   await db.collection('users').createIndex({ email: 1 }, { unique: true })
   await db
     .collection('teams')
@@ -160,6 +170,8 @@ async function createIndexes(db) {
   )
   await db.collection('credentials').createIndex({ userId: 1, status: 1 })
   await db.collection('credentials').createIndex({ status: 1, expiresAt: 1 })
+  // Per-gateway work (reconcile, bulk revoke) selects by adapter and status.
+  await db.collection('credentials').createIndex({ adapter: 1, status: 1 })
 
   await db.collection('auditEvents').createIndex({ actorUserId: 1, at: 1 })
   // `at` must be a BSON Date (not an ISO string) for this TTL index to expire documents

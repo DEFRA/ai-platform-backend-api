@@ -39,12 +39,19 @@ describe('#credentials routes', () => {
     expect(result.secret).toEqual(expect.stringContaining('mock_'))
     expect(result.credential.status).toBe('active')
     expect(result.credential.keyHint).toHaveLength(4)
+    expect(result.credential).toMatchObject({
+      provider: 'openai',
+      offering: 'azure-openai',
+      cloud: 'azure',
+      adapter: 'azure-apim',
+      issuerKey: 'mock'
+    })
   })
 
   test('POST /v1/credentials replays without a secret for a repeated Idempotency-Key', async () => {
     const idempotencyKey = randomUUID()
     const headers = { 'x-user-id': 'user-2', 'idempotency-key': idempotencyKey }
-    const payload = { modelSlug: 'gpt-4o-mini' }
+    const payload = { modelSlug: 'gpt-5-nano' }
 
     const first = await server.inject({
       method: 'POST',
@@ -66,7 +73,7 @@ describe('#credentials routes', () => {
 
   test('POST /v1/credentials rejects a second active credential for the same model', async () => {
     const headers = { 'x-user-id': 'user-3', 'idempotency-key': randomUUID() }
-    const payload = { modelSlug: 'gpt-3-5-turbo' }
+    const payload = { modelSlug: 'gpt-5-mini' }
 
     await server.inject({
       method: 'POST',
@@ -87,8 +94,11 @@ describe('#credentials routes', () => {
   })
 
   test('POST /v1/credentials rejects re-issuing for a model with an expired credential, pointing to renew', async () => {
-    const headers = { 'x-user-id': 'user-expired', 'idempotency-key': randomUUID() }
-    const payload = { modelSlug: 'gpt-3-5-turbo' }
+    const headers = {
+      'x-user-id': 'user-expired',
+      'idempotency-key': randomUUID()
+    }
+    const payload = { modelSlug: 'gpt-5-mini' }
 
     const issued = await server.inject({
       method: 'POST',
@@ -336,7 +346,7 @@ describe('#credentials routes', () => {
         'x-user-id': 'team-cred-leak-1',
         'idempotency-key': randomUUID()
       },
-      payload: { modelSlug: 'gpt-4o-mini' }
+      payload: { modelSlug: 'gpt-5-nano' }
     })
 
     await server.inject({
@@ -642,7 +652,7 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { modelSlug: 'gpt-4-1', environment: 'sandbox' }
+      payload: { modelSlug: 'gpt-4-1-nano', environment: 'sandbox' }
     })
     await wait(300)
     await server.inject({
@@ -656,7 +666,7 @@ describe('#credentials routes', () => {
       url: '/v1/credentials',
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
       payload: {
-        modelSlug: 'gpt-4-1',
+        modelSlug: 'gpt-4-1-nano',
         tier: 'team',
         teamId,
         environment: 'sandbox'
@@ -669,7 +679,7 @@ describe('#credentials routes', () => {
       first.result.credential._id.toString()
     )
     expect(second.result.credential.allowedDeployments.sort()).toEqual([
-      'gpt-4-1',
+      'gpt-4-1-nano',
       'gpt-4o'
     ])
   })

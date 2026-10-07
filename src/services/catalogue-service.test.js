@@ -160,6 +160,108 @@ describe('#syncCatalogue', () => {
     expect(retired.lifecycle.status).toBe('retired')
   })
 
+  test('derives cloud and adapter from the provider offering when the model omits them', async () => {
+    const existingModels = await db
+      .collection('models')
+      .find({}, { projection: { _id: 0 } })
+      .toArray()
+    const source = stubSource({
+      models: [
+        ...existingModels,
+        {
+          slug: 'sync-test-bedrock',
+          provider: 'sync-anthropic',
+          offering: 'bedrock-anthropic',
+          eligible: true
+        }
+      ],
+      providers: [
+        {
+          id: 'sync-anthropic',
+          offerings: [
+            { id: 'bedrock-anthropic', cloud: 'aws', adapter: 'aws-bedrock' }
+          ]
+        }
+      ],
+      catalogueSha: 'sha-cloud',
+      release: 'v1.0.5'
+    })
+
+    await syncCatalogue(db, source, server.locker, server.logger)
+
+    const doc = await db
+      .collection('models')
+      .findOne({ slug: 'sync-test-bedrock' })
+    expect(doc.cloud).toBe('aws')
+    expect(doc.adapter).toBe('aws-bedrock')
+  })
+
+  test('defaults to azure/azure-apim for a legacy release whose offerings are plain strings', async () => {
+    const existingModels = await db
+      .collection('models')
+      .find({}, { projection: { _id: 0 } })
+      .toArray()
+    const source = stubSource({
+      models: [
+        ...existingModels,
+        {
+          slug: 'sync-test-legacy',
+          provider: 'sync-legacy',
+          offering: 'azure-openai',
+          eligible: true
+        }
+      ],
+      providers: [{ id: 'sync-legacy', offerings: ['azure-openai'] }],
+      catalogueSha: 'sha-legacy',
+      release: 'v0.1.1'
+    })
+
+    await syncCatalogue(db, source, server.locker, server.logger)
+
+    const doc = await db
+      .collection('models')
+      .findOne({ slug: 'sync-test-legacy' })
+    expect(doc.cloud).toBe('azure')
+    expect(doc.adapter).toBe('azure-apim')
+  })
+
+  test('skips a model whose cloud/adapter contradict its provider offering', async () => {
+    const existingModels = await db
+      .collection('models')
+      .find({}, { projection: { _id: 0 } })
+      .toArray()
+    const source = stubSource({
+      models: [
+        ...existingModels,
+        {
+          slug: 'sync-test-mismatch',
+          provider: 'sync-mismatch',
+          offering: 'azure-openai',
+          cloud: 'aws',
+          adapter: 'aws-bedrock',
+          eligible: true
+        }
+      ],
+      providers: [
+        {
+          id: 'sync-mismatch',
+          offerings: [
+            { id: 'azure-openai', cloud: 'azure', adapter: 'azure-apim' }
+          ]
+        }
+      ],
+      catalogueSha: 'sha-mismatch',
+      release: 'v1.0.6'
+    })
+
+    const result = await syncCatalogue(db, source, server.locker, server.logger)
+
+    expect(result.synced).toBe(existingModels.length)
+    expect(
+      await db.collection('models').findOne({ slug: 'sync-test-mismatch' })
+    ).toBeNull()
+  })
+
   test('skips the sync (does not retire anything) when the source returns zero models', async () => {
     const source = stubSource({
       models: [],

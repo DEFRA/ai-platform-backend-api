@@ -11,6 +11,7 @@ let renewCredential
 let revokeCredential
 let revealCredential
 let credentialIssuerRegistry
+let createCredentialIssuerRegistry
 
 async function loadCredentialService() {
   ;({
@@ -20,7 +21,7 @@ async function loadCredentialService() {
     revokeCredential,
     revealCredential
   } = await import('#/services/credential-service.js'))
-  ;({ credentialIssuerRegistry } =
+  ;({ credentialIssuerRegistry, createCredentialIssuerRegistry } =
     await import('#/adapters/credential-issuer-registry.js'))
 }
 
@@ -107,6 +108,7 @@ describe('#credential-service vault wiring', () => {
     expect(vault.put).toHaveBeenCalledWith(
       expect.objectContaining({
         credentialId: credential._id.toString(),
+        issuerKey: 'mock',
         secret
       })
     )
@@ -116,6 +118,39 @@ describe('#credential-service vault wiring', () => {
       .findOne({ _id: credential._id })
 
     expect(stored.vaultState).toBeUndefined()
+  })
+
+  test('issueCredential rejects a model whose adapter is not enabled, without creating a credential', async () => {
+    await db.collection('models').insertOne({
+      slug: 'bedrock-not-enabled-model',
+      eligible: true,
+      tiers: ['research'],
+      adapter: 'aws-bedrock'
+    })
+    const userId = `adapter-off-user-${randomUUID()}`
+    const liveRegistry = createCredentialIssuerRegistry(
+      { mock: credentialIssuerRegistry.forCredential({}).issuer },
+      'live'
+    )
+
+    await expect(
+      issueCredential(
+        db,
+        locker,
+        {
+          userId,
+          modelSlug: 'bedrock-not-enabled-model',
+          idempotencyKey: randomUUID()
+        },
+        liveRegistry,
+        stubVault()
+      )
+    ).rejects.toMatchObject({
+      output: { statusCode: 501 },
+      data: { code: 'adapter-not-enabled' }
+    })
+
+    expect(await db.collection('credentials').findOne({ userId })).toBeNull()
   })
 
   test('rotateCredential writes the rotated secret to the vault', async () => {
@@ -259,6 +294,7 @@ describe('#credential-service vault wiring', () => {
 
     expect(vault.updateExpiry).toHaveBeenCalledWith({
       credentialId: issued.credential._id.toString(),
+      issuerKey: 'mock',
       expiresOn: new Date(renewed.expiresAt)
     })
 

@@ -1,9 +1,15 @@
 [
   {
     "id": "openai",
-    "displayName": "OpenAI (Azure)",
-    "offerings": ["azure-openai"],
-    "adapter": "azure",
-    "terms": null
+    "displayName": "OpenAI",
+    "terms": null,
+    "offerings": [
+      {
+        "id": "azure-openai",
+        "displayName": "OpenAI on Azure",
+        "cloud": "azure",
+        "adapter": "azure-apim"
+      }
+    ]
   }
 ]
