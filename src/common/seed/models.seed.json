@@ -1,43 +1,228 @@
 [
   {
-    "slug": "gpt-4-1",
-    "displayName": "GPT-4.1",
+    "slug": "gpt-4-1-nano",
+    "displayName": "GPT-4.1 nano",
     "provider": "openai",
     "offering": "azure-openai",
-    "family": "gpt-4",
-    "modelName": "gpt-4-1",
-    "version": "4.1",
-    "deploymentName": "gpt-4-1",
+    "cloud": "azure",
+    "adapter": "azure-apim",
+    "family": "gpt-4.1",
+    "modelName": "gpt-4.1-nano",
+    "version": "2025-04-14",
+    "deploymentName": "gpt-4.1-nano",
     "apiProfile": "chat-completions",
     "apiVersion": "2024-05-01-preview",
-    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-4-1",
+    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-4-1-nano",
     "region": "uksouth",
     "regions": ["uksouth"],
     "dataZone": "uk",
-    "skus": [{ "name": "Standard", "capacity": 10 }],
+    "skus": [
+      {
+        "name": "GlobalStandard",
+        "capacity": 250
+      }
+    ],
     "eligible": true,
     "eligibilityReason": null,
-    "lifecycle": { "status": "available", "retirementDate": null },
+    "lifecycle": {
+      "status": "available",
+      "retirementDate": null
+    },
     "tiers": ["research", "team"],
     "environments": ["sandbox"],
-    "description": "OpenAI's flagship model, optimised for complex reasoning and long-context tasks.",
+    "description": "Smallest, fastest member of the GPT-4.1 family, suited to lightweight and latency-sensitive tasks.",
+    "useCases": ["Prototyping", "Simple chat", "Lightweight automation"],
+    "links": [
+      {
+        "text": "Best practice guide",
+        "href": "/help/best-practice"
+      }
+    ],
+    "capacityPolicy": {
+      "min": 1,
+      "max": 50,
+      "default": 5
+    },
+    "limitsDefault": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    },
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    }
+  },
+  {
+    "slug": "gpt-5-nano",
+    "displayName": "GPT-5 nano",
+    "provider": "openai",
+    "offering": "azure-openai",
+    "cloud": "azure",
+    "adapter": "azure-apim",
+    "family": "gpt-5",
+    "modelName": "gpt-5-nano",
+    "version": "2025-08-07",
+    "deploymentName": "gpt-5-nano",
+    "apiProfile": "chat-completions",
+    "apiVersion": "2024-05-01-preview",
+    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-5-nano",
+    "region": "uksouth",
+    "regions": ["uksouth"],
+    "dataZone": "uk",
+    "skus": [
+      {
+        "name": "GlobalStandard",
+        "capacity": 250
+      }
+    ],
+    "eligible": true,
+    "eligibilityReason": null,
+    "lifecycle": {
+      "status": "available",
+      "retirementDate": null
+    },
+    "tiers": ["research"],
+    "environments": ["sandbox"],
+    "description": "Smallest, fastest member of the GPT-5 family, suited to lightweight and latency-sensitive tasks.",
+    "useCases": ["Prototyping", "Simple chat", "Lightweight automation"],
+    "links": [
+      {
+        "text": "Best practice guide",
+        "href": "/help/best-practice"
+      }
+    ],
+    "capacityPolicy": {
+      "min": 1,
+      "max": 50,
+      "default": 5
+    },
+    "limitsDefault": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    },
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    }
+  },
+  {
+    "slug": "gpt-5-nano-2",
+    "displayName": "GPT-5 nano (capacity 2)",
+    "provider": "openai",
+    "offering": "azure-openai",
+    "cloud": "azure",
+    "adapter": "azure-apim",
+    "family": "gpt-5",
+    "modelName": "gpt-5-nano",
+    "version": "2025-08-07",
+    "deploymentName": "gpt-5-nano-2",
+    "apiProfile": "chat-completions",
+    "apiVersion": "2024-05-01-preview",
+    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-5-nano-2",
+    "region": "uksouth",
+    "regions": ["uksouth"],
+    "dataZone": "uk",
+    "skus": [
+      {
+        "name": "GlobalStandard",
+        "capacity": 250
+      }
+    ],
+    "eligible": true,
+    "eligibilityReason": null,
+    "lifecycle": {
+      "status": "available",
+      "retirementDate": null
+    },
+    "tiers": ["research"],
+    "environments": ["sandbox"],
+    "description": "A second gpt-5-nano deployment, giving the research tier an additional capacity pool for the same model.",
+    "useCases": ["Prototyping", "Simple chat", "Lightweight automation"],
+    "links": [
+      {
+        "text": "Best practice guide",
+        "href": "/help/best-practice"
+      }
+    ],
+    "capacityPolicy": {
+      "min": 1,
+      "max": 50,
+      "default": 5
+    },
+    "limitsDefault": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    },
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    }
+  },
+  {
+    "slug": "gpt-5-mini",
+    "displayName": "GPT-5 mini",
+    "provider": "openai",
+    "offering": "azure-openai",
+    "cloud": "azure",
+    "adapter": "azure-apim",
+    "family": "gpt-5",
+    "modelName": "gpt-5-mini",
+    "version": "2025-08-07",
+    "deploymentName": "gpt-5-mini",
+    "apiProfile": "chat-completions",
+    "apiVersion": "2024-05-01-preview",
+    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-5-mini",
+    "region": "uksouth",
+    "regions": ["uksouth"],
+    "dataZone": "uk",
+    "skus": [
+      {
+        "name": "GlobalStandard",
+        "capacity": 250
+      }
+    ],
+    "eligible": true,
+    "eligibilityReason": null,
+    "lifecycle": {
+      "status": "available",
+      "retirementDate": null
+    },
+    "tiers": ["research"],
+    "environments": ["sandbox"],
+    "description": "Mid-sized GPT-5 model balancing speed, cost and capability for everyday research tasks.",
     "useCases": [
-      "Complex reasoning",
-      "Long-document analysis",
+      "Chat assistants",
+      "Document summarisation",
       "Code generation"
     ],
-    "contextWindow": "1,000,000 tokens",
-    "links": [{ "text": "Best practice guide", "href": "/help/best-practice" }],
-    "capacityPolicy": { "min": 1, "max": 100, "default": 10 },
-    "limitsDefault": { "requestsPerMinute": 60, "tokensPerDay": 100000 },
-    "limits": { "requestsPerMinute": 60, "tokensPerDay": 100000 }
+    "links": [
+      {
+        "text": "Best practice guide",
+        "href": "/help/best-practice"
+      }
+    ],
+    "capacityPolicy": {
+      "min": 1,
+      "max": 100,
+      "default": 10
+    },
+    "limitsDefault": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    },
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    }
   },
   {
     "slug": "text-embedding-ada-002",
-    "displayName": "Text Embedding Ada 002",
+    "displayName": "text-embedding-ada-002",
     "provider": "openai",
     "offering": "azure-openai",
-    "family": "text-embedding",
+    "cloud": "azure",
+    "adapter": "azure-apim",
+    "family": "text-embedding-ada",
     "modelName": "text-embedding-ada-002",
     "version": "2",
     "deploymentName": "text-embedding-ada-002",
@@ -47,28 +232,106 @@
     "region": "uksouth",
     "regions": ["uksouth"],
     "dataZone": "uk",
-    "skus": [{ "name": "Standard", "capacity": 10 }],
+    "skus": [
+      {
+        "name": "Standard",
+        "capacity": 150
+      }
+    ],
     "eligible": false,
-    "eligibilityReason": "Embeddings and RAG are not yet supported on this platform.",
-    "lifecycle": { "status": "available", "retirementDate": null },
-    "tiers": ["research", "team"],
-    "environments": ["sandbox"],
-    "description": "OpenAI's embedding model for semantic search and retrieval.",
-    "useCases": ["Semantic search", "Retrieval-augmented generation"],
+    "eligibilityReason": "RAG/embeddings are explicit Future/Unimplemented scope in the design pack, independent of this deployment existing in Foundry",
+    "lifecycle": {
+      "status": "proposed",
+      "retirementDate": null
+    },
+    "tiers": [],
+    "environments": [],
+    "description": "Embeddings model, deployed in Foundry but not yet an in-scope capability of the platform.",
+    "useCases": [],
     "contextWindow": "8,191 tokens",
-    "links": [{ "text": "Best practice guide", "href": "/help/best-practice" }],
-    "capacityPolicy": { "min": 1, "max": 100, "default": 10 },
-    "limitsDefault": { "requestsPerMinute": 60, "tokensPerDay": 100000 },
-    "limits": { "requestsPerMinute": 60, "tokensPerDay": 100000 }
+    "links": [],
+    "capacityPolicy": {
+      "min": 1,
+      "max": 50,
+      "default": 5
+    },
+    "limitsDefault": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    },
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    }
+  },
+  {
+    "slug": "gpt-5-3-codex",
+    "displayName": "GPT-5.3 Codex",
+    "provider": "openai",
+    "offering": "azure-openai",
+    "cloud": "azure",
+    "adapter": "azure-apim",
+    "family": "gpt-5-codex",
+    "modelName": "gpt-5.3-codex",
+    "version": "2026-02-24",
+    "deploymentName": "gpt-5.3-codex",
+    "apiProfile": "responses",
+    "apiVersion": "2025-03-01-preview",
+    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-5-3-codex",
+    "region": "uksouth",
+    "regions": ["uksouth"],
+    "dataZone": "uk",
+    "skus": [
+      {
+        "name": "GlobalStandard",
+        "capacity": 15000
+      }
+    ],
+    "eligible": true,
+    "eligibilityReason": null,
+    "lifecycle": {
+      "status": "available",
+      "retirementDate": null
+    },
+    "tiers": ["research"],
+    "environments": ["sandbox"],
+    "description": "Agentic, tool-use-oriented model optimised for coding and long-running tasks.",
+    "useCases": [
+      "Code generation",
+      "Agentic workflows",
+      "Long-document analysis"
+    ],
+    "contextWindow": "272,000 tokens",
+    "links": [
+      {
+        "text": "Best practice guide",
+        "href": "/help/best-practice"
+      }
+    ],
+    "capacityPolicy": {
+      "min": 1,
+      "max": 100,
+      "default": 10
+    },
+    "limitsDefault": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    },
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    }
   },
   {
     "slug": "gpt-4o",
     "displayName": "GPT-4o",
     "provider": "openai",
     "offering": "azure-openai",
+    "cloud": "azure",
+    "adapter": "azure-apim",
     "family": "gpt-4o",
     "modelName": "gpt-4o",
-    "version": "2024-08-06",
+    "version": "2024-11-20",
     "deploymentName": "gpt-4o",
     "apiProfile": "chat-completions",
     "apiVersion": "2024-05-01-preview",
@@ -76,10 +339,18 @@
     "region": "uksouth",
     "regions": ["uksouth"],
     "dataZone": "uk",
-    "skus": [{ "name": "Standard", "capacity": 10 }],
+    "skus": [
+      {
+        "name": "GlobalStandard",
+        "capacity": 250
+      }
+    ],
     "eligible": true,
     "eligibilityReason": null,
-    "lifecycle": { "status": "available", "retirementDate": null },
+    "lifecycle": {
+      "status": "available",
+      "retirementDate": null
+    },
     "tiers": ["research", "team"],
     "environments": ["sandbox"],
     "description": "Multimodal OpenAI model balancing speed, cost and capability across text and vision tasks.",
@@ -89,96 +360,82 @@
       "Image understanding"
     ],
     "contextWindow": "128,000 tokens",
-    "links": [{ "text": "Best practice guide", "href": "/help/best-practice" }],
-    "capacityPolicy": { "min": 1, "max": 100, "default": 10 },
-    "limitsDefault": { "requestsPerMinute": 60, "tokensPerDay": 100000 },
-    "limits": { "requestsPerMinute": 60, "tokensPerDay": 100000 }
+    "links": [
+      {
+        "text": "Best practice guide",
+        "href": "/help/best-practice"
+      }
+    ],
+    "capacityPolicy": {
+      "min": 1,
+      "max": 100,
+      "default": 10
+    },
+    "limitsDefault": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    },
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    }
   },
   {
-    "slug": "gpt-4o-mini",
-    "displayName": "GPT-4o mini",
+    "slug": "gpt-4o-2",
+    "displayName": "GPT-4o (capacity 2)",
     "provider": "openai",
     "offering": "azure-openai",
+    "cloud": "azure",
+    "adapter": "azure-apim",
     "family": "gpt-4o",
-    "modelName": "gpt-4o-mini",
-    "version": "2024-07-18",
-    "deploymentName": "gpt-4o-mini",
+    "modelName": "gpt-4o",
+    "version": "2024-11-20",
+    "deploymentName": "gpt-4o-2",
     "apiProfile": "chat-completions",
     "apiVersion": "2024-05-01-preview",
-    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-4o-mini",
+    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-4o-2",
     "region": "uksouth",
     "regions": ["uksouth"],
     "dataZone": "uk",
-    "skus": [{ "name": "Standard", "capacity": 10 }],
+    "skus": [
+      {
+        "name": "GlobalStandard",
+        "capacity": 14875
+      }
+    ],
     "eligible": true,
     "eligibilityReason": null,
-    "lifecycle": { "status": "available", "retirementDate": null },
+    "lifecycle": {
+      "status": "available",
+      "retirementDate": null
+    },
     "tiers": ["research"],
     "environments": ["sandbox"],
-    "description": "A smaller, faster and lower-cost version of GPT-4o for lightweight tasks.",
-    "useCases": ["Prototyping", "Simple chat", "Lightweight automation"],
+    "description": "A second gpt-4o deployment, giving the research tier an additional capacity pool for the same model.",
+    "useCases": [
+      "Chat assistants",
+      "Document summarisation",
+      "Image understanding"
+    ],
     "contextWindow": "128,000 tokens",
-    "links": [{ "text": "Best practice guide", "href": "/help/best-practice" }],
-    "capacityPolicy": { "min": 1, "max": 100, "default": 10 },
-    "limitsDefault": { "requestsPerMinute": 60, "tokensPerDay": 100000 },
-    "limits": { "requestsPerMinute": 60, "tokensPerDay": 100000 }
-  },
-  {
-    "slug": "gpt-3-5-turbo",
-    "displayName": "GPT-3.5 Turbo",
-    "provider": "openai",
-    "offering": "azure-openai",
-    "family": "gpt-3.5",
-    "modelName": "gpt-3-5-turbo",
-    "version": "0125",
-    "deploymentName": "gpt-3-5-turbo",
-    "apiProfile": "chat-completions",
-    "apiVersion": "2024-05-01-preview",
-    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-3-5-turbo",
-    "region": "uksouth",
-    "regions": ["uksouth"],
-    "dataZone": "uk",
-    "skus": [{ "name": "Standard", "capacity": 10 }],
-    "eligible": true,
-    "eligibilityReason": null,
-    "lifecycle": { "status": "available", "retirementDate": null },
-    "tiers": ["research"],
-    "environments": ["sandbox"],
-    "description": "A fast, low-cost model suited to simple conversational and completion tasks.",
-    "useCases": ["Simple chat", "Text completion", "Classification"],
-    "contextWindow": "16,000 tokens",
-    "links": [{ "text": "Best practice guide", "href": "/help/best-practice" }],
-    "capacityPolicy": { "min": 1, "max": 100, "default": 10 },
-    "limitsDefault": { "requestsPerMinute": 60, "tokensPerDay": 100000 },
-    "limits": { "requestsPerMinute": 60, "tokensPerDay": 100000 }
-  },
-  {
-    "slug": "gpt-5-3-codex",
-    "displayName": "GPT-5.3 Codex",
-    "provider": "openai",
-    "offering": "azure-openai",
-    "family": "gpt-5-codex",
-    "modelName": "gpt-5.3-codex",
-    "version": "5.3",
-    "deploymentName": "gpt-5.3-codex",
-    "apiProfile": "responses",
-    "apiVersion": "2025-03-01-preview",
-    "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-5-3-codex",
-    "region": "uksouth",
-    "regions": ["uksouth"],
-    "dataZone": "uk",
-    "skus": [{ "name": "GlobalStandard", "capacity": 10 }],
-    "eligible": true,
-    "eligibilityReason": null,
-    "lifecycle": { "status": "available", "retirementDate": null },
-    "tiers": ["research"],
-    "environments": ["sandbox"],
-    "description": "Agentic, tool-use-oriented model optimised for coding and long-running tasks.",
-    "useCases": ["Code generation", "Agentic workflows", "Long-document analysis"],
-    "contextWindow": "272,000 tokens",
-    "links": [{ "text": "Best practice guide", "href": "/help/best-practice" }],
-    "capacityPolicy": { "min": 1, "max": 100, "default": 10 },
-    "limitsDefault": { "requestsPerMinute": 60, "tokensPerDay": 100000 },
-    "limits": { "requestsPerMinute": 60, "tokensPerDay": 100000 }
+    "links": [
+      {
+        "text": "Best practice guide",
+        "href": "/help/best-practice"
+      }
+    ],
+    "capacityPolicy": {
+      "min": 1,
+      "max": 100,
+      "default": 10
+    },
+    "limitsDefault": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    },
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerDay": 100000
+    }
   }
 ]

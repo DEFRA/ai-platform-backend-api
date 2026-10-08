@@ -24,9 +24,8 @@ describe('#expireCredentials', () => {
       recordAuditEvent: vi.fn().mockResolvedValue(undefined)
     }))
 
-    const { expireCredentials } = await import(
-      '#/services/maintenance-service.js'
-    )
+    const { expireCredentials } =
+      await import('#/services/maintenance-service.js')
 
     const failing = { _id: 'cred-1', userId: 'user-1' }
     const succeeding = { _id: 'cred-2', userId: 'user-2' }
@@ -67,9 +66,8 @@ describe('#expireCredentials', () => {
       recordAuditEvent: vi.fn().mockResolvedValue(undefined)
     }))
 
-    const { expireCredentials } = await import(
-      '#/services/maintenance-service.js'
-    )
+    const { expireCredentials } =
+      await import('#/services/maintenance-service.js')
 
     const db = fakeDb([{ _id: 'cred-1', userId: 'user-1' }])
     const suspend = vi.fn().mockRejectedValue(new Error('upstream down'))

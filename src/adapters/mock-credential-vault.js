@@ -1,6 +1,6 @@
-// In-memory, for dev and tests - selected by the same `PROVISIONING_MODE`
-// guard as `mockCredentialIssuer`. Keyed on `credentialId` (this platform's
-// own Mongo `_id`), never a provider-specific id.
+// In-memory, for dev and tests - selected by `PROVISIONING_MODE=mock` or by a
+// credential's `issuerKey` being `mock`, like `mockCredentialIssuer`. Keyed
+// on `credentialId` (this platform's own Mongo `_id`), never a provider-specific id.
 const secretsByCredentialId = new Map()
 
 /**

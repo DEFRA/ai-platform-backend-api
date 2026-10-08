@@ -293,5 +293,63 @@ export const backfillRegistry = [
 
       return { modifiedCount }
     }
+  },
+  // The catalogue now records which cloud and gateway adapter serves each
+  // model (`cloud`/`adapter`), and credentials snapshot them at issue time.
+  // Everything issued or synced before this was OpenAI on Azure via APIM.
+  {
+    id: '2026-10-07-models-cloud-adapter-default',
+    description:
+      'Sets cloud: "azure" and adapter: "azure-apim" on models docs missing them',
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('models')
+        .updateMany(
+          { adapter: { $exists: false } },
+          { $set: { cloud: 'azure', adapter: 'azure-apim' } }
+        )
+
+      return { modifiedCount }
+    }
+  },
+  {
+    id: '2026-10-07-credentials-provider-cloud-adapter',
+    description:
+      'Snapshots provider/offering/cloud/adapter onto credentials docs missing them, from the credential model (azure/azure-apim if unknown)',
+    async run(db) {
+      const models = new Map(
+        (await db.collection('models').find({}).toArray()).map((model) => [
+          model.slug,
+          model
+        ])
+      )
+      let modifiedCount = 0
+
+      const cursor = db
+        .collection('credentials')
+        .find({ adapter: { $exists: false } })
+
+      for await (const credential of cursor) {
+        const isTeam = credential.tier === 'team'
+        const model = models.get(
+          credential.modelSlug ?? credential.allowedDeployments?.[0]
+        )
+
+        await db.collection('credentials').updateOne(
+          { _id: credential._id },
+          {
+            $set: {
+              provider: isTeam ? null : (model?.provider ?? null),
+              offering: isTeam ? null : (model?.offering ?? null),
+              cloud: model?.cloud ?? 'azure',
+              adapter: model?.adapter ?? 'azure-apim'
+            }
+          }
+        )
+        modifiedCount++
+      }
+
+      return { modifiedCount }
+    }
   }
 ]

@@ -80,7 +80,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-3'),
-      payload: { modelSlug: 'gpt-4o-mini', environment: 'sandbox' }
+      payload: { modelSlug: 'gpt-5-nano', environment: 'sandbox' }
     })
 
     expect(statusCode).toBe(403)
@@ -136,7 +136,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: postHeaders('deploy-user-16'),
-      payload: { modelSlug: 'gpt-4-1', environment: 'sandbox' }
+      payload: { modelSlug: 'gpt-4-1-nano', environment: 'sandbox' }
     })
 
     expect(second.statusCode).toBe(201)
@@ -151,7 +151,7 @@ describe('#team-deployments routes', () => {
     })
 
     expect(result.items.map((item) => item.modelSlug).sort()).toEqual([
-      'gpt-4-1',
+      'gpt-4-1-nano',
       'gpt-4o'
     ])
     expect(new Set(result.items.map((item) => item.teamId)).size).toBe(1)

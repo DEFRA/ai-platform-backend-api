@@ -160,6 +160,102 @@ describe('#backfillRegistry', () => {
     })
   })
 
+  describe('2026-10-07-credentials-provider-cloud-adapter', () => {
+    test('snapshots provider/offering/cloud/adapter from the credential model', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'pre-cloud-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'active'
+      })
+
+      await findBackfill('2026-10-07-credentials-provider-cloud-adapter').run(
+        db
+      )
+
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated).toMatchObject({
+        provider: 'openai',
+        offering: 'azure-openai',
+        cloud: 'azure',
+        adapter: 'azure-apim'
+      })
+    })
+
+    test('records only cloud/adapter on a team credential and defaults them for an unknown model', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'pre-cloud-team-user',
+        modelSlug: null,
+        allowedDeployments: ['no-longer-in-catalogue'],
+        tier: 'team',
+        status: 'active'
+      })
+
+      await findBackfill('2026-10-07-credentials-provider-cloud-adapter').run(
+        db
+      )
+
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated).toMatchObject({
+        provider: null,
+        offering: null,
+        cloud: 'azure',
+        adapter: 'azure-apim'
+      })
+    })
+
+    test('leaves a credential that already has an adapter untouched', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'bedrock-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'active',
+        provider: 'anthropic',
+        cloud: 'aws',
+        adapter: 'aws-bedrock'
+      })
+
+      await findBackfill('2026-10-07-credentials-provider-cloud-adapter').run(
+        db
+      )
+
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated).toMatchObject({
+        provider: 'anthropic',
+        cloud: 'aws',
+        adapter: 'aws-bedrock'
+      })
+    })
+  })
+
+  describe('2026-10-07-models-cloud-adapter-default', () => {
+    test('sets cloud/adapter on a model doc missing them and leaves others alone', async () => {
+      const legacy = await db
+        .collection('models')
+        .insertOne({ slug: 'backfill-legacy-model' })
+      const bedrock = await db.collection('models').insertOne({
+        slug: 'backfill-bedrock-model',
+        cloud: 'aws',
+        adapter: 'aws-bedrock'
+      })
+
+      await findBackfill('2026-10-07-models-cloud-adapter-default').run(db)
+
+      expect(
+        await db.collection('models').findOne({ _id: legacy.insertedId })
+      ).toMatchObject({ cloud: 'azure', adapter: 'azure-apim' })
+      expect(
+        await db.collection('models').findOne({ _id: bedrock.insertedId })
+      ).toMatchObject({ cloud: 'aws', adapter: 'aws-bedrock' })
+    })
+  })
+
   describe('2026-09-25-consolidate-legacy-team-deployments', () => {
     test('merges legacy one-row-per-model docs into one deployments[] doc, renaming dev to sandbox', async () => {
       const teamId = 'legacy-deployments-team-1'
