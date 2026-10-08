@@ -4,6 +4,13 @@ function stubSource(result) {
   return { fetchCatalogue: vi.fn().mockResolvedValue(result) }
 }
 
+function loadProviders(db) {
+  return db
+    .collection('providers')
+    .find({}, { projection: { _id: 0 } })
+    .toArray()
+}
+
 describe('#syncCatalogue', () => {
   let server
   let db
@@ -28,7 +35,7 @@ describe('#syncCatalogue', () => {
       .toArray()
     const source = stubSource({
       models: [...existingModels, { slug: 'sync-test-a', eligible: true }],
-      providers: [{ id: 'sync-test-provider' }],
+      providers: [...(await loadProviders(db)), { id: 'sync-test-provider' }],
       catalogueSha: 'sha-1',
       release: 'v1.0.0'
     })
@@ -63,7 +70,7 @@ describe('#syncCatalogue', () => {
           apiProfile: 'chat-completions'
         }
       ],
-      providers: [],
+      providers: await loadProviders(db),
       catalogueSha: 'sha-github',
       release: 'v1.0.4'
     })
@@ -89,7 +96,7 @@ describe('#syncCatalogue', () => {
         ...existingModels,
         { slug: 'sync-test-responses-profile', apiProfile: 'responses' }
       ],
-      providers: [],
+      providers: await loadProviders(db),
       catalogueSha: 'sha-github-2',
       release: 'v1.0.5'
     })
@@ -116,7 +123,7 @@ describe('#syncCatalogue', () => {
           apiVersion: '2024-05-01-preview'
         }
       ],
-      providers: [],
+      providers: await loadProviders(db),
       catalogueSha: 'sha-github-3',
       release: 'v1.0.6'
     })
@@ -143,7 +150,7 @@ describe('#syncCatalogue', () => {
 
     const source = stubSource({
       models: keepModels,
-      providers: [],
+      providers: await loadProviders(db),
       catalogueSha: 'sha-2',
       release: 'v1.0.1'
     })
@@ -176,6 +183,7 @@ describe('#syncCatalogue', () => {
         }
       ],
       providers: [
+        ...(await loadProviders(db)),
         {
           id: 'sync-anthropic',
           offerings: [
@@ -211,7 +219,10 @@ describe('#syncCatalogue', () => {
           eligible: true
         }
       ],
-      providers: [{ id: 'sync-legacy', offerings: ['azure-openai'] }],
+      providers: [
+        ...(await loadProviders(db)),
+        { id: 'sync-legacy', offerings: ['azure-openai'] }
+      ],
       catalogueSha: 'sha-legacy',
       release: 'v0.1.1'
     })
@@ -243,6 +254,7 @@ describe('#syncCatalogue', () => {
         }
       ],
       providers: [
+        ...(await loadProviders(db)),
         {
           id: 'sync-mismatch',
           offerings: [
@@ -261,6 +273,40 @@ describe('#syncCatalogue', () => {
       await db.collection('models').findOne({ slug: 'sync-test-mismatch' })
     ).toBeNull()
   })
+
+  test.each([
+    ['an unknown provider', 'sync-no-such-provider', 'azure-openai'],
+    ['an unknown offering', 'openai', 'no-such-offering']
+  ])(
+    'skips a model referencing %s rather than defaulting it to azure/azure-apim',
+    async (_label, provider, offering) => {
+      const existingModels = await db
+        .collection('models')
+        .find({}, { projection: { _id: 0 } })
+        .toArray()
+      const source = stubSource({
+        models: [
+          ...existingModels,
+          { slug: 'sync-test-unresolved', provider, offering, eligible: true }
+        ],
+        providers: await loadProviders(db),
+        catalogueSha: 'sha-unresolved',
+        release: 'v1.0.7'
+      })
+
+      const result = await syncCatalogue(
+        db,
+        source,
+        server.locker,
+        server.logger
+      )
+
+      expect(result.synced).toBe(existingModels.length)
+      expect(
+        await db.collection('models').findOne({ slug: 'sync-test-unresolved' })
+      ).toBeNull()
+    }
+  )
 
   test('skips the sync (does not retire anything) when the source returns zero models', async () => {
     const source = stubSource({
