@@ -14,15 +14,18 @@ const DEFAULT_API_VERSION = '2024-05-01-preview'
 const LEGACY_CLOUD = 'azure'
 
 // `provider/offering` -> `{id, cloud, adapter}`; legacy releases list
-// offerings as plain strings, which carry no cloud/adapter and are skipped.
+// offerings as plain strings, which are indexed with the Azure defaults.
 function indexOfferings(providers) {
   const index = new Map()
 
   for (const provider of providers) {
     for (const offering of provider.offerings ?? []) {
-      if (typeof offering === 'object') {
-        index.set(`${provider.id}/${offering.id}`, offering)
-      }
+      const entry =
+        typeof offering === 'string'
+          ? { id: offering, cloud: LEGACY_CLOUD, adapter: DEFAULT_ADAPTER }
+          : offering
+
+      index.set(`${provider.id}/${entry.id}`, entry)
     }
   }
 
@@ -97,6 +100,15 @@ export async function syncCatalogue(db, source, locker, logger) {
         `${rawModel.provider}/${rawModel.offering}`
       )
       const model = normalizeModel(rawModel, offering)
+
+      // A model naming a provider/offering the catalogue doesn't define would
+      // otherwise fall back to Azure/APIM - keep the last good copy instead.
+      if (rawModel.provider && rawModel.offering && !offering) {
+        logger.warn(
+          `Skipping catalogue model ${model.slug}: unknown offering ${rawModel.provider}/${rawModel.offering}`
+        )
+        continue
+      }
 
       // A model contradicting its provider's offering would issue credentials
       // through the wrong cloud - keep the last good copy rather than sync it.

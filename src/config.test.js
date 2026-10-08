@@ -56,12 +56,12 @@ describe('#config provisioning', () => {
   })
 
   test('does not validate adapter config in mock mode', async () => {
-    await expect(
-      loadConfig({
-        PROVISIONING_MODE: 'mock',
-        ENABLED_ADAPTERS: 'aws-bedrock'
-      })
-    ).resolves.toBeDefined()
+    const { config } = await loadConfig({
+      PROVISIONING_MODE: 'mock',
+      ENABLED_ADAPTERS: 'aws-bedrock'
+    })
+
+    expect(config.get('provisioning.adapters')).toEqual(['aws-bedrock'])
   })
 
   test('reads MOCK_TIERS as a list, empty by default', async () => {
