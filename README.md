@@ -236,23 +236,33 @@ NO_PROXY=...
 
 No additional proxy configuration is required in the service.
 
-### Gateways and adapters
+### Gateways
 
-Each catalogue model names the `cloud` it runs on and the `adapter` that issues and stores its
-credentials (e.g. `azure` / `azure-apim`, later `aws` / `aws-bedrock`). `PROVISIONING_MODE` is only
-`mock` (fake keys, in-memory vault, whatever the model's adapter) or `live`. In `live` mode
-`ENABLED_ADAPTERS` (comma-separated, default `azure-apim`) lists the adapters this environment can
-use; startup fails if an enabled adapter's config is missing, and a model whose adapter isn't
-enabled is refused with `501 adapter-not-enabled`. A credential records the `issuerKey` that
+Every model is reached through Azure API Management, whichever cloud hosts it. A catalogue model's
+`hosting` (`platform`: `foundry`, `bedrock` or `direct`, plus `cloud` or `provider`) says where it
+runs; it is not a gateway. The offering's `gateway` (today only `azure-apim`) selects the issuer and
+vault that issue and store its credentials. `PROVISIONING_MODE` is only
+`mock` (fake keys, in-memory vault, whatever the model's gateway) or `live`. In `live` mode
+`ENABLED_GATEWAYS` (comma-separated, default `azure-apim`; renamed from `ENABLED_ADAPTERS`) lists the
+gateways this environment can
+use; startup fails if an enabled gateway's config is missing, and a model whose gateway isn't
+enabled is refused with `501 gateway-not-enabled`. A credential records the `issuerKey` that
 minted it, and its renew/rotate/revoke/reveal use that issuer and its matching vault.
 `MOCK_TIERS` (comma-separated `research`/`team`, default empty, refused in prod) keeps the named
 tiers on the mock issuer and vault even in `live` mode, e.g. `MOCK_TIERS=team` to demo the team
-tier without a real team gateway while the research tier uses the real adapters.
+tier without a real team gateway while the research tier uses the real gateways.
 
-To add a gateway such as Bedrock: write the issuer and vault adapters, add them to
+The catalogue sync reads both offering shapes: the `hosting`/`gateway` shape, and the earlier flat
+`cloud`/`adapter` shape (or plain-string offerings) shipped by `ai-platform-infra` `v0.1.x`, so an
+environment can move its `CATALOGUE_REF` independently. Either way, model documents are stored with
+the nested `hosting` object and `gateway` only.
+
+No `bedrock` offering ships yet: how API Management authenticates to Bedrock without long-lived AWS
+keys is an open design question. A Bedrock or direct-API model would still be an offering behind
+APIM, not a new gateway. A genuinely new gateway needs its issuer and vault adapters added to
 `issuerFactories` and `vaultFactories` in `credential-issuer-registry.js` /
-`credential-vault-registry.js`, and add its required config keys to
-`REQUIRED_CONFIG_BY_ADAPTER` in `config.js`. Nothing in the services changes.
+`credential-vault-registry.js`, and its required config keys added to
+`REQUIRED_CONFIG_BY_GATEWAY` in `config.js`. Nothing in the services changes.
 
 ### Testing against live Azure resources (sandbox)
 

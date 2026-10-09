@@ -6,9 +6,10 @@
     "offerings": [
       {
         "id": "azure-openai",
-        "displayName": "OpenAI on Azure",
-        "cloud": "azure",
-        "adapter": "azure-apim"
+        "displayName": "OpenAI on Microsoft Foundry",
+        "hosting": { "platform": "foundry", "cloud": "azure" },
+        "gateway": "azure-apim",
+        "terms": "https://learn.microsoft.com/en-us/azure/foundry/responsible-ai/openai/data-privacy"
       }
     ]
   }

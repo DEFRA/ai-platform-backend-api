@@ -256,6 +256,111 @@ describe('#backfillRegistry', () => {
     })
   })
 
+  describe('2026-10-08-credentials-gateway', () => {
+    test('renames adapter to gateway on a credential doc missing gateway', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'pre-gateway-rename-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'active',
+        adapter: 'azure-apim'
+      })
+
+      const { modifiedCount } = await findBackfill(
+        '2026-10-08-credentials-gateway'
+      ).run(db)
+
+      expect(modifiedCount).toBeGreaterThanOrEqual(1)
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated.gateway).toBe('azure-apim')
+      expect(updated).not.toHaveProperty('adapter')
+    })
+
+    test('leaves a credential doc that already has a gateway untouched', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'already-gateway-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'active',
+        gateway: 'azure-apim'
+      })
+
+      await findBackfill('2026-10-08-credentials-gateway').run(db)
+
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated.gateway).toBe('azure-apim')
+    })
+
+    test('does not give a gateway to a credential doc that never had an adapter', async () => {
+      const { insertedId } = await db.collection('credentials').insertOne({
+        userId: 'no-adapter-user',
+        modelSlug: 'gpt-4o',
+        tier: 'research',
+        status: 'pending'
+      })
+
+      await findBackfill('2026-10-08-credentials-gateway').run(db)
+
+      const updated = await db
+        .collection('credentials')
+        .findOne({ _id: insertedId })
+      expect(updated).not.toHaveProperty('gateway')
+    })
+  })
+
+  describe('2026-10-08-models-hosting-gateway', () => {
+    test('replaces flat cloud/adapter with nested hosting and gateway', async () => {
+      const { insertedId } = await db.collection('models').insertOne({
+        slug: 'backfill-flat-hosting-model',
+        cloud: 'azure',
+        adapter: 'azure-apim'
+      })
+
+      const { modifiedCount } = await findBackfill(
+        '2026-10-08-models-hosting-gateway'
+      ).run(db)
+
+      expect(modifiedCount).toBeGreaterThanOrEqual(1)
+      const updated = await db.collection('models').findOne({ _id: insertedId })
+      expect(updated.hosting).toEqual({
+        platform: 'foundry',
+        cloud: 'azure',
+        provider: null
+      })
+      expect(updated.gateway).toBe('azure-apim')
+      expect(updated).not.toHaveProperty('cloud')
+      expect(updated).not.toHaveProperty('adapter')
+    })
+
+    test('leaves a model doc that already has a gateway untouched', async () => {
+      const hosting = { platform: 'direct', cloud: null, provider: 'meta' }
+      const { insertedId } = await db.collection('models').insertOne({
+        slug: 'backfill-nested-hosting-model',
+        hosting,
+        gateway: 'azure-apim'
+      })
+
+      await findBackfill('2026-10-08-models-hosting-gateway').run(db)
+
+      const updated = await db.collection('models').findOne({ _id: insertedId })
+      expect(updated.hosting).toEqual(hosting)
+      expect(updated.gateway).toBe('azure-apim')
+    })
+
+    test('runs after both flat-field 2026-10-07 backfills and the credentials rename', () => {
+      const ids = backfillRegistry.map((backfill) => backfill.id)
+
+      expect(ids.at(-1)).toBe('2026-10-08-models-hosting-gateway')
+      expect(ids.indexOf('2026-10-08-credentials-gateway')).toBeLessThan(
+        ids.indexOf('2026-10-08-models-hosting-gateway')
+      )
+    })
+  })
+
   describe('2026-09-25-consolidate-legacy-team-deployments', () => {
     test('merges legacy one-row-per-model docs into one deployments[] doc, renaming dev to sandbox', async () => {
       const teamId = 'legacy-deployments-team-1'

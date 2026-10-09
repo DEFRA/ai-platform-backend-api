@@ -351,5 +351,50 @@ export const backfillRegistry = [
 
       return { modifiedCount }
     }
+  },
+  // Credentials now name their gateway `gateway`, matching the catalogue and
+  // model documents. Must stay after the two 2026-10-07 entries above, which
+  // query and write the old `adapter` field and would re-create it if run later.
+  {
+    id: '2026-10-08-credentials-gateway',
+    description:
+      'Renames adapter to gateway on credentials docs that have no gateway yet',
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('credentials')
+        .updateMany({ gateway: { $exists: false } }, [
+          { $set: { gateway: '$adapter' } },
+          { $unset: 'adapter' }
+        ])
+
+      return { modifiedCount }
+    }
+  },
+  // Models now carry a nested `hosting` object and `gateway` derived from the
+  // catalogue offering, replacing the flat `cloud`/`adapter`. Must stay last:
+  // the two 2026-10-07 entries above read or write the flat model fields.
+  {
+    id: '2026-10-08-models-hosting-gateway',
+    description:
+      'Replaces flat cloud/adapter with nested hosting and gateway on models docs that have no gateway yet',
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('models')
+        .updateMany({ gateway: { $exists: false } }, [
+          {
+            $set: {
+              hosting: {
+                platform: 'foundry',
+                cloud: { $ifNull: ['$cloud', 'azure'] },
+                provider: null
+              },
+              gateway: { $ifNull: ['$adapter', 'azure-apim'] }
+            }
+          },
+          { $unset: ['cloud', 'adapter'] }
+        ])
+
+      return { modifiedCount }
+    }
   }
 ]

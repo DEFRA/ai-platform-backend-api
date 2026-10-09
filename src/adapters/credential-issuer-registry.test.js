@@ -18,26 +18,26 @@ describe('#createCredentialIssuerRegistry', () => {
     })
   })
 
-  test('forModel resolves the issuer registered for the model adapter', () => {
-    const bedrockIssuer = { id: 'bedrock-issuer' }
+  test('forModel resolves the issuer registered for the model gateway', () => {
+    const otherGatewayIssuer = { id: 'other-gateway-issuer' }
     const registry = createCredentialIssuerRegistry(
-      { ...issuersByKey, 'aws-bedrock': bedrockIssuer },
+      { ...issuersByKey, 'aws-apigw': otherGatewayIssuer },
       'live'
     )
 
     expect(
-      registry.forModel({ slug: 'gpt-4o', adapter: 'azure-apim' })
+      registry.forModel({ slug: 'gpt-4o', gateway: 'azure-apim' })
     ).toEqual({ issuerKey: 'azure-apim', issuer: azureIssuer })
     expect(
-      registry.forModel({ slug: 'claude', adapter: 'aws-bedrock' })
-    ).toEqual({ issuerKey: 'aws-bedrock', issuer: bedrockIssuer })
+      registry.forModel({ slug: 'claude', gateway: 'aws-apigw' })
+    ).toEqual({ issuerKey: 'aws-apigw', issuer: otherGatewayIssuer })
   })
 
-  test('forModel always resolves the mock issuer in mock mode, whatever the model adapter', () => {
+  test('forModel always resolves the mock issuer in mock mode, whatever the model gateway', () => {
     const registry = createCredentialIssuerRegistry(issuersByKey, 'mock')
 
     expect(
-      registry.forModel({ slug: 'gpt-4o', adapter: 'azure-apim' })
+      registry.forModel({ slug: 'gpt-4o', gateway: 'azure-apim' })
     ).toEqual({ issuerKey: 'mock', issuer: mockIssuer })
   })
 
@@ -45,7 +45,7 @@ describe('#createCredentialIssuerRegistry', () => {
     const registry = createCredentialIssuerRegistry(issuersByKey, 'live', [
       'team'
     ])
-    const model = { slug: 'gpt-4o', adapter: 'azure-apim' }
+    const model = { slug: 'gpt-4o', gateway: 'azure-apim' }
 
     expect(registry.forModel(model, 'team')).toEqual({
       issuerKey: 'mock',
@@ -57,15 +57,15 @@ describe('#createCredentialIssuerRegistry', () => {
     })
   })
 
-  test('forModel throws a coded error for an adapter that is not enabled', () => {
+  test('forModel throws a coded error for a gateway that is not enabled', () => {
     const registry = createCredentialIssuerRegistry(issuersByKey, 'live')
 
     expect(() =>
-      registry.forModel({ slug: 'claude', adapter: 'aws-bedrock' })
+      registry.forModel({ slug: 'claude', gateway: 'aws-apigw' })
     ).toThrow(
       expect.objectContaining({
-        code: 'adapter-not-enabled',
-        message: 'No credential issuer registered for issuerKey "aws-bedrock"'
+        code: 'gateway-not-enabled',
+        message: 'No credential issuer registered for issuerKey "aws-apigw"'
       })
     )
   })

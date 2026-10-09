@@ -43,7 +43,7 @@ describe('#credentials routes', () => {
       provider: 'openai',
       offering: 'azure-openai',
       cloud: 'azure',
-      adapter: 'azure-apim',
+      gateway: 'azure-apim',
       issuerKey: 'mock'
     })
   })
@@ -559,12 +559,12 @@ describe('#credentials routes', () => {
     )
     expect(result.credential.allowedDeployments).toEqual(['gpt-4o'])
     expect(result.credential.credentialType).toBe('subscription-key')
-    // A team credential spans models, so it keeps cloud/adapter but no single provider/offering.
+    // A team credential spans models, so it keeps cloud/gateway but no single provider/offering.
     expect(result.credential).toMatchObject({
       provider: null,
       offering: null,
       cloud: 'azure',
-      adapter: 'azure-apim'
+      gateway: 'azure-apim'
     })
     expect(result.secret).toEqual(expect.stringContaining('mock-key-'))
   })

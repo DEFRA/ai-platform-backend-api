@@ -16,6 +16,7 @@ import {
   releaseCredentialTypeReservation
 } from '#/services/team-deployment-service.js'
 import { getMemberRole } from '#/services/team-service.js'
+import { gatewayOf, hostingOf } from '#/common/model-hosting.js'
 
 /**
  * Best-effort lookup of a user's team, tolerant of the day-1 interim trust
@@ -225,11 +226,11 @@ async function issueCredentialForParams(
   try {
     resolvedIssuer = registry.forModel(model, tier)
   } catch (error) {
-    if (error.code === 'adapter-not-enabled') {
+    if (error.code === 'gateway-not-enabled') {
       throw boomWithCode(
         Boom.notImplemented,
         'This model is not available through any gateway enabled in this environment',
-        'adapter-not-enabled'
+        'gateway-not-enabled'
       )
     }
 
@@ -352,10 +353,12 @@ async function issueCredentialForParams(
     // Catalogue snapshot at issue time, so "which cloud/gateway is this
     // credential for" needs no join. A team credential spans several models,
     // so only the research tier records a single provider/offering.
+    // `gateway` is what the catalogue said at issue time; `issuerKey` is which
+    // issuer actually minted it - they differ in `mock` mode or a `mockTiers` tier.
     provider: tier === 'team' ? null : (model.provider ?? null),
     offering: tier === 'team' ? null : (model.offering ?? null),
-    cloud: model.cloud ?? null,
-    adapter: model.adapter ?? null,
+    cloud: hostingOf(model).cloud ?? null,
+    gateway: gatewayOf(model),
     createdAt: now,
     renewalCount: 0
   }

@@ -1,5 +1,5 @@
 import { invalidateModelsCache } from '#/services/models-service.js'
-import { DEFAULT_ADAPTER } from '#/adapters/adapter-keys.js'
+import { DEFAULT_GATEWAY } from '#/adapters/gateway-keys.js'
 
 // Pinned data-plane api-version per apiProfile, verified against the sandbox
 // gateway (docs/plans/integration/research-tier-integration-plan.md in
@@ -13,23 +13,69 @@ const DEFAULT_API_VERSION = '2024-05-01-preview'
 // Catalogue releases up to v0.1.1 predate `cloud`/`adapter` and were Azure-only.
 const LEGACY_CLOUD = 'azure'
 
-// `provider/offering` -> `{id, cloud, adapter}`; legacy releases list
-// offerings as plain strings, which are indexed with the Azure defaults.
-function indexOfferings(providers) {
-  const index = new Map()
+const PLATFORM_BY_CLOUD = { azure: 'foundry', aws: 'bedrock' }
 
-  for (const provider of providers) {
-    for (const offering of provider.offerings ?? []) {
-      const entry =
-        typeof offering === 'string'
-          ? { id: offering, cloud: LEGACY_CLOUD, adapter: DEFAULT_ADAPTER }
-          : offering
+function legacyHosting(cloud) {
+  const resolvedCloud = cloud ?? LEGACY_CLOUD
 
-      index.set(`${provider.id}/${entry.id}`, entry)
+  return {
+    platform: PLATFORM_BY_CLOUD[resolvedCloud] ?? 'foundry',
+    cloud: resolvedCloud,
+    provider: null
+  }
+}
+
+// Permanent, not migration scaffolding: environments pin `CATALOGUE_REF`
+// independently, so a flat v0.1.x offering (`{id, cloud, adapter}`) or a
+// plain-string one must keep working for as long as any environment pins one.
+function normalizeOffering(offering) {
+  if (typeof offering === 'string') {
+    return {
+      id: offering,
+      hosting: legacyHosting(),
+      gateway: DEFAULT_GATEWAY
     }
   }
 
-  return index
+  if (offering.hosting) {
+    return {
+      id: offering.id,
+      hosting: {
+        platform: offering.hosting.platform,
+        cloud: offering.hosting.cloud ?? null,
+        provider: offering.hosting.provider ?? null
+      },
+      gateway: offering.gateway ?? DEFAULT_GATEWAY
+    }
+  }
+
+  return {
+    id: offering.id,
+    hosting: legacyHosting(offering.cloud),
+    gateway: offering.adapter ?? offering.gateway ?? DEFAULT_GATEWAY
+  }
+}
+
+// `provider/offering` -> `{id, hosting, gateway}`, plus any offering id a
+// provider lists more than once.
+function indexOfferings(providers) {
+  const index = new Map()
+  const duplicates = []
+
+  for (const provider of providers) {
+    for (const offering of provider.offerings ?? []) {
+      const entry = normalizeOffering(offering)
+      const key = `${provider.id}/${entry.id}`
+
+      if (index.has(key)) {
+        duplicates.push(key)
+      }
+
+      index.set(key, entry)
+    }
+  }
+
+  return { index, duplicates }
 }
 
 // The github source passes `ai-platform-infra`'s raw catalogue/models/*.json
@@ -41,10 +87,14 @@ function indexOfferings(providers) {
 // here, at the single write path both sources go through, rather than
 // changing either adapter's pinned output shape.
 function normalizeModel(model, offering) {
+  // The offering owns hosting and gateway; a model's own flat `cloud`/`adapter`
+  // is only tolerated as input from a stale v0.1.x release, never re-emitted.
+  const { cloud, adapter, ...rest } = model
+
   return {
-    ...model,
-    cloud: model.cloud ?? offering?.cloud ?? LEGACY_CLOUD,
-    adapter: model.adapter ?? offering?.adapter ?? DEFAULT_ADAPTER,
+    ...rest,
+    hosting: offering?.hosting ?? model.hosting ?? legacyHosting(cloud),
+    gateway: offering?.gateway ?? model.gateway ?? adapter ?? DEFAULT_GATEWAY,
     eligible: model.eligible ?? model.eligibility?.eligible,
     eligibilityReason: model.eligibilityReason ?? model.eligibility?.reason,
     region: model.region ?? model.regions?.[0],
@@ -90,9 +140,19 @@ export async function syncCatalogue(db, source, locker, logger) {
       return { synced: 0, retired: 0, skipped: true }
     }
 
+    const { index: offerings, duplicates } = indexOfferings(providers)
+
+    // Skip rather than throw: a throw would reach startup, whereas skipping
+    // keeps the last good catalogue like every other guard here.
+    if (duplicates.length > 0) {
+      logger.error(
+        `Catalogue has duplicate offering ids (${duplicates.join(', ')}) - skipping sync`
+      )
+      return { synced: 0, retired: 0, skipped: true }
+    }
+
     const now = new Date().toISOString()
     const modelsCollection = db.collection('models')
-    const offerings = indexOfferings(providers)
     let synced = 0
 
     for (const rawModel of models) {
@@ -110,11 +170,13 @@ export async function syncCatalogue(db, source, locker, logger) {
         continue
       }
 
-      // A model contradicting its provider's offering would issue credentials
-      // through the wrong cloud - keep the last good copy rather than sync it.
+      // A stale release whose model still declares its own `cloud`/`adapter`
+      // contradicting the offering would issue credentials through the wrong
+      // gateway - keep the last good copy rather than sync it.
       if (
         offering &&
-        (model.cloud !== offering.cloud || model.adapter !== offering.adapter)
+        ((rawModel.cloud && rawModel.cloud !== offering.hosting.cloud) ||
+          (rawModel.adapter && rawModel.adapter !== offering.gateway))
       ) {
         logger.warn(
           `Skipping catalogue model ${model.slug}: cloud/adapter disagree with offering ${model.provider}/${model.offering}`
@@ -132,13 +194,16 @@ export async function syncCatalogue(db, source, locker, logger) {
             release,
             syncedAt: now,
             updatedAt: now
-          }
+          },
+          // `$set` alone would leave the old flat fields on an already-synced doc.
+          $unset: { cloud: '', adapter: '' }
         },
         { upsert: true }
       )
     }
 
-    for (const provider of providers) {
+    for (const { $schema, ...provider } of providers) {
+      // `$schema` is editor metadata and a `$`-prefixed key Mongo rejects in `$set`.
       await db
         .collection('providers')
         .updateOne(
