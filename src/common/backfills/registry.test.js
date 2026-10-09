@@ -257,7 +257,7 @@ describe('#backfillRegistry', () => {
   })
 
   describe('2026-10-08-credentials-gateway', () => {
-    test('renames adapter to gateway on a credential doc missing gateway', async () => {
+    test('copies adapter into gateway on a credential doc missing gateway, keeping adapter for older instances', async () => {
       const { insertedId } = await db.collection('credentials').insertOne({
         userId: 'pre-gateway-rename-user',
         modelSlug: 'gpt-4o',
@@ -275,7 +275,7 @@ describe('#backfillRegistry', () => {
         .collection('credentials')
         .findOne({ _id: insertedId })
       expect(updated.gateway).toBe('azure-apim')
-      expect(updated).not.toHaveProperty('adapter')
+      expect(updated.adapter).toBe('azure-apim')
     })
 
     test('leaves a credential doc that already has a gateway untouched', async () => {
@@ -351,13 +351,22 @@ describe('#backfillRegistry', () => {
       expect(updated.gateway).toBe('azure-apim')
     })
 
-    test('runs after both flat-field 2026-10-07 backfills and the credentials rename', () => {
+    test('runs after both flat-field 2026-10-07 backfills and the credentials copy', () => {
       const ids = backfillRegistry.map((backfill) => backfill.id)
-
-      expect(ids.at(-1)).toBe('2026-10-08-models-hosting-gateway')
-      expect(ids.indexOf('2026-10-08-credentials-gateway')).toBeLessThan(
-        ids.indexOf('2026-10-08-models-hosting-gateway')
+      const position = (id) => ids.indexOf(id)
+      const credentialsGateway = position('2026-10-08-credentials-gateway')
+      const modelsHosting = position('2026-10-08-models-hosting-gateway')
+      const modelsFlat = position('2026-10-07-models-cloud-adapter-default')
+      const credentialsFlat = position(
+        '2026-10-07-credentials-provider-cloud-adapter'
       )
+
+      expect(Math.min(modelsFlat, credentialsFlat)).toBeGreaterThanOrEqual(0)
+      expect(credentialsGateway).toBeGreaterThan(modelsFlat)
+      expect(credentialsGateway).toBeGreaterThan(credentialsFlat)
+      expect(modelsHosting).toBeGreaterThan(credentialsGateway)
+      expect(modelsHosting).toBeGreaterThan(modelsFlat)
+      expect(ids.at(-1)).toBe('2026-10-08-models-hosting-gateway')
     })
   })
 

@@ -353,18 +353,20 @@ export const backfillRegistry = [
     }
   },
   // Credentials now name their gateway `gateway`, matching the catalogue and
-  // model documents. Must stay after the two 2026-10-07 entries above, which
-  // query and write the old `adapter` field and would re-create it if run later.
+  // model documents. Expand step only: `adapter` is copied, not unset, because
+  // an older instance still serving during a rolling deploy keeps writing
+  // `adapter`. The later contract migration must re-copy any document still
+  // missing `gateway` before it unsets `adapter`. Must stay after the two
+  // 2026-10-07 entries above, which query and write the old `adapter` field.
   {
     id: '2026-10-08-credentials-gateway',
     description:
-      'Renames adapter to gateway on credentials docs that have no gateway yet',
+      'Copies adapter into gateway on credentials docs that have no gateway yet',
     async run(db) {
       const { modifiedCount } = await db
         .collection('credentials')
         .updateMany({ gateway: { $exists: false } }, [
-          { $set: { gateway: '$adapter' } },
-          { $unset: 'adapter' }
+          { $set: { gateway: '$adapter' } }
         ])
 
       return { modifiedCount }
