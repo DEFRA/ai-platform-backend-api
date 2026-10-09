@@ -13,20 +13,20 @@ describe('#createCredentialVaultRegistry', () => {
   test('routes every operation to the vault for the credential issuerKey', async () => {
     const mock = fakeVault()
     const azure = fakeVault()
-    const bedrock = fakeVault()
+    const otherGateway = fakeVault()
     const vault = createCredentialVaultRegistry({
       mock,
       'azure-apim': azure,
-      'aws-bedrock': bedrock
+      'aws-apigw': otherGateway
     })
     const expiresOn = new Date()
 
     await vault.put({
       credentialId: 'c1',
-      issuerKey: 'aws-bedrock',
+      issuerKey: 'aws-apigw',
       secret: 's'
     })
-    await vault.get({ credentialId: 'c1', issuerKey: 'aws-bedrock' })
+    await vault.get({ credentialId: 'c1', issuerKey: 'aws-apigw' })
     await vault.updateExpiry({
       credentialId: 'c2',
       issuerKey: 'azure-apim',
@@ -34,10 +34,10 @@ describe('#createCredentialVaultRegistry', () => {
     })
     await vault.remove({ credentialId: 'c3', issuerKey: 'mock' })
 
-    expect(bedrock.put).toHaveBeenCalledWith(
+    expect(otherGateway.put).toHaveBeenCalledWith(
       expect.objectContaining({ credentialId: 'c1', secret: 's' })
     )
-    expect(bedrock.get).toHaveBeenCalledTimes(1)
+    expect(otherGateway.get).toHaveBeenCalledTimes(1)
     expect(azure.updateExpiry).toHaveBeenCalledTimes(1)
     expect(mock.remove).toHaveBeenCalledTimes(1)
     expect(azure.put).not.toHaveBeenCalled()
@@ -55,11 +55,11 @@ describe('#createCredentialVaultRegistry', () => {
     const vault = createCredentialVaultRegistry({ mock: fakeVault() })
 
     await expect(
-      vault.put({ credentialId: 'c1', issuerKey: 'aws-bedrock', secret: 's' })
+      vault.put({ credentialId: 'c1', issuerKey: 'aws-apigw', secret: 's' })
     ).rejects.toThrow(
       expect.objectContaining({
-        code: 'adapter-not-enabled',
-        message: 'No credential vault registered for issuerKey "aws-bedrock"'
+        code: 'gateway-not-enabled',
+        message: 'No credential vault registered for issuerKey "aws-apigw"'
       })
     )
   })

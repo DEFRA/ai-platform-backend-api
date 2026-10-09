@@ -225,11 +225,11 @@ async function issueCredentialForParams(
   try {
     resolvedIssuer = registry.forModel(model, tier)
   } catch (error) {
-    if (error.code === 'adapter-not-enabled') {
+    if (error.code === 'gateway-not-enabled') {
       throw boomWithCode(
         Boom.notImplemented,
         'This model is not available through any gateway enabled in this environment',
-        'adapter-not-enabled'
+        'gateway-not-enabled'
       )
     }
 
@@ -352,10 +352,12 @@ async function issueCredentialForParams(
     // Catalogue snapshot at issue time, so "which cloud/gateway is this
     // credential for" needs no join. A team credential spans several models,
     // so only the research tier records a single provider/offering.
+    // `gateway` is what the catalogue said at issue time; `issuerKey` is which
+    // issuer actually minted it - they differ in `mock` mode or a `mockTiers` tier.
     provider: tier === 'team' ? null : (model.provider ?? null),
     offering: tier === 'team' ? null : (model.offering ?? null),
-    cloud: model.cloud ?? null,
-    adapter: model.adapter ?? null,
+    cloud: model.hosting?.cloud ?? null,
+    gateway: model.gateway ?? null,
     createdAt: now,
     renewalCount: 0
   }

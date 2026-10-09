@@ -5,12 +5,12 @@
  * output shape every adapter must produce for the same inputs: `keyHint` is
  * always the last four characters of the secret, `revoke` is idempotent,
  * and every method echoes back the `externalId` it was given.
- * @param {string} adapterName
+ * @param {string} gatewayName
  * @param {() => import('./credential-issuer.js').CredentialIssuer} createIssuer
  * @param {{issueParams?: object}} [options]
  */
 export function describeCredentialIssuerContract(
-  adapterName,
+  gatewayName,
   createIssuer,
   options = {}
 ) {
@@ -24,7 +24,7 @@ export function describeCredentialIssuerContract(
     ...options.issueParams
   }
 
-  describe(`CredentialIssuer contract: ${adapterName}`, () => {
+  describe(`CredentialIssuer contract: ${gatewayName}`, () => {
     test('issue returns an externalId, a secret, a matching keyHint and an expiresAt', async () => {
       const issued = await createIssuer().issue(issueParams)
 

@@ -120,14 +120,14 @@ describe('#credential-service vault wiring', () => {
     expect(stored.vaultState).toBeUndefined()
   })
 
-  test('issueCredential rejects a model whose adapter is not enabled, without creating a credential', async () => {
+  test('issueCredential rejects a model whose gateway is not enabled, without creating a credential', async () => {
     await db.collection('models').insertOne({
-      slug: 'bedrock-not-enabled-model',
+      slug: 'other-gateway-not-enabled-model',
       eligible: true,
       tiers: ['research'],
-      adapter: 'aws-bedrock'
+      gateway: 'aws-apigw'
     })
-    const userId = `adapter-off-user-${randomUUID()}`
+    const userId = `gateway-off-user-${randomUUID()}`
     const liveRegistry = createCredentialIssuerRegistry(
       { mock: credentialIssuerRegistry.forCredential({}).issuer },
       'live'
@@ -139,7 +139,7 @@ describe('#credential-service vault wiring', () => {
         locker,
         {
           userId,
-          modelSlug: 'bedrock-not-enabled-model',
+          modelSlug: 'other-gateway-not-enabled-model',
           idempotencyKey: randomUUID()
         },
         liveRegistry,
@@ -147,7 +147,7 @@ describe('#credential-service vault wiring', () => {
       )
     ).rejects.toMatchObject({
       output: { statusCode: 501 },
-      data: { code: 'adapter-not-enabled' }
+      data: { code: 'gateway-not-enabled' }
     })
 
     expect(await db.collection('credentials').findOne({ userId })).toBeNull()

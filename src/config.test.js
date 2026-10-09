@@ -27,7 +27,7 @@ describe('#config provisioning', () => {
     const { config } = await loadConfig({ PROVISIONING_MODE: 'mock' })
 
     expect(config.get('provisioning.mode')).toBe('mock')
-    expect(config.get('provisioning.adapters')).toEqual(['azure-apim'])
+    expect(config.get('provisioning.gateways')).toEqual(['azure-apim'])
   })
 
   test('treats the deprecated azure mode as live', async () => {
@@ -39,29 +39,29 @@ describe('#config provisioning', () => {
     expect(config.get('provisioning.mode')).toBe('live')
   })
 
-  test('live mode requires the config of every enabled adapter', async () => {
+  test('live mode requires the config of every enabled gateway', async () => {
     await expect(loadConfig({ PROVISIONING_MODE: 'live' })).rejects.toThrow(
-      /Adapter azure-apim requires .*armAuth\.tenantId/
+      /Gateway azure-apim requires .*armAuth\.tenantId/
     )
   })
 
-  test('live mode rejects an adapter the backend cannot run', async () => {
+  test('live mode rejects a gateway the backend cannot run', async () => {
     await expect(
       loadConfig({
         PROVISIONING_MODE: 'live',
-        ENABLED_ADAPTERS: 'azure-apim,aws-bedrock',
+        ENABLED_GATEWAYS: 'azure-apim,aws-apigw',
         ...armEnv
       })
-    ).rejects.toThrow('unknown adapter "aws-bedrock"')
+    ).rejects.toThrow('unknown gateway "aws-apigw"')
   })
 
-  test('does not validate adapter config in mock mode', async () => {
+  test('does not validate gateway config in mock mode', async () => {
     const { config } = await loadConfig({
       PROVISIONING_MODE: 'mock',
-      ENABLED_ADAPTERS: 'aws-bedrock'
+      ENABLED_GATEWAYS: 'aws-apigw'
     })
 
-    expect(config.get('provisioning.adapters')).toEqual(['aws-bedrock'])
+    expect(config.get('provisioning.gateways')).toEqual(['aws-apigw'])
   })
 
   test('reads MOCK_TIERS as a list, empty by default', async () => {

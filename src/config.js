@@ -2,7 +2,7 @@ import convict from 'convict'
 import convictFormatWithValidator from 'convict-format-with-validator'
 
 import { convictValidateMongoUri } from '#/common/helpers/convict/validate-mongo-uri.js'
-import { AZURE_APIM, DEFAULT_ADAPTER } from '#/adapters/adapter-keys.js'
+import { AZURE_APIM, DEFAULT_GATEWAY } from '#/adapters/gateway-keys.js'
 
 convict.addFormat(convictValidateMongoUri)
 convict.addFormats(convictFormatWithValidator)
@@ -187,16 +187,16 @@ export const config = convict({
   },
   provisioning: {
     mode: {
-      doc: 'mock generates fake keys locally; live issues through the real gateway of each enabled adapter. "azure" is a deprecated alias for live',
+      doc: 'mock generates fake keys locally; live issues through each enabled gateway. "azure" is a deprecated alias for live',
       format: ['mock', 'live', 'azure'],
       default: 'mock',
       env: 'PROVISIONING_MODE'
     },
-    adapters: {
-      doc: 'Comma-separated catalogue adapter ids this environment can issue credentials through when provisioning.mode is live',
+    gateways: {
+      doc: 'Comma-separated catalogue gateway ids this environment can issue credentials through when provisioning.mode is live',
       format: Array,
-      default: [DEFAULT_ADAPTER],
-      env: 'ENABLED_ADAPTERS'
+      default: [DEFAULT_GATEWAY],
+      env: 'ENABLED_GATEWAYS'
     },
     mockTiers: {
       doc: 'Comma-separated tiers (research, team) that use the mock issuer and vault even when provisioning.mode is live, e.g. to demo the team tier without a real team gateway. Not allowed in prod',
@@ -348,10 +348,11 @@ const REQUIRED_ARM_AUTH_KEYS = [
   'keyVault.vaultName'
 ]
 
-// Every adapter the backend can run, with the config it needs when enabled.
-// A new gateway (e.g. aws-bedrock) adds its entry here, then its issuer and
-// vault factories in the two adapter registries.
-const REQUIRED_CONFIG_BY_ADAPTER = {
+// Every gateway the backend can run, with the config it needs when enabled.
+// A new gateway (e.g. aws-apigw) adds its entry here, then its issuer and
+// vault factories in the two adapter registries. Bedrock is a hosting
+// platform behind APIM, not a gateway.
+const REQUIRED_CONFIG_BY_GATEWAY = {
   [AZURE_APIM]: REQUIRED_ARM_AUTH_KEYS
 }
 
@@ -361,9 +362,9 @@ if (config.get('provisioning.mode') === 'azure') {
   config.set('provisioning.mode', 'live')
 }
 
-// Production refuses to start with a mock adapter selected for any of the
+// Production refuses to start with a mock gateway selected for any of the
 // direct paths (design fact). Fail fast here rather than at the first issued
-// credential, and fail fast again if a live adapter is enabled without the
+// credential, and fail fast again if a live gateway is enabled without the
 // config it needs rather than surfacing a 401 from its gateway.
 if (
   config.get('cdpEnvironment') === 'prod' &&
@@ -392,12 +393,12 @@ if (
 }
 
 if (config.get('provisioning.mode') === 'live') {
-  for (const adapter of config.get('provisioning.adapters')) {
-    const requiredKeys = REQUIRED_CONFIG_BY_ADAPTER[adapter]
+  for (const gateway of config.get('provisioning.gateways')) {
+    const requiredKeys = REQUIRED_CONFIG_BY_GATEWAY[gateway]
 
     if (!requiredKeys) {
       throw new Error(
-        `ENABLED_ADAPTERS contains unknown adapter "${adapter}" (known: ${Object.keys(REQUIRED_CONFIG_BY_ADAPTER).join(', ')})`
+        `ENABLED_GATEWAYS contains unknown gateway "${gateway}" (known: ${Object.keys(REQUIRED_CONFIG_BY_GATEWAY).join(', ')})`
       )
     }
 
@@ -405,7 +406,7 @@ if (config.get('provisioning.mode') === 'live') {
 
     if (missing.length > 0) {
       throw new Error(
-        `Adapter ${adapter} requires ${missing.join(', ')} to be set`
+        `Gateway ${gateway} requires ${missing.join(', ')} to be set`
       )
     }
   }

@@ -1,5 +1,7 @@
 import { syncCatalogue } from '#/services/catalogue-service.js'
 
+const OPENAI = { provider: 'openai', offering: 'azure-openai' }
+
 function stubSource(result) {
   return { fetchCatalogue: vi.fn().mockResolvedValue(result) }
 }
@@ -7,6 +9,13 @@ function stubSource(result) {
 function loadProviders(db) {
   return db
     .collection('providers')
+    .find({}, { projection: { _id: 0 } })
+    .toArray()
+}
+
+function loadModels(db) {
+  return db
+    .collection('models')
     .find({}, { projection: { _id: 0 } })
     .toArray()
 }
@@ -29,12 +38,12 @@ describe('#syncCatalogue', () => {
   })
 
   test('upserts models with catalogueSha, release and syncedAt', async () => {
-    const existingModels = await db
-      .collection('models')
-      .find({}, { projection: { _id: 0 } })
-      .toArray()
+    const existingModels = await loadModels(db)
     const source = stubSource({
-      models: [...existingModels, { slug: 'sync-test-a', eligible: true }],
+      models: [
+        ...existingModels,
+        { slug: 'sync-test-a', ...OPENAI, eligible: true }
+      ],
       providers: [...(await loadProviders(db)), { id: 'sync-test-provider' }],
       catalogueSha: 'sha-1',
       release: 'v1.0.0'
@@ -56,15 +65,12 @@ describe('#syncCatalogue', () => {
   })
 
   test('normalises the github source shape (nested eligibility, regions array) to flat eligible/region', async () => {
-    const existingModels = await db
-      .collection('models')
-      .find({}, { projection: { _id: 0 } })
-      .toArray()
     const source = stubSource({
       models: [
-        ...existingModels,
+        ...(await loadModels(db)),
         {
           slug: 'sync-test-github-shape',
+          ...OPENAI,
           eligibility: { eligible: true, reason: null },
           regions: ['uksouth'],
           apiProfile: 'chat-completions'
@@ -87,14 +93,14 @@ describe('#syncCatalogue', () => {
   })
 
   test('defaults apiVersion per apiProfile when the source has none, pinning responses to its own api-version', async () => {
-    const existingModels = await db
-      .collection('models')
-      .find({}, { projection: { _id: 0 } })
-      .toArray()
     const source = stubSource({
       models: [
-        ...existingModels,
-        { slug: 'sync-test-responses-profile', apiProfile: 'responses' }
+        ...(await loadModels(db)),
+        {
+          slug: 'sync-test-responses-profile',
+          ...OPENAI,
+          apiProfile: 'responses'
+        }
       ],
       providers: await loadProviders(db),
       catalogueSha: 'sha-github-2',
@@ -110,15 +116,12 @@ describe('#syncCatalogue', () => {
   })
 
   test('overrides a source-supplied apiVersion for a responses-profile model, since the source has shipped a stale generic value for one', async () => {
-    const existingModels = await db
-      .collection('models')
-      .find({}, { projection: { _id: 0 } })
-      .toArray()
     const source = stubSource({
       models: [
-        ...existingModels,
+        ...(await loadModels(db)),
         {
           slug: 'sync-test-responses-stale-version',
+          ...OPENAI,
           apiProfile: 'responses',
           apiVersion: '2024-05-01-preview'
         }
@@ -139,14 +142,14 @@ describe('#syncCatalogue', () => {
   test('retires a model no longer present in the catalogue, without deleting it', async () => {
     await db.collection('models').insertOne({
       slug: 'sync-test-retiring',
+      ...OPENAI,
       eligible: true,
       lifecycle: { status: 'available' }
     })
 
-    const keepModels = await db
-      .collection('models')
-      .find({ slug: { $ne: 'sync-test-retiring' } }, { projection: { _id: 0 } })
-      .toArray()
+    const keepModels = (await loadModels(db)).filter(
+      (model) => model.slug !== 'sync-test-retiring'
+    )
 
     const source = stubSource({
       models: keepModels,
@@ -167,14 +170,10 @@ describe('#syncCatalogue', () => {
     expect(retired.lifecycle.status).toBe('retired')
   })
 
-  test('derives cloud and adapter from the provider offering when the model omits them', async () => {
-    const existingModels = await db
-      .collection('models')
-      .find({}, { projection: { _id: 0 } })
-      .toArray()
+  test('derives nested hosting and gateway from a bedrock-platform offering that still uses the azure-apim gateway', async () => {
     const source = stubSource({
       models: [
-        ...existingModels,
+        ...(await loadModels(db)),
         {
           slug: 'sync-test-bedrock',
           provider: 'sync-anthropic',
@@ -187,7 +186,11 @@ describe('#syncCatalogue', () => {
         {
           id: 'sync-anthropic',
           offerings: [
-            { id: 'bedrock-anthropic', cloud: 'aws', adapter: 'aws-bedrock' }
+            {
+              id: 'bedrock-anthropic',
+              hosting: { platform: 'bedrock', cloud: 'aws' },
+              gateway: 'azure-apim'
+            }
           ]
         }
       ],
@@ -200,90 +203,130 @@ describe('#syncCatalogue', () => {
     const doc = await db
       .collection('models')
       .findOne({ slug: 'sync-test-bedrock' })
-    expect(doc.cloud).toBe('aws')
-    expect(doc.adapter).toBe('aws-bedrock')
+    expect(doc.hosting).toEqual({
+      platform: 'bedrock',
+      cloud: 'aws',
+      provider: null
+    })
+    expect(doc.gateway).toBe('azure-apim')
   })
 
-  test('defaults to azure/azure-apim for a legacy release whose offerings are plain strings', async () => {
-    const existingModels = await db
-      .collection('models')
-      .find({}, { projection: { _id: 0 } })
-      .toArray()
+  test('a direct offering yields hosting.provider and a null hosting.cloud', async () => {
     const source = stubSource({
       models: [
-        ...existingModels,
+        ...(await loadModels(db)),
         {
-          slug: 'sync-test-legacy',
-          provider: 'sync-legacy',
-          offering: 'azure-openai',
+          slug: 'sync-test-direct',
+          provider: 'sync-meta',
+          offering: 'meta-direct',
           eligible: true
         }
       ],
       providers: [
         ...(await loadProviders(db)),
-        { id: 'sync-legacy', offerings: ['azure-openai'] }
+        {
+          id: 'sync-meta',
+          offerings: [
+            {
+              id: 'meta-direct',
+              hosting: { platform: 'direct', provider: 'meta' },
+              gateway: 'azure-apim'
+            }
+          ]
+        }
       ],
-      catalogueSha: 'sha-legacy',
-      release: 'v0.1.1'
+      catalogueSha: 'sha-direct',
+      release: 'v1.0.5'
     })
 
     await syncCatalogue(db, source, server.locker, server.logger)
 
     const doc = await db
       .collection('models')
-      .findOne({ slug: 'sync-test-legacy' })
-    expect(doc.cloud).toBe('azure')
-    expect(doc.adapter).toBe('azure-apim')
+      .findOne({ slug: 'sync-test-direct' })
+    expect(doc.hosting).toEqual({
+      platform: 'direct',
+      cloud: null,
+      provider: 'meta'
+    })
   })
 
-  test('skips a model whose cloud/adapter contradict its provider offering', async () => {
-    const existingModels = await db
-      .collection('models')
-      .find({}, { projection: { _id: 0 } })
-      .toArray()
+  test('drops the $schema editor key from a provider file before storing it', async () => {
     const source = stubSource({
-      models: [
-        ...existingModels,
-        {
-          slug: 'sync-test-mismatch',
-          provider: 'sync-mismatch',
-          offering: 'azure-openai',
-          cloud: 'aws',
-          adapter: 'aws-bedrock',
-          eligible: true
-        }
-      ],
+      models: await loadModels(db),
       providers: [
         ...(await loadProviders(db)),
         {
-          id: 'sync-mismatch',
-          offerings: [
-            { id: 'azure-openai', cloud: 'azure', adapter: 'azure-apim' }
-          ]
+          $schema: '../schema/provider.schema.json',
+          id: 'sync-schema-key',
+          offerings: []
         }
       ],
-      catalogueSha: 'sha-mismatch',
-      release: 'v1.0.6'
+      catalogueSha: 'sha-schema-key',
+      release: 'v0.2.0'
+    })
+
+    await syncCatalogue(db, source, server.locker, server.logger)
+
+    const provider = await db
+      .collection('providers')
+      .findOne({ id: 'sync-schema-key' })
+    expect(provider).not.toBeNull()
+    expect(provider).not.toHaveProperty('$schema')
+  })
+
+  test.each([
+    [
+      'lists the same offering id twice',
+      [
+        {
+          id: 'dup',
+          hosting: { platform: 'foundry', cloud: 'azure' },
+          gateway: 'azure-apim'
+        },
+        {
+          id: 'dup',
+          hosting: { platform: 'foundry', cloud: 'azure' },
+          gateway: 'azure-apim'
+        }
+      ]
+    ],
+    [
+      'has an offering without hosting or gateway',
+      [{ id: 'flat', cloud: 'azure' }]
+    ]
+  ])('skips the whole sync when a provider %s', async (_label, offerings) => {
+    const source = stubSource({
+      models: [
+        ...(await loadModels(db)),
+        { slug: 'sync-test-invalid-offering', ...OPENAI, eligible: true }
+      ],
+      providers: [
+        ...(await loadProviders(db)),
+        { id: 'sync-invalid', offerings }
+      ],
+      catalogueSha: 'sha-invalid',
+      release: 'v0.2.0'
     })
 
     const result = await syncCatalogue(db, source, server.locker, server.logger)
 
-    expect(result.synced).toBe(existingModels.length)
+    expect(result).toEqual({ synced: 0, retired: 0, skipped: true })
     expect(
-      await db.collection('models').findOne({ slug: 'sync-test-mismatch' })
+      await db
+        .collection('models')
+        .findOne({ slug: 'sync-test-invalid-offering' })
     ).toBeNull()
   })
 
   test.each([
+    ['no provider or offering', undefined, undefined],
     ['an unknown provider', 'sync-no-such-provider', 'azure-openai'],
     ['an unknown offering', 'openai', 'no-such-offering']
   ])(
-    'skips a model referencing %s rather than defaulting it to azure/azure-apim',
+    'skips a model with %s rather than defaulting its hosting',
     async (_label, provider, offering) => {
-      const existingModels = await db
-        .collection('models')
-        .find({}, { projection: { _id: 0 } })
-        .toArray()
+      const existingModels = await loadModels(db)
       const source = stubSource({
         models: [
           ...existingModels,

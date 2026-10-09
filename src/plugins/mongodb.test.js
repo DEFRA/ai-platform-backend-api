@@ -73,6 +73,29 @@ describe('#mongoDb', () => {
       await recoveredServer.stop({ timeout: 1000 })
       await client.close()
     })
+
+    test('replaces the adapter/status credentials index with gateway/status', async () => {
+      // Dynamic import needed due to config being updated by vitest-mongodb
+      const { config } = await import('#/config.js')
+      const client = await MongoClient.connect(config.get('mongo.mongoUrl'))
+      const db = client.db(config.get('mongo.databaseName'))
+
+      await db.collection('credentials').dropIndex('gateway_1_status_1')
+      await db.collection('credentials').createIndex({ adapter: 1, status: 1 })
+
+      const { createServer } = await import('#/server.js')
+      const migratedServer = await createServer()
+      await migratedServer.initialize()
+
+      const names = (await db.collection('credentials').indexes()).map(
+        (index) => index.name
+      )
+      expect(names).toContain('gateway_1_status_1')
+      expect(names).not.toContain('adapter_1_status_1')
+
+      await migratedServer.stop({ timeout: 1000 })
+      await client.close()
+    })
   })
 
   describe('Catalogue sync resilience', () => {
