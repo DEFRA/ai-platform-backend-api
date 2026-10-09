@@ -9,13 +9,12 @@ describe('#createCredentialIssuerRegistry', () => {
     azure: azureIssuer
   }
 
-  test('forModel falls back to azure-apim for a model with no adapter', () => {
+  test('forModel throws a coded error for a model with no gateway', () => {
     const registry = createCredentialIssuerRegistry(issuersByKey, 'live')
 
-    expect(registry.forModel({ slug: 'gpt-4o' })).toEqual({
-      issuerKey: 'azure-apim',
-      issuer: azureIssuer
-    })
+    expect(() => registry.forModel({ slug: 'gpt-4o' })).toThrow(
+      expect.objectContaining({ code: 'gateway-not-enabled' })
+    )
   })
 
   test('forModel resolves the issuer registered for the model gateway', () => {

@@ -119,6 +119,7 @@ This repo already complies with Defra's dependency guidance — keep it that way
 - Follow conventions already in the codebase — check existing patterns first.
 - Prefer modifying existing files over creating new ones when the change fits naturally.
 - Provide minimal diffs touching only the necessary files; do not refactor unrelated code.
+- The site is not live: build to the current design only, treating the `ai-platform-discovery-docs` design as authoritative. Never add legacy support, backwards-compatible fallbacks or old-and-new code paths; remove superseded code outright. Ask if unsure.
 - Always include or update tests for changed behaviour.
 - Before every commit or pull request, run `npm run format` then confirm `npm run format:check`, `npm run lint` and `npm test` pass. CI runs `format:check` over JS, JSON and Markdown (plans and instructions included), so a new or edited `.md` file fails the PR unless it has been through Prettier. Never skip the hook with `--no-verify`. `.gitattributes` and `core.autocrlf=input` keep Windows checkouts LF so a local `format:check` matches CI.
 - Keep solutions DRY: before adding new utilities, search `src/common/` and existing services for similar code.

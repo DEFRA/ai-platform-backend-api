@@ -252,10 +252,9 @@ minted it, and its renew/rotate/revoke/reveal use that issuer and its matching v
 tiers on the mock issuer and vault even in `live` mode, e.g. `MOCK_TIERS=team` to demo the team
 tier without a real team gateway while the research tier uses the real gateways.
 
-The catalogue sync reads both offering shapes: the `hosting`/`gateway` shape, and the earlier flat
-`cloud`/`adapter` shape (or plain-string offerings) shipped by `ai-platform-infra` `v0.1.x`, so an
-environment can move its `CATALOGUE_REF` independently. Either way, model documents are stored with
-the nested `hosting` object and `gateway` only.
+The catalogue sync reads only the `hosting`/`gateway` offering shape (`ai-platform-infra` `v0.2.0`
+onwards) and stores it nested on each model. An offering without `hosting.platform` and `gateway`,
+or a duplicate offering id, skips the sync; a model whose offering is unknown is skipped.
 
 No `bedrock` offering ships yet: how API Management authenticates to Bedrock without long-lived AWS
 keys is an open design question. A Bedrock or direct-API model would still be an offering behind

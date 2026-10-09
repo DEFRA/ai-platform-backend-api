@@ -1,5 +1,4 @@
 import { invalidateModelsCache } from '#/services/models-service.js'
-import { DEFAULT_GATEWAY } from '#/adapters/gateway-keys.js'
 
 // Pinned data-plane api-version per apiProfile, verified against the sandbox
 // gateway (docs/plans/integration/research-tier-integration-plan.md in
@@ -10,72 +9,43 @@ import { DEFAULT_GATEWAY } from '#/adapters/gateway-keys.js'
 const DEFAULT_API_VERSION_BY_PROFILE = { responses: '2025-03-01-preview' }
 const DEFAULT_API_VERSION = '2024-05-01-preview'
 
-// Catalogue releases up to v0.1.1 predate `cloud`/`adapter` and were Azure-only.
-const LEGACY_CLOUD = 'azure'
-
-const PLATFORM_BY_CLOUD = { azure: 'foundry', aws: 'bedrock' }
-
-function legacyHosting(cloud) {
-  const resolvedCloud = cloud ?? LEGACY_CLOUD
-
-  return {
-    platform: PLATFORM_BY_CLOUD[resolvedCloud] ?? 'foundry',
-    cloud: resolvedCloud,
-    provider: null
-  }
-}
-
-// Permanent, not migration scaffolding: environments pin `CATALOGUE_REF`
-// independently, so a flat v0.1.x offering (`{id, cloud, adapter}`) or a
-// plain-string one must keep working for as long as any environment pins one.
 function normalizeOffering(offering) {
-  if (typeof offering === 'string') {
-    return {
-      id: offering,
-      hosting: legacyHosting(),
-      gateway: DEFAULT_GATEWAY
-    }
-  }
-
-  if (offering.hosting) {
-    return {
-      id: offering.id,
-      hosting: {
-        platform: offering.hosting.platform,
-        cloud: offering.hosting.cloud ?? null,
-        provider: offering.hosting.provider ?? null
-      },
-      gateway: offering.gateway ?? DEFAULT_GATEWAY
-    }
-  }
-
   return {
     id: offering.id,
-    hosting: legacyHosting(offering.cloud),
-    gateway: offering.adapter ?? offering.gateway ?? DEFAULT_GATEWAY
+    hosting: {
+      platform: offering.hosting.platform,
+      cloud: offering.hosting.cloud ?? null,
+      provider: offering.hosting.provider ?? null
+    },
+    gateway: offering.gateway
   }
 }
 
 // `provider/offering` -> `{id, hosting, gateway}`, plus any offering id a
-// provider lists more than once.
+// provider lists more than once and any offering without `hosting.platform`
+// or `gateway`.
 function indexOfferings(providers) {
   const index = new Map()
-  const duplicates = []
+  const problems = []
 
   for (const provider of providers) {
     for (const offering of provider.offerings ?? []) {
-      const entry = normalizeOffering(offering)
-      const key = `${provider.id}/${entry.id}`
+      const key = `${provider.id}/${offering.id}`
 
-      if (index.has(key)) {
-        duplicates.push(key)
+      if (!offering.hosting?.platform || !offering.gateway) {
+        problems.push(`${key} (needs hosting.platform and gateway)`)
+        continue
       }
 
-      index.set(key, entry)
+      if (index.has(key)) {
+        problems.push(`${key} (duplicate)`)
+      }
+
+      index.set(key, normalizeOffering(offering))
     }
   }
 
-  return { index, duplicates }
+  return { index, problems }
 }
 
 // The github source passes `ai-platform-infra`'s raw catalogue/models/*.json
@@ -87,14 +57,10 @@ function indexOfferings(providers) {
 // here, at the single write path both sources go through, rather than
 // changing either adapter's pinned output shape.
 function normalizeModel(model, offering) {
-  // The offering owns hosting and gateway; a model's own flat `cloud`/`adapter`
-  // is only tolerated as input from a stale v0.1.x release, never re-emitted.
-  const { cloud, adapter, ...rest } = model
-
   return {
-    ...rest,
-    hosting: offering?.hosting ?? model.hosting ?? legacyHosting(cloud),
-    gateway: offering?.gateway ?? model.gateway ?? adapter ?? DEFAULT_GATEWAY,
+    ...model,
+    hosting: offering.hosting,
+    gateway: offering.gateway,
     eligible: model.eligible ?? model.eligibility?.eligible,
     eligibilityReason: model.eligibilityReason ?? model.eligibility?.reason,
     region: model.region ?? model.regions?.[0],
@@ -140,13 +106,13 @@ export async function syncCatalogue(db, source, locker, logger) {
       return { synced: 0, retired: 0, skipped: true }
     }
 
-    const { index: offerings, duplicates } = indexOfferings(providers)
+    const { index: offerings, problems } = indexOfferings(providers)
 
     // Skip rather than throw: a throw would reach startup, whereas skipping
     // keeps the last good catalogue like every other guard here.
-    if (duplicates.length > 0) {
+    if (problems.length > 0) {
       logger.error(
-        `Catalogue has duplicate offering ids (${duplicates.join(', ')}) - skipping sync`
+        `Catalogue has invalid offerings (${problems.join(', ')}) - skipping sync`
       )
       return { synced: 0, retired: 0, skipped: true }
     }
@@ -159,30 +125,17 @@ export async function syncCatalogue(db, source, locker, logger) {
       const offering = offerings.get(
         `${rawModel.provider}/${rawModel.offering}`
       )
+
+      // The offering supplies hosting and gateway, so a model must name one
+      // the catalogue defines - keep the last good copy instead.
+      if (!offering) {
+        logger.warn(
+          `Skipping catalogue model ${rawModel.slug}: unknown offering ${rawModel.provider}/${rawModel.offering}`
+        )
+        continue
+      }
+
       const model = normalizeModel(rawModel, offering)
-
-      // A model naming a provider/offering the catalogue doesn't define would
-      // otherwise fall back to Azure/APIM - keep the last good copy instead.
-      if (rawModel.provider && rawModel.offering && !offering) {
-        logger.warn(
-          `Skipping catalogue model ${model.slug}: unknown offering ${rawModel.provider}/${rawModel.offering}`
-        )
-        continue
-      }
-
-      // A stale release whose model still declares its own `cloud`/`adapter`
-      // contradicting the offering would issue credentials through the wrong
-      // gateway - keep the last good copy rather than sync it.
-      if (
-        offering &&
-        ((rawModel.cloud && rawModel.cloud !== offering.hosting.cloud) ||
-          (rawModel.adapter && rawModel.adapter !== offering.gateway))
-      ) {
-        logger.warn(
-          `Skipping catalogue model ${model.slug}: cloud/adapter disagree with offering ${model.provider}/${model.offering}`
-        )
-        continue
-      }
 
       synced++
       await modelsCollection.updateOne(
@@ -194,9 +147,7 @@ export async function syncCatalogue(db, source, locker, logger) {
             release,
             syncedAt: now,
             updatedAt: now
-          },
-          // `$set` alone would leave the old flat fields on an already-synced doc.
-          $unset: { cloud: '', adapter: '' }
+          }
         },
         { upsert: true }
       )

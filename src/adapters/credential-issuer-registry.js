@@ -2,7 +2,6 @@ import { config } from '#/config.js'
 import { mockCredentialIssuer } from '#/adapters/mock-credential-issuer.js'
 import { createApimCredentialIssuer } from '#/adapters/azure/apim-credential-issuer.js'
 import { AZURE_APIM } from '#/adapters/gateway-keys.js'
-import { gatewayOf } from '#/common/model-hosting.js'
 
 /**
  * @typedef {object} CredentialIssuerRegistry
@@ -49,7 +48,7 @@ export function createCredentialIssuerRegistry(
         return resolve('mock')
       }
 
-      return resolve(gatewayOf(model))
+      return resolve(model?.gateway)
     },
     // Lifecycle operations on an already-issued credential must use the
     // issuer that minted it, regardless of the current mode - this is

@@ -16,7 +16,6 @@ import {
   releaseCredentialTypeReservation
 } from '#/services/team-deployment-service.js'
 import { getMemberRole } from '#/services/team-service.js'
-import { gatewayOf, hostingOf } from '#/common/model-hosting.js'
 
 /**
  * Best-effort lookup of a user's team, tolerant of the day-1 interim trust
@@ -357,8 +356,8 @@ async function issueCredentialForParams(
     // issuer actually minted it - they differ in `mock` mode or a `mockTiers` tier.
     provider: tier === 'team' ? null : (model.provider ?? null),
     offering: tier === 'team' ? null : (model.offering ?? null),
-    cloud: hostingOf(model).cloud ?? null,
-    gateway: gatewayOf(model),
+    cloud: model.hosting?.cloud ?? null,
+    gateway: model.gateway ?? null,
     createdAt: now,
     renewalCount: 0
   }
