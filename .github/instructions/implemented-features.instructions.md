@@ -43,7 +43,8 @@ without being asked and add what is missing:
    `docs/design-pack-plan.md`, pin the copy in `test/site.test.js` with an `assertCopy` and an
    `assert.doesNotMatch` for superseded wording, then run `npm run lint`, `npm test` and
    `npm run check`. Never change application code from that repo.
-3. Keep it minimal and factual: record built state only, never a new design direction. Read it from
+3. Keep it minimal, concise and factual: a short clause per row or note, not a paragraph. Record
+   built state only, never a new design direction. Read it from
    the released tags and `ai-platform-frontend/docs/implemented-features.md`, cite the version and
    date, and say "in an open pull request" for anything not yet merged or released. Built is not
    accepted and nothing is claimed as deployed unless it is.
