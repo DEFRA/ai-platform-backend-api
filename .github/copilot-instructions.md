@@ -121,6 +121,7 @@ This repo already complies with Defra's dependency guidance — keep it that way
 - Always include or update tests for changed behaviour.
 - Before every commit or pull request, run `npm run format` then confirm `npm run format:check`, `npm run lint` and `npm test` pass. CI runs `format:check` over JS, JSON and Markdown (plans and instructions included), so a new or edited `.md` file fails the PR unless it has been through Prettier. Never skip the hook with `--no-verify`. `.gitattributes` and `core.autocrlf=input` keep Windows checkouts LF so a local `format:check` matches CI.
 - Keep solutions DRY: before adding new utilities, search `src/common/` and existing services for similar code.
+- After implementing any plan or feature, update `ai-platform-frontend/docs/implemented-features.md` and then check `ai-platform-discovery-docs` `build-stories.md#status` for built state that is missing or stale, adding it in a separate pull request there. Follow [implemented-features.instructions.md](instructions/implemented-features.instructions.md); do not wait to be asked.
 - If a request conflicts with these instructions, or would use a discouraged library, skip tests, hardcode a secret, or break a quality gate — flag it explicitly and do not proceed silently.
 
 ## Licence
