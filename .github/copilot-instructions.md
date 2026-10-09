@@ -119,6 +119,7 @@ This repo already complies with Defra's dependency guidance — keep it that way
 - Prefer modifying existing files over creating new ones when the change fits naturally.
 - Provide minimal diffs touching only the necessary files; do not refactor unrelated code.
 - Always include or update tests for changed behaviour.
+- Before every commit or pull request, run `npm run format` then confirm `npm run format:check`, `npm run lint` and `npm test` pass. CI runs `format:check` over JS, JSON and Markdown (plans and instructions included), so a new or edited `.md` file fails the PR unless it has been through Prettier. Never skip the hook with `--no-verify`. `.gitattributes` and `core.autocrlf=input` keep Windows checkouts LF so a local `format:check` matches CI.
 - Keep solutions DRY: before adding new utilities, search `src/common/` and existing services for similar code.
 - If a request conflicts with these instructions, or would use a discouraged library, skip tests, hardcode a secret, or break a quality gate — flag it explicitly and do not proceed silently.
 

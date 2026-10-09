@@ -28,9 +28,9 @@ describe('#createCredentialIssuerRegistry', () => {
     expect(
       registry.forModel({ slug: 'gpt-4o', gateway: 'azure-apim' })
     ).toEqual({ issuerKey: 'azure-apim', issuer: azureIssuer })
-    expect(
-      registry.forModel({ slug: 'claude', gateway: 'aws-apigw' })
-    ).toEqual({ issuerKey: 'aws-apigw', issuer: otherGatewayIssuer })
+    expect(registry.forModel({ slug: 'claude', gateway: 'aws-apigw' })).toEqual(
+      { issuerKey: 'aws-apigw', issuer: otherGatewayIssuer }
+    )
   })
 
   test('forModel always resolves the mock issuer in mock mode, whatever the model gateway', () => {
