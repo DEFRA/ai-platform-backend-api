@@ -39,8 +39,7 @@ without being asked and add what is missing:
    feature touches (for example `design-orchestration.md#catalogue-schema`).
 2. Make it a separate, doc-only pull request in that repo and follow its
    `.github/copilot-instructions.md` "Every change: propagate, date and record" rules: sweep for
-   contradicted statements, set `ms.date`, replace the affected rows in `docs/decision-history.md`
-   (it lists only the direction in force), update the current-state table in
+   contradicted statements, set `ms.date`, append to `docs/decision-history.md`, update
    `docs/design-pack-plan.md`, pin the copy in `test/site.test.js` with an `assertCopy` and an
    `assert.doesNotMatch` for superseded wording, then run `npm run lint`, `npm test` and
    `npm run check`. Never change application code from that repo.
