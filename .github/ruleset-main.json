@@ -1,0 +1,59 @@
+{
+  "name": "Main",
+  "target": "branch",
+  "source_type": "Repository",
+  "source": "DEFRA/ai-platform-backend-api",
+  "enforcement": "active",
+  "conditions": {
+    "ref_name": {
+      "exclude": [],
+      "include": ["~DEFAULT_BRANCH"]
+    }
+  },
+  "rules": [
+    {
+      "type": "deletion"
+    },
+    {
+      "type": "non_fast_forward"
+    },
+    {
+      "type": "pull_request",
+      "parameters": {
+        "required_approving_review_count": 1,
+        "dismiss_stale_reviews_on_push": true,
+        "required_reviewers": [],
+        "require_code_owner_review": false,
+        "dismissal_restriction": {
+          "enabled": false,
+          "allowed_actors": []
+        },
+        "require_last_push_approval": true,
+        "required_review_thread_resolution": true,
+        "require_extra_approval_for_unattributed_changes": true,
+        "allowed_merge_methods": ["merge", "squash", "rebase"]
+      }
+    },
+    {
+      "type": "branch_name_pattern",
+      "parameters": {
+        "operator": "regex",
+        "pattern": "^(feature|fix|docs|refactor|test|chore)/.+",
+        "negate": false,
+        "name": "Branch name must follow <type>/<description>"
+      }
+    }
+  ],
+  "bypass_actors": [
+    {
+      "actor_id": null,
+      "actor_type": "OrganizationAdmin",
+      "bypass_mode": "pull_request"
+    },
+    {
+      "actor_id": 5,
+      "actor_type": "RepositoryRole",
+      "bypass_mode": "pull_request"
+    }
+  ]
+}
