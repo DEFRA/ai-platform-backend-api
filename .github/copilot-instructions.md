@@ -79,7 +79,7 @@ The Defra AICE team's Copilot CLI plugin `aice-javascript@defra-aice` (from the 
 
 CI (`.github/workflows/check-pull-request.yml`) currently runs on every PR: `npm run security-audit`, `npm ci`, `npm run format:check`, `npm run lint`, `npm test` (coverage), and a Docker image build test. All of these must pass before merging.
 
-- SonarCloud is configured (`sonar-project.properties`) but the scan step is **currently commented out** in `check-pull-request.yml` and `publish.yml` — it is not yet an active CI gate. Don't assume a Sonar quality gate is blocking merges until that step is uncommented.
+- SonarCloud scan is active in `check-pull-request.yml`, `publish.yml` and `publish-hotfix.yml` (`GITHUB_TOKEN` and `SONAR_TOKEN` secrets configured).
 - Follow the Defra tiered coverage targets as the aspiration for any code you touch: ≥90% global, ≥95% for core business logic, 100% for error handling and security-critical paths — and never let coverage decrease from the current baseline.
 - At least one approving code review from another developer before merging.
 
