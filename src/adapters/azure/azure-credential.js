@@ -24,9 +24,13 @@ let cachedCredential = null
  * dev fallback, since local has no AWS STS to federate from.
  * @param {Object} [deps]
  * @param {{ getCredentials: (logger: object) => Promise<string> }} [deps.tokenProvider] - injectable for tests, defaults to `WebIdentityTokenProvider`
+ * @param {(opts: { audience: string[] }) => { getCredentials: (logger: object) => Promise<string> }} [deps.createWebIdentityTokenProvider] - factory seam so tests can assert the constructor args without faking the third-party type; defaults to the real `WebIdentityTokenProvider`
  * @returns {import('@azure/identity').TokenCredential}
  */
-export function getArmCredential({ tokenProvider } = {}) {
+export function getArmCredential({
+  tokenProvider,
+  createWebIdentityTokenProvider = (opts) => new WebIdentityTokenProvider(opts)
+} = {}) {
   if (!cachedCredential) {
     const authMethod = config.get('armAuth.authMethod')
     createLogger().info(
@@ -37,7 +41,7 @@ export function getArmCredential({ tokenProvider } = {}) {
     if (authMethod === 'federated') {
       const provider =
         tokenProvider ??
-        new WebIdentityTokenProvider({
+        createWebIdentityTokenProvider({
           // AWS STS requires Audience as a list; a bare string is sent as an
           // empty/invalid member and rejected server-side ("Value null at 'audience'").
           audience: [config.get('armAuth.federatedAudience')]
