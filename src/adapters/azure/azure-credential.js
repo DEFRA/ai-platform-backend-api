@@ -38,7 +38,9 @@ export function getArmCredential({ tokenProvider } = {}) {
       const provider =
         tokenProvider ??
         new WebIdentityTokenProvider({
-          audience: config.get('armAuth.federatedAudience')
+          // AWS STS requires Audience as a list; a bare string is sent as an
+          // empty/invalid member and rejected server-side ("Value null at 'audience'").
+          audience: [config.get('armAuth.federatedAudience')]
         })
 
       cachedCredential = new ClientAssertionCredential(
