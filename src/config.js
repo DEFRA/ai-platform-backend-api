@@ -10,6 +10,9 @@ convict.addFormats(convictFormatWithValidator)
 const isProduction = process.env.NODE_ENV === 'production'
 const isTest = process.env.NODE_ENV === 'test'
 
+// Local-only fallback for armAuth.authMethod - no AWS STS to federate from outside CDP.
+const ARM_AUTH_METHOD_CLIENT_SECRET = 'client-secret'
+
 export const config = convict({
   serviceVersion: {
     doc: 'The service version, this variable is injected into your docker container in CDP environments',
@@ -248,8 +251,8 @@ export const config = convict({
     },
     authMethod: {
       doc: 'How the backend authenticates as the ARM app registration - federated (AWS STS web identity) everywhere except local, where there is no AWS STS to federate from',
-      format: ['client-secret', 'federated'],
-      default: 'client-secret',
+      format: [ARM_AUTH_METHOD_CLIENT_SECRET, 'federated'],
+      default: ARM_AUTH_METHOD_CLIENT_SECRET,
       env: 'AZURE_ARM_AUTH_METHOD'
     },
     federatedAudience: {
@@ -359,7 +362,7 @@ const REQUIRED_ARM_AUTH_KEYS = [
   'armAuth.resourceGroup',
   'apim.serviceName',
   'keyVault.vaultName',
-  ...(config.get('armAuth.authMethod') === 'client-secret'
+  ...(config.get('armAuth.authMethod') === ARM_AUTH_METHOD_CLIENT_SECRET
     ? ['armAuth.clientSecret']
     : ['armAuth.federatedAudience'])
 ]
