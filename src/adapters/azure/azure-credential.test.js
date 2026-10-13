@@ -86,4 +86,24 @@ describe('#getArmCredential federated', () => {
 
     expect(getArmCredential()).toBeInstanceOf(ClientAssertionCredential)
   })
+
+  // Regression: AWS STS requires Audience as a list - passing the configured
+  // string directly sent an invalid/empty Audience and broke federated auth in
+  // every deployed environment. Asserts via the factory seam rather than
+  // faking WebIdentityTokenProvider itself.
+  test('passes the configured federated audience to the token provider as a list', async () => {
+    process.env.AZURE_ARM_FEDERATED_AUDIENCE = 'api://AzureADTokenExchange'
+    vi.resetModules()
+    const { getArmCredential } =
+      await import('#/adapters/azure/azure-credential.js')
+    const createWebIdentityTokenProvider = vi
+      .fn()
+      .mockReturnValue({ getCredentials: vi.fn() })
+
+    getArmCredential({ createWebIdentityTokenProvider })
+
+    expect(createWebIdentityTokenProvider).toHaveBeenCalledWith({
+      audience: ['api://AzureADTokenExchange']
+    })
+  })
 })
