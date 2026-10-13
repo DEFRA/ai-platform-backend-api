@@ -13,7 +13,13 @@ const formatters = {
       serviceName
     })
   },
-  'pino-pretty': { transport: { target: 'pino-pretty' } }
+  // No transport here - `hapi-pino`/`@defra/cdp-auditing` pull in their own
+  // nested pino/thread-stream versions, and pino-pretty's worker-thread
+  // transport crashes ("this should not happen: undefined") when more than
+  // one thread-stream version is present in the tree. Pretty-printing is
+  // applied by piping stdout through the pino-pretty CLI instead (see the
+  // "dev"/"dev:debug" scripts), which never spawns a worker thread.
+  'pino-pretty': {}
 }
 
 export const loggerOptions = {

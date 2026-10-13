@@ -8,8 +8,8 @@
     "node": ">=24"
   },
   "scripts": {
-    "dev": "cross-env AWS_EMF_ENVIRONMENT=Local NODE_ENV=development npm run server:watch",
-    "dev:debug": "AWS_EMF_ENVIRONMENT=Local NODE_ENV=development npm run server:debug",
+    "dev": "cross-env AWS_EMF_ENVIRONMENT=Local NODE_ENV=development npm run server:watch | pino-pretty",
+    "dev:debug": "cross-env AWS_EMF_ENVIRONMENT=Local NODE_ENV=development npm run server:debug | pino-pretty",
     "docker:dev": "npm run dev",
     "format": "prettier --write \"**/*.{cjs,js,json,md}\"",
     "format:check": "prettier --check \"**/*.{cjs,js,json,md}\"",
@@ -35,6 +35,7 @@
     "@azure/keyvault-secrets": "4.11.2",
     "@defra/cdp-auditing": "0.6.2",
     "@defra/cdp-metrics": "0.6.1",
+    "@defra/hapi-auth-oidc": "0.6.0",
     "@defra/hapi-secure-context": "0.4.1",
     "@defra/hapi-tracing": "1.30.1",
     "@elastic/ecs-pino-format": "1.5.0",
