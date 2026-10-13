@@ -8,6 +8,11 @@ const armEnv = {
   AZURE_KEY_VAULT_NAME: 'vault'
 }
 
+// Federated auth has no client secret - the AWS STS token proves identity instead.
+const armEnvFederated = Object.fromEntries(
+  Object.entries(armEnv).filter(([key]) => key !== 'AZURE_ARM_CLIENT_SECRET')
+)
+
 async function loadConfig(env) {
   vi.resetModules()
 
@@ -93,5 +98,40 @@ describe('#config provisioning', () => {
         ...armEnv
       })
     ).rejects.toThrow('MOCK_TIERS must be empty in the prod environment')
+  })
+})
+
+describe('#config armAuth.authMethod', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  test('client-secret (the default) requires armAuth.clientSecret', async () => {
+    await expect(
+      loadConfig({ PROVISIONING_MODE: 'live', ...armEnvFederated })
+    ).rejects.toThrow(/Gateway azure-apim requires .*armAuth\.clientSecret/)
+  })
+
+  test('federated does not require armAuth.clientSecret', async () => {
+    const { config } = await loadConfig({
+      PROVISIONING_MODE: 'live',
+      AZURE_ARM_AUTH_METHOD: 'federated',
+      ...armEnvFederated
+    })
+
+    expect(config.get('armAuth.authMethod')).toBe('federated')
+  })
+
+  test('federated requires armAuth.federatedAudience', async () => {
+    await expect(
+      loadConfig({
+        PROVISIONING_MODE: 'live',
+        AZURE_ARM_AUTH_METHOD: 'federated',
+        AZURE_ARM_FEDERATED_AUDIENCE: '',
+        ...armEnvFederated
+      })
+    ).rejects.toThrow(
+      /Gateway azure-apim requires .*armAuth\.federatedAudience/
+    )
   })
 })

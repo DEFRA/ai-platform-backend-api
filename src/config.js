@@ -245,6 +245,18 @@ export const config = convict({
       nullable: true,
       default: null,
       env: 'AZURE_ARM_RESOURCE_GROUP'
+    },
+    authMethod: {
+      doc: 'How the backend authenticates as the ARM app registration - federated (AWS STS web identity) everywhere except local, where there is no AWS STS to federate from',
+      format: ['client-secret', 'federated'],
+      default: 'client-secret',
+      env: 'AZURE_ARM_AUTH_METHOD'
+    },
+    federatedAudience: {
+      doc: 'Audience (aud claim) of the AWS STS web identity token, must match the federated credential configured in Entra',
+      format: String,
+      default: 'api://AzureADTokenExchange',
+      env: 'AZURE_ARM_FEDERATED_AUDIENCE'
     }
   },
   apim: {
@@ -338,14 +350,18 @@ export const config = convict({
 
 config.validate({ allowed: 'strict' })
 
+// Client secret is only required for the local-only client-secret auth
+// method; federated auth proves identity via the AWS STS token instead.
 const REQUIRED_ARM_AUTH_KEYS = [
   'armAuth.tenantId',
   'armAuth.clientId',
-  'armAuth.clientSecret',
   'armAuth.subscriptionId',
   'armAuth.resourceGroup',
   'apim.serviceName',
-  'keyVault.vaultName'
+  'keyVault.vaultName',
+  ...(config.get('armAuth.authMethod') === 'client-secret'
+    ? ['armAuth.clientSecret']
+    : ['armAuth.federatedAudience'])
 ]
 
 // Every gateway the backend can run, with the config it needs when enabled.

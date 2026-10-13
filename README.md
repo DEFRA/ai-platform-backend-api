@@ -282,6 +282,16 @@ Phase 0, create a `.env` file in the repo root (already gitignored; `npm run dev
 | `APIM_SERVICE_NAME`         | `DEPLOYTESTDEFRA` (per the plan's Phase 0 STATUS note)            |
 | `AZURE_KEY_VAULT_NAME`      | `kv-aip-sandbox-tenants` (per the plan's 0.9 step)                |
 
+`armAuth.authMethod` (`AZURE_ARM_AUTH_METHOD`) defaults to `client-secret`, which is the only
+method available locally - there is no AWS STS to federate a token from outside CDP. Every deployed
+CDP environment instead sets `AZURE_ARM_AUTH_METHOD=federated`, which exchanges a short-lived AWS
+STS web identity token (via `@defra/hapi-auth-oidc`'s `WebIdentityTokenProvider`) for an Entra
+token through a `ClientAssertionCredential` - no client secret is read or needed in that mode. Both
+methods authenticate as the same `armAuth.clientId` app registration and are interchangeable per
+environment via config only; see `azure-credential.js` for the credential construction and
+`AZURE_ARM_FEDERATED_AUDIENCE` (default `api://AzureADTokenExchange`) for the federated credential's
+configured audience.
+
 `APIM_RESEARCH_API_ID` needs no override - its `research` default already matches the API built in
 0.6/0.7. `CATALOGUE_SOURCE` can stay on its `file` default: the seed fixture already carries the
 real Foundry model slugs recorded in Phase 2 (`gpt-4o`, `gpt-4.1-nano`, etc.), so there's no need to
