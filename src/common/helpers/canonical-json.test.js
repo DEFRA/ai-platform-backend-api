@@ -90,7 +90,8 @@ describe('#sortKeys', () => {
 
 describe('#compareCodeUnits', () => {
   test('orders exactly as the default sort does, and ties equal strings', () => {
-    const keys = ['b', 'é', 'aa', 'Z', '_', 'a', 'B', 'A']
+    // U+FF5E sorts after U+1F600 by UTF-16 code unit, before it by code point.
+    const keys = ['b', 'é', 'aa', 'Z', '_', 'a', 'B', 'A', '\uFF5E', '😀']
 
     expect([...keys].sort(compareCodeUnits)).toEqual([...keys].sort())
     expect(compareCodeUnits('a', 'a')).toBe(0)
