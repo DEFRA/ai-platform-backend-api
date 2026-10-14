@@ -13,11 +13,16 @@
     "allowedDeployments": [
       "gpt-5-nano"
     ],
-    "credentialType": "subscription-key",
+    "credentialType": "oauth",
     "limits": {
       "requestsPerMinute": 60,
       "tokensPerMinute": 1000
     }
+  },
+  "oauth": {
+    "externalClients": [],
+    "federations": [],
+    "secretsAllowed": true
   },
   "operationId": "000000000000000000000001",
   "revision": 1,
