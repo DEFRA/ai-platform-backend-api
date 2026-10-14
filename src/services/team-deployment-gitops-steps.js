@@ -29,16 +29,14 @@ function now() {
 }
 
 /**
- * Query on one `deployments[]` element for a step nothing holds: never
- * claimed, released after a failed dispatch, or claimed but not dispatched
- * within the lease.
- * @param {'applyRetry'|'revert'|'abandon'} step
+ * Query on one `deployments[]` element for a claim at `field` nothing holds:
+ * never claimed, released after a failed dispatch, or claimed but not
+ * dispatched within the lease.
+ * @param {string} field - e.g. `gitops.revert`
  * @param {number} leaseMs
  * @returns {object}
  */
-export function claimableQuery(step, leaseMs) {
-  const field = `gitops.${step}`
-
+export function claimableFieldQuery(field, leaseMs) {
   return {
     [`${field}.dispatchedAt`]: null,
     $or: [
@@ -50,6 +48,17 @@ export function claimableQuery(step, leaseMs) {
       }
     ]
   }
+}
+
+/**
+ * Query on one `deployments[]` element for a GitOps step nothing holds (see
+ * `claimableFieldQuery`).
+ * @param {'applyRetry'|'revert'|'abandon'} step
+ * @param {number} leaseMs
+ * @returns {object}
+ */
+export function claimableQuery(step, leaseMs) {
+  return claimableFieldQuery(`gitops.${step}`, leaseMs)
 }
 
 function isClaimable(step, leaseMs) {

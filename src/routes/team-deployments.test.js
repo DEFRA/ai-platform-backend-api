@@ -454,6 +454,41 @@ describe('#team-deployments routes', () => {
     expect(statusCode).toBe(404)
   })
 
+  test('a second request waits as queued behind the one in flight, then is dispatched once that ends', async () => {
+    const teamId = await createTeam('deploy-user-18')
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('deploy-user-18'),
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+    })
+
+    const queued = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('deploy-user-18'),
+      payload: { modelSlug: 'gpt-4-1-nano', environment: 'sandbox' }
+    })
+
+    expect(queued.statusCode).toBe(201)
+    expect(queued.result.deployment.status).toBe('queued')
+
+    const url = `/v1/teams/${teamId}/deployments/${queued.result.deployment._id}`
+
+    await wait(300)
+
+    // Polling the queued request polls the one holding the team file, which
+    // has finished, so the queued one is dispatched.
+    const dispatched = await server.inject({
+      method: 'GET',
+      url,
+      headers: userHeaders('deploy-user-18')
+    })
+
+    expect(dispatched.result.deployment.status).toBe('requested')
+  })
+
   test('GET /v1/teams/{teamId}/deployments reflects refreshed status', async () => {
     const teamId = await createTeam('deploy-user-12')
 

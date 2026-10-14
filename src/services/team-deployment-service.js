@@ -13,15 +13,23 @@ import {
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import {
   DEPLOY_FAILED,
+  QUEUED,
   TERMINAL_FAILURE_STATUSES,
   auditDeployment,
   entryFilter,
   findEntry
 } from '#/services/team-deployment-entries.js'
 import { refreshEntryStatus } from '#/services/team-deployment-gitops.js'
+import { mustQueue } from '#/services/team-deployment-queue.js'
+import {
+  githubTrailOf,
+  prepareSubmission,
+  submissionRequest
+} from '#/services/team-deployment-submission.js'
 import { settleGitopsStep } from '#/services/team-deployment-gitops-steps.js'
 
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
+const REQUEST_ACTION = 'teamDeployment.request'
 const DESIRED_STATE_TOO_LARGE = 'desired-state-too-large'
 
 const W3C_TRACEPARENT = /^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/
@@ -111,37 +119,6 @@ function toDeploymentView(doc, entry) {
     activatedAt: entry.activatedAt,
     failureReason: entry.failureReason,
     links: linksOf(entry.gitops)
-  }
-}
-
-/**
- * The WS6 seam: the GitHub orchestrator submits a whole desired-state
- * document, which only the Teams developer's builder (with the team's
- * immutable `slug`) can produce. Until it is supplied, GitHub-mode requests
- * fail with `501 desired-state-unavailable`; the mock needs no document.
- * The document's `updatedBy` is always the requester's principal, which the
- * submit workflow requires to equal `requested_by`.
- * @param {(db: import('mongodb').Db, params: {teamId: string, environment: string, modelSlug: string, operationId: string, requestedBy: string}) => Promise<{document: object, expectedRevision: number}|null>} [buildDesiredState]
- * @param {import('mongodb').Db} db
- * @param {object} params
- * @param {string} principal - `entra:{oid}` of the requester
- */
-async function buildSubmission(buildDesiredState, db, params, principal) {
-  const desired = buildDesiredState ? await buildDesiredState(db, params) : null
-  const slug = desired?.document?.team?.slug
-
-  if (!slug) {
-    throw boomWithCode(
-      Boom.notImplemented,
-      'The desired-state document for this team cannot be built yet',
-      'desired-state-unavailable'
-    )
-  }
-
-  return {
-    path: `environments/${params.environment}/${slug}.json`,
-    document: { ...desired.document, updatedBy: principal },
-    expectedRevision: desired.expectedRevision ?? 0
   }
 }
 
@@ -262,6 +239,12 @@ async function addDeployment(db, params, deps) {
     )
   }
 
+  // Submit allows one open operation per team file, so a request made while
+  // another holds it (or earlier ones wait) waits its turn.
+  if (await mustQueue(db, params)) {
+    return queueDeployment(db, params, deps)
+  }
+
   const { entry, submission } = await newEntry(db, params, deps)
 
   await insertEntry(db, params, entry)
@@ -276,54 +259,72 @@ async function addDeployment(db, params, deps) {
 
   await recordSubmitRun(db, params, entry, submitted)
   await auditDeployment(db, entry, {
-    action: 'teamDeployment.request',
+    action: REQUEST_ACTION,
     actorUserId: params.requestedBy
   })
 
   return toDeploymentView({ teamId, environment }, entry)
 }
 
-// A new `requested` entry and what to submit for it: for GitHub, the whole
-// desired-state document and its GitOps trail; the mock needs neither.
-async function newEntry(
-  db,
-  { teamId, environment, modelSlug, requestedBy, principal, idempotencyKey },
-  { registry, buildDesiredState }
+// The fields every new entry starts with, `requested` or `queued`. The
+// requester's principal is kept so a queued request is dispatched as them.
+function freshEntry(
+  { modelSlug, requestedBy, principal, idempotencyKey },
+  { registry },
+  status
 ) {
-  const operationId = new ObjectId().toString()
-  const isGithub = registry.key === GITHUB_ORCHESTRATOR
-  const submission = isGithub
-    ? await buildSubmission(
-        buildDesiredState,
-        db,
-        { teamId, environment, modelSlug, operationId, requestedBy },
-        principal
-      )
-    : { path: null, document: null, expectedRevision: 0 }
-
-  const now = new Date().toISOString()
-  const entry = {
+  return {
     id: new ObjectId().toString(),
     modelSlug,
-    status: 'requested',
-    operationId,
+    status,
+    operationId: new ObjectId().toString(),
     requestedBy,
+    requestedByPrincipal: principal,
     idempotencyKey,
-    createdAt: now,
+    createdAt: new Date().toISOString(),
     activatedAt: null,
     failureReason: null,
     orchestrator: registry.key,
-    gitops: isGithub
-      ? {
-          path: submission.path,
-          branch: `op/${operationId}`,
-          action: 'write',
-          revision: submission.document.revision ?? null,
-          expectedRevision: submission.expectedRevision,
-          submitRunId: null,
-          submitRunUrl: null
-        }
-      : null
+    gitops: null
+  }
+}
+
+// A request queued behind the operation holding its team file, recorded
+// and audited but neither built nor dispatched until that one ends.
+async function queueDeployment(db, params, deps) {
+  const entry = freshEntry(params, deps, QUEUED)
+
+  await insertEntry(db, params, entry)
+  await auditDeployment(db, entry, {
+    action: REQUEST_ACTION,
+    actorUserId: params.requestedBy,
+    code: QUEUED
+  })
+
+  return toDeploymentView(params, entry)
+}
+
+// A new `requested` entry and what to submit for it: for GitHub, the whole
+// desired-state document and its GitOps trail; the mock needs neither.
+async function newEntry(db, params, deps) {
+  const { teamId, environment, modelSlug, requestedBy, principal } = params
+  const isGithub = deps.registry.key === GITHUB_ORCHESTRATOR
+  const entry = freshEntry(params, deps, 'requested')
+  const submission = await prepareSubmission(
+    db,
+    { isGithub, buildDesiredState: deps.buildDesiredState },
+    {
+      teamId,
+      environment,
+      modelSlug,
+      operationId: entry.operationId,
+      requestedBy
+    },
+    principal
+  )
+
+  if (isGithub) {
+    entry.gitops = githubTrailOf(submission, entry.operationId)
   }
 
   return { entry, submission }
@@ -361,18 +362,19 @@ async function submitEntry(db, params, entry, submission, registry) {
   const { teamId, environment, requestedBy, principal, traceParent } = params
 
   try {
-    return await registry.orchestrator.requestDeployment({
-      environment,
-      path: submission.path,
-      document: submission.document,
-      operationId: entry.operationId,
-      requestedBy: principal,
-      expectedRevision: submission.expectedRevision,
-      action: 'write',
-      traceParent: W3C_TRACEPARENT.test(traceParent ?? '')
-        ? traceParent
-        : undefined
-    })
+    return await registry.orchestrator.requestDeployment(
+      submissionRequest(
+        {
+          environment,
+          operationId: entry.operationId,
+          principal,
+          traceParent: W3C_TRACEPARENT.test(traceParent ?? '')
+            ? traceParent
+            : undefined
+        },
+        submission
+      )
+    )
   } catch (error) {
     const code =
       error.code === DESIRED_STATE_TOO_LARGE
@@ -386,7 +388,7 @@ async function submitEntry(db, params, entry, submission, registry) {
         { $pull: { deployments: { id: entry.id } } }
       )
     await auditDeployment(db, entry, {
-      action: 'teamDeployment.request',
+      action: REQUEST_ACTION,
       actorUserId: requestedBy,
       outcome: 'failure',
       code

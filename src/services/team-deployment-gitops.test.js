@@ -594,6 +594,41 @@ describe('team-deployment-gitops', () => {
       )
     })
 
+    test('dispatches a queued request nobody is polling once the team file is free', async () => {
+      const orchestrator = fakeOrchestrator()
+      const queued = githubEntry({
+        status: 'queued',
+        requestedBy: 'queue-user',
+        requestedByPrincipal: 'entra:00000000-0000-0000-0000-000000000001'
+      })
+
+      // A queued request has no GitOps trail until it is dispatched.
+      queued.gitops = null
+      await insertDocument(githubEntry({ status: 'active' }), queued)
+
+      const result = await gitops.sweepGitopsDeployments(db, {
+        registry: githubRegistry(orchestrator),
+        buildDesiredState: async (_, { environment, operationId }) => ({
+          document: {
+            environment,
+            operationId,
+            revision: 1,
+            team: { slug: 'alpha' }
+          },
+          expectedRevision: 0
+        })
+      })
+
+      expect(result).toEqual({ polled: 1, transitioned: 1, abandoned: 0 })
+      expect(orchestrator.requestDeployment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operationId: queued.operationId,
+          requestedBy: 'entra:00000000-0000-0000-0000-000000000001'
+        })
+      )
+      expect((await storedEntry(queued.id)).status).toBe('requested')
+    })
+
     test('abandons once when two sweeps race', async () => {
       const orchestrator = fakeOrchestrator()
 

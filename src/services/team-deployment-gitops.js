@@ -8,6 +8,8 @@ import {
 import {
   CHECKS_FAILED,
   DEPLOY_FAILED,
+  NON_TERMINAL_STATUSES,
+  QUEUED,
   TERMINAL_FAILURE_STATUSES,
   auditDeployment,
   entryFilter,
@@ -19,18 +21,7 @@ import {
   claimableQuery,
   needsAbandon
 } from '#/services/team-deployment-gitops-steps.js'
-
-/**
- * GitOps states an operation can still move on from - the only ones polled.
- */
-export const NON_TERMINAL_STATUSES = [
-  'requested',
-  'pr-raised',
-  'merged',
-  'deploying',
-  'deployed',
-  'verified'
-]
+import { releaseQueue } from '#/services/team-deployment-queue.js'
 
 // The operations the backend submits after an entry's own - a D14 revert,
 // an abandon - each followed to its end through the same GitOps states.
@@ -43,9 +34,16 @@ function settingsOf({
   registry = tenantOrchestratorRegistry,
   logger,
   pollMinIntervalMs = config.get('gitops.pollMinIntervalMs'),
-  claimLeaseMs = config.get('gitops.claimLeaseMs')
+  claimLeaseMs = config.get('gitops.claimLeaseMs'),
+  buildDesiredState
 }) {
-  return { registry, logger, pollMinIntervalMs, claimLeaseMs }
+  return {
+    registry,
+    logger,
+    pollMinIntervalMs,
+    claimLeaseMs,
+    buildDesiredState
+  }
 }
 
 // `fields` as a `$set` on the matched entry, each key under `prefix`.
@@ -384,21 +382,16 @@ async function refreshOperation(db, doc, entry, settings) {
   return persisted.entry
 }
 
-/**
- * Advances one deployment entry's persisted status by asking the
- * orchestrator that submitted it for its current state, if it hasn't
- * already reached a terminal/active state - then any revert or abandon it
- * led to, until that ends. Each GitHub-mode poll first reserves its window
- * in Mongo, so concurrent polls read GitHub once per minimum interval. A
- * GitHub hiccup keeps the last known status rather than failing the caller.
- * @param {import('mongodb').Db} db
- * @param {object} doc
- * @param {object} entry
- * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number}} [deps]
- */
-export async function refreshEntryStatus(db, doc, entry, deps = {}) {
-  const settings = settingsOf(deps)
+// Whether polling the entry can move it on: its own operation, or a revert
+// or abandon it led to, is still in progress.
+function isInProgress(entry) {
+  return (
+    NON_TERMINAL_STATUSES.includes(entry.status) ||
+    Boolean(trackedFollowUp(entry))
+  )
+}
 
+async function refreshOwnStatus(db, doc, entry, settings) {
   if (
     entry.status === 'active' ||
     TERMINAL_FAILURE_STATUSES.has(entry.status)
@@ -411,11 +404,58 @@ export async function refreshEntryStatus(db, doc, entry, deps = {}) {
   return refreshOperation(db, doc, entry, settings)
 }
 
+// A queued request moves when the operation holding its team file ends, so
+// polling it polls the team's operations in progress first. Sequential by
+// design: each may write back to the same document.
+async function refreshQueued(db, doc, entry, settings) {
+  for (const sibling of doc.deployments) {
+    if (sibling.id !== entry.id && isInProgress(sibling)) {
+      await refreshOwnStatus(db, doc, sibling, settings)
+    }
+  }
+
+  return entry
+}
+
+/**
+ * Advances one deployment entry's persisted status by asking the
+ * orchestrator that submitted it for its current state, if it hasn't
+ * already reached a terminal/active state - then any revert or abandon it
+ * led to, until that ends. Each GitHub-mode poll first reserves its window
+ * in Mongo, so concurrent polls read GitHub once per minimum interval. A
+ * GitHub hiccup keeps the last known status rather than failing the caller.
+ * When the team has requests queued behind the operation holding its team
+ * file, the oldest is dispatched once nothing holds it.
+ * @param {import('mongodb').Db} db
+ * @param {object} doc
+ * @param {object} entry
+ * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number, buildDesiredState?: Function}} [deps] - `buildDesiredState` is the WS6 builder a queued GitHub-mode request is built with when dispatched
+ */
+export async function refreshEntryStatus(db, doc, entry, deps = {}) {
+  const settings = settingsOf(deps)
+  const queued = entry.status === QUEUED
+  const refreshed = queued
+    ? await refreshQueued(db, doc, entry, settings)
+    : await refreshOwnStatus(db, doc, entry, settings)
+
+  if (!doc.deployments?.some((deployment) => deployment.status === QUEUED)) {
+    return refreshed
+  }
+
+  const dispatched = await releaseQueue(db, doc, settings)
+
+  if (dispatched?.id === entry.id) {
+    return dispatched
+  }
+
+  return queued ? storedEntry(db, doc, entry) : refreshed
+}
+
 const NOTHING_SWEPT = { polled: 0, transitioned: 0, abandoned: 0 }
 
 // One GitHub-mode entry's turn in the sweep: claim its abandon, or poll it
-// (or its revert or abandon) while in progress. Returns what it counted
-// towards.
+// (or its revert or abandon) while in progress, or try to dispatch it while
+// queued. Returns what it counted towards.
 async function sweepEntry(db, doc, entry, settings) {
   const { registry, logger, claimLeaseMs } = settings
 
@@ -429,10 +469,7 @@ async function sweepEntry(db, doc, entry, settings) {
     return { ...NOTHING_SWEPT, abandoned: 1 }
   }
 
-  if (
-    !NON_TERMINAL_STATUSES.includes(entry.status) &&
-    !trackedFollowUp(entry)
-  ) {
+  if (!isInProgress(entry) && entry.status !== QUEUED) {
     return NOTHING_SWEPT
   }
 
@@ -450,10 +487,11 @@ async function sweepEntry(db, doc, entry, settings) {
  * non-terminal one (R11 - terminal operations are never polled; each poll
  * still honours the per-operation minimum interval), writing and auditing
  * each transition, follows every dispatched revert and abandon to its end,
- * and claims an `abandon` nobody holds. Operations nobody is watching still
+ * claims an `abandon` nobody holds and dispatches a team's next queued
+ * request once nothing holds its team file. Operations nobody is watching still
  * progress and reach `active`.
  * @param {import('mongodb').Db} db
- * @param {{registry?: object, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number}} [deps]
+ * @param {{registry?: object, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number, buildDesiredState?: Function}} [deps]
  * @returns {Promise<{polled: number, transitioned: number, abandoned: number}>}
  */
 export async function sweepGitopsDeployments(db, deps = {}) {
@@ -465,7 +503,7 @@ export async function sweepGitopsDeployments(db, deps = {}) {
         $elemMatch: {
           orchestrator: GITHUB_ORCHESTRATOR,
           $or: [
-            { status: { $in: NON_TERMINAL_STATUSES } },
+            { status: { $in: [...NON_TERMINAL_STATUSES, QUEUED] } },
             {
               status: CHECKS_FAILED,
               'gitops.pullRequestNumber': { $ne: null },

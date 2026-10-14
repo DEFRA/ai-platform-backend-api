@@ -292,6 +292,9 @@ fresh apply, then a revert or an engineer alert (D14); a failed check gets `aban
 abandons are polled to their end; one that fails is audited and logged for an engineer, never retried,
 and a failed revert's pull request stays open, keeping the team file locked, until the engineer acts
 (direction 14 October 2026).
+A team's file takes one operation at a time, so a request made while another for the same team and
+environment is still in progress (or being reverted or abandoned) is stored as `queued` and dispatched,
+its document built then, once that one ends.
 Platform Admins
 (users whose `roles` include `platform-admin`; nothing assigns it yet) can
 `POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`. Until the WS6 desired-state builder

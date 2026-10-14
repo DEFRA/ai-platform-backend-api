@@ -1,6 +1,24 @@
 import { recordAuditEvent } from '#/services/audit-service.js'
 
 /**
+ * GitOps states an operation can still move on from - the only ones polled.
+ */
+export const NON_TERMINAL_STATUSES = [
+  'requested',
+  'pr-raised',
+  'merged',
+  'deploying',
+  'deployed',
+  'verified'
+]
+
+/**
+ * A request waiting for the operation in flight on its team file: submit
+ * allows one open operation per file, so it is dispatched once that ends.
+ */
+export const QUEUED = 'queued'
+
+/**
  * The GitOps state an operation ends in when its pull request fails checks
  * or is closed unmerged.
  */
