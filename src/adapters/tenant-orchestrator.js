@@ -44,7 +44,7 @@
  *
  * @typedef {object} TenantOrchestrator
  * @property {(request: DeploymentRequest) => Promise<{operationId: string, status: 'requested', submitRunId: number|null, submitRunUrl: string|null}>} requestDeployment
- * @property {(entry: object) => Promise<DeploymentStatus>} getDeploymentStatus - takes a persisted deployment entry plus its `environment`
+ * @property {(entry: object) => Promise<DeploymentStatus>} getDeploymentStatus - takes a persisted deployment entry plus its `environment`; an `abandon` operation (`gitops.action`) is followed by its submit run alone, `active` once it has closed the pull request and `checks-failed` if it could not
  * @property {(params: {environment: string, reason: string}) => Promise<{runId: number|null, runUrl: string|null}>} requestApply - a fresh tenants apply on `main`, never a re-run
  * @property {(params: {path: string, mergeSha: string}) => Promise<{document: object|null}>} getPreviousDocument - the file before the merge, null when it did not exist
  */

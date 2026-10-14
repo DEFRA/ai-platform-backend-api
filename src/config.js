@@ -185,6 +185,12 @@ export const config = convict({
       format: 'nat',
       default: 30000,
       env: 'GITOPS_POLL_MIN_INTERVAL_MS'
+    },
+    claimLeaseMs: {
+      doc: 'How long in ms a claimed GitOps step (retry apply, revert, abandon) waits for its dispatch before another poll may claim it again',
+      format: 'nat',
+      default: 600000,
+      env: 'GITOPS_CLAIM_LEASE_MS'
     }
   },
   aipEnvironments: {

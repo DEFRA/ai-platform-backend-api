@@ -28,6 +28,8 @@ const SUCCEEDED_DEPLOYMENT_STATES = new Set(['success', 'inactive'])
 const FAILED_DEPLOYMENT_STATES = new Set(['error', 'failure'])
 const MAX_REMEMBERED = 500
 const CHECKS_FAILED = 'checks-failed'
+// GitHub's maximum page size for listing Deployments.
+const DEPLOYMENTS_PER_PAGE = 100
 
 // Down-scoped per use (D6): a dispatch token can only start workflows in one
 // repository; a status token can only read it.
@@ -45,7 +47,8 @@ const FAILURE_REASONS = {
     'The submit workflow rejected the change, so nothing was written to Git',
   validate: 'The validate check failed on the pull request',
   closed: 'The pull request was closed without being merged',
-  apply: 'The apply workflow failed'
+  apply: 'The apply workflow failed',
+  abandon: 'The submit workflow could not abandon the pull request'
 }
 
 function codedError(message, code) {
@@ -208,7 +211,20 @@ async function readPreviousDocument({ reader, client, repo }, path, mergeSha) {
   }
 }
 
-async function submitRunState({ reader, client, repo }, gitops, links) {
+// A write or remove is still `requested` after its submit run succeeds, until
+// its pull request appears. An abandon opens none: its submit run is the
+// whole operation, `active` once it has closed the pull request.
+const SUBMIT_OUTCOMES = {
+  write: { succeeded: 'requested', failureReason: FAILURE_REASONS.submit },
+  abandon: { succeeded: 'active', failureReason: FAILURE_REASONS.abandon }
+}
+
+async function submitRunState(
+  { reader, client, repo },
+  gitops,
+  links,
+  outcomes = SUBMIT_OUTCOMES.write
+) {
   if (!gitops.submitRunId) {
     return { status: 'requested', links }
   }
@@ -220,15 +236,17 @@ async function submitRunState({ reader, client, repo }, gitops, links) {
   )
   const withRun = { ...links, submitRun: run.html_url ?? links.submitRun }
 
-  if (run.status === 'completed' && FAILED_CONCLUSIONS.has(run.conclusion)) {
-    return {
-      status: CHECKS_FAILED,
-      failureReason: FAILURE_REASONS.submit,
-      links: withRun
-    }
+  if (run.status !== 'completed') {
+    return { status: 'requested', links: withRun }
   }
 
-  return { status: 'requested', links: withRun }
+  return FAILED_CONCLUSIONS.has(run.conclusion)
+    ? {
+        status: CHECKS_FAILED,
+        failureReason: outcomes.failureReason,
+        links: withRun
+      }
+    : { status: outcomes.succeeded, links: withRun }
 }
 
 async function validateFailed({ reader, client, repo }, sha) {
@@ -323,19 +341,18 @@ async function runReport({ reader, client, repo, reports }, run, environment) {
   return report
 }
 
-async function deploymentsAtOrAfter(reads, environment, merge) {
+function createdBeforeMerge(deployment, merge) {
+  return Date.parse(deployment.created_at) < Date.parse(merge.mergedAt)
+}
+
+// The Deployments on one page at the merge commit or a descendant of it,
+// with their latest status and the run behind it.
+async function observePage(reads, deployments, merge) {
   const { reader, client, repo } = reads
-  const deployments = await reader.read(
-    client,
-    'GET /repos/{owner}/{repo}/deployments',
-    { ...repo, environment, per_page: 30 }
-  )
   const observed = []
 
-  // Newest first, as GitHub lists them. A Deployment created before the
-  // merge cannot be at the merge commit or a descendant of it.
   for (const deployment of deployments) {
-    if (Date.parse(deployment.created_at) < Date.parse(merge.mergedAt)) {
+    if (createdBeforeMerge(deployment, merge)) {
       continue
     }
 
@@ -348,6 +365,34 @@ async function deploymentsAtOrAfter(reads, environment, merge) {
 
       observed.push({ latest, run: runOf(latest) })
     }
+  }
+
+  return observed
+}
+
+// Newest first, as GitHub lists them, a page at a time until a page is the
+// last or reaches a Deployment created before the merge: that one, and every
+// older one, cannot be at the merge commit or a descendant of it. So an
+// operation polled late still finds its own apply behind later ones.
+async function deploymentsAtOrAfter(reads, environment, merge) {
+  const { reader, client, repo } = reads
+  const observed = []
+  let page = 0
+  let morePages = true
+
+  while (morePages) {
+    page += 1
+
+    const deployments = await reader.read(
+      client,
+      'GET /repos/{owner}/{repo}/deployments',
+      { ...repo, environment, per_page: DEPLOYMENTS_PER_PAGE, page }
+    )
+
+    observed.push(...(await observePage(reads, deployments, merge)))
+    morePages =
+      deployments.length === DEPLOYMENTS_PER_PAGE &&
+      !deployments.some((deployment) => createdBeforeMerge(deployment, merge))
   }
 
   return observed
@@ -421,6 +466,11 @@ async function observe(reads, entry) {
   const { operationId, gitops } = entry
   const { reader, client, repo } = reads
   const links = linksOf(gitops)
+
+  if (gitops.action === 'abandon') {
+    return submitRunState(reads, gitops, links, SUBMIT_OUTCOMES.abandon)
+  }
+
   let merge = {
     pullRequestNumber: gitops.pullRequestNumber,
     mergeSha: gitops.mergeSha,

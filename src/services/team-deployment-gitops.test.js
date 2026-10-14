@@ -73,11 +73,14 @@ describe('team-deployment-gitops', () => {
   }
 
   async function insertDocument(...deployments) {
-    await db.collection('teamDeployments').insertOne({
+    const doc = {
       teamId: `gitops-team-${randomUUID()}`,
       environment: 'sandbox',
       deployments
-    })
+    }
+    const { insertedId } = await db.collection('teamDeployments').insertOne(doc)
+
+    return { ...doc, _id: insertedId }
   }
 
   async function storedEntry(id) {
@@ -87,6 +90,448 @@ describe('team-deployment-gitops', () => {
 
     return doc?.deployments.find((entry) => entry.id === id) ?? null
   }
+
+  async function auditEvents(entry) {
+    return db
+      .collection('auditEvents')
+      .find({ resourceId: entry.id })
+      .sort({ at: 1 })
+      .toArray()
+  }
+
+  function refresh(orchestrator, doc, entry, deps = {}) {
+    return gitops.refreshEntryStatus(db, doc, entry, {
+      registry: githubRegistry(orchestrator),
+      pollMinIntervalMs: 0,
+      ...deps
+    })
+  }
+
+  // Older than the claim lease and the poll interval; and now.
+  const anHourAgo = () => new Date(Date.now() - 60 * 60 * 1000).toISOString()
+  const justNow = () => new Date().toISOString()
+
+  // A failed apply this team's change is attributed to, after the D14 retry.
+  function failedApply(entry) {
+    return {
+      operationId: entry.operationId,
+      status: 'deploy-failed',
+      failureReason: 'The apply workflow failed',
+      links: {},
+      failure: {
+        observedAt: '2026-10-13T12:30:00Z',
+        failingTeams: ['alpha'],
+        unattributedFailure: false
+      }
+    }
+  }
+
+  const retried = {
+    claimedAt: '2026-10-13T11:59:59.000Z',
+    dispatchedAt: '2026-10-13T12:00:00.000Z',
+    reason: 'd14-retry',
+    runId: 2002,
+    runUrl: 'https://github.com/DEFRA/ai-platform-tenants/actions/runs/2002'
+  }
+
+  describe('the poll window', () => {
+    test('reads GitHub once when two polls race inside the minimum interval', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry()
+      const doc = await insertDocument(entry)
+
+      const refreshed = await Promise.all([
+        refresh(orchestrator, doc, entry, { pollMinIntervalMs: 60000 }),
+        refresh(orchestrator, doc, entry, { pollMinIntervalMs: 60000 })
+      ])
+
+      expect(orchestrator.getDeploymentStatus).toHaveBeenCalledTimes(1)
+      expect(refreshed.map(({ status }) => status)).toEqual([
+        'requested',
+        'requested'
+      ])
+      expect((await storedEntry(entry.id)).gitops.lastPolledAt).toEqual(
+        expect.any(String)
+      )
+    })
+
+    test('does not poll inside the minimum interval, and polls once it has passed', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({ gitops: { lastPolledAt: justNow() } })
+      const doc = await insertDocument(entry)
+
+      await refresh(orchestrator, doc, entry, { pollMinIntervalMs: 60000 })
+
+      expect(orchestrator.getDeploymentStatus).not.toHaveBeenCalled()
+
+      await db
+        .collection('teamDeployments')
+        .updateOne(
+          { _id: doc._id, 'deployments.id': entry.id },
+          { $set: { 'deployments.$.gitops.lastPolledAt': anHourAgo() } }
+        )
+      await refresh(orchestrator, doc, await storedEntry(entry.id), {
+        pollMinIntervalMs: 60000
+      })
+
+      expect(orchestrator.getDeploymentStatus).toHaveBeenCalledTimes(1)
+    })
+
+    test('activates a verified entry inside the minimum interval, since activation reads nothing', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({
+        status: 'verified',
+        gitops: { lastPolledAt: justNow() }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue({
+        operationId: entry.operationId,
+        status: 'active',
+        links: {}
+      })
+
+      const refreshed = await refresh(orchestrator, doc, entry, {
+        pollMinIntervalMs: 60000
+      })
+
+      expect(refreshed.status).toBe('active')
+    })
+  })
+
+  describe('claim leases', () => {
+    test('claims a D14 retry again once a claim that never dispatched outlives its lease', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({
+        status: 'deploying',
+        gitops: {
+          mergeSha: 'merge-sha',
+          applyRetry: { claimedAt: anHourAgo(), reason: 'd14-retry' }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(failedApply(entry))
+      orchestrator.requestApply.mockResolvedValue({ runId: 2002, runUrl: null })
+
+      await refresh(orchestrator, doc, entry)
+
+      expect(orchestrator.requestApply).toHaveBeenCalledTimes(1)
+      expect((await storedEntry(entry.id)).gitops.applyRetry).toMatchObject({
+        dispatchedAt: expect.any(String),
+        runId: 2002
+      })
+    })
+
+    test('leaves a claim inside its lease to the poll that holds it', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({
+        status: 'deploying',
+        gitops: {
+          mergeSha: 'merge-sha',
+          applyRetry: { claimedAt: justNow(), reason: 'd14-retry' }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(failedApply(entry))
+
+      const refreshed = await refresh(orchestrator, doc, entry)
+
+      expect(orchestrator.requestApply).not.toHaveBeenCalled()
+      expect(refreshed.status).toBe('deploying')
+    })
+
+    test('reclaims a revert that never dispatched under the same operation ID', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({
+        status: 'deploying',
+        gitops: {
+          mergeSha: 'merge-sha',
+          revision: 2,
+          applyRetry: retried,
+          revert: {
+            operationId: 'stale-revert-op',
+            requestedAt: '2026-10-13T12:40:00.000Z',
+            action: null,
+            claimedAt: anHourAgo()
+          }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(failedApply(entry))
+      orchestrator.getPreviousDocument.mockResolvedValue({ document: null })
+
+      const refreshed = await refresh(orchestrator, doc, entry)
+
+      expect(orchestrator.requestDeployment).toHaveBeenCalledTimes(1)
+      expect(orchestrator.requestDeployment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operationId: 'stale-revert-op',
+          action: 'remove'
+        })
+      )
+      expect(refreshed.status).toBe('deploy-failed')
+      expect((await storedEntry(entry.id)).gitops.revert).toMatchObject({
+        operationId: 'stale-revert-op',
+        requestedAt: '2026-10-13T12:40:00.000Z',
+        dispatchedAt: expect.any(String),
+        status: 'requested'
+      })
+    })
+
+    test('leaves a revert claim inside its lease to the poll that holds it', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({
+        status: 'deploying',
+        gitops: {
+          mergeSha: 'merge-sha',
+          applyRetry: retried,
+          revert: {
+            operationId: 'held-revert-op',
+            requestedAt: justNow(),
+            action: null,
+            claimedAt: justNow()
+          }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(failedApply(entry))
+
+      const refreshed = await refresh(orchestrator, doc, entry)
+
+      expect(orchestrator.requestDeployment).not.toHaveBeenCalled()
+      expect(refreshed.status).toBe('deploying')
+    })
+
+    test('does not submit a revert twice when a poll stopped before recording its outcome', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({
+        status: 'deploying',
+        gitops: {
+          mergeSha: 'merge-sha',
+          applyRetry: retried,
+          revert: {
+            operationId: 'dispatched-revert-op',
+            requestedAt: '2026-10-13T12:40:00.000Z',
+            action: 'remove',
+            claimedAt: '2026-10-13T12:40:00.000Z',
+            dispatchedAt: '2026-10-13T12:40:01.000Z',
+            status: 'requested'
+          }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(failedApply(entry))
+
+      const refreshed = await refresh(orchestrator, doc, entry)
+
+      expect(orchestrator.requestDeployment).not.toHaveBeenCalled()
+      expect(refreshed).toMatchObject({
+        status: 'deploy-failed',
+        failureReason: expect.stringContaining('being reverted')
+      })
+    })
+  })
+
+  describe('reverts', () => {
+    function revertingEntry() {
+      return githubEntry({
+        status: 'deploy-failed',
+        failureReason:
+          'The apply failed again after a fresh retry, so the change is being reverted',
+        gitops: {
+          revert: {
+            operationId: 'revert-op',
+            requestedAt: '2026-10-13T12:40:00.000Z',
+            action: 'write',
+            claimedAt: '2026-10-13T12:40:00.000Z',
+            dispatchedAt: '2026-10-13T12:40:01.000Z',
+            status: 'requested',
+            submitRunId: 3003,
+            submitRunUrl:
+              'https://github.com/DEFRA/ai-platform-tenants/actions/runs/3003'
+          }
+        }
+      })
+    }
+
+    test('follows a dispatched revert to its end, then flags the entry and alerts when it fails', async () => {
+      const orchestrator = fakeOrchestrator()
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const entry = revertingEntry()
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus
+        .mockResolvedValueOnce({
+          operationId: 'revert-op',
+          status: 'pr-raised',
+          pullRequestNumber: 8,
+          links: {}
+        })
+        .mockResolvedValueOnce({
+          operationId: 'revert-op',
+          status: 'checks-failed',
+          failureReason: 'The validate check failed on the pull request',
+          links: {}
+        })
+
+      await refresh(orchestrator, doc, entry, { logger })
+
+      expect(orchestrator.getDeploymentStatus).toHaveBeenCalledWith({
+        operationId: 'revert-op',
+        status: 'requested',
+        environment: 'sandbox',
+        createdAt: '2026-10-13T12:40:01.000Z',
+        gitops: expect.objectContaining({
+          path: 'environments/sandbox/alpha.json',
+          action: 'write',
+          submitRunId: 3003
+        })
+      })
+      expect((await storedEntry(entry.id)).gitops.revert).toMatchObject({
+        status: 'pr-raised',
+        pullRequestNumber: 8
+      })
+
+      const failed = await refresh(
+        orchestrator,
+        doc,
+        await storedEntry(entry.id),
+        { logger }
+      )
+
+      expect(failed.failureReason).toContain('reverting the change failed')
+      expect(await storedEntry(entry.id)).toMatchObject({
+        status: 'deploy-failed',
+        failureReason: failed.failureReason,
+        gitops: expect.objectContaining({
+          revert: expect.objectContaining({ status: 'checks-failed' })
+        })
+      })
+      expect(
+        (await auditEvents(entry)).map(({ action, outcome, code }) => [
+          action,
+          outcome,
+          code
+        ])
+      ).toContainEqual([
+        'teamDeployment.revertFailed',
+        'failure',
+        'checks-failed'
+      ])
+      expect(logger.error).toHaveBeenCalledWith(
+        {
+          operationId: entry.operationId,
+          followUpOperationId: 'revert-op',
+          environment: 'sandbox',
+          status: 'checks-failed'
+        },
+        'The revert ended checks-failed and needs a platform engineer'
+      )
+
+      // A failed revert is final: nothing polls or resubmits it again.
+      await refresh(orchestrator, doc, await storedEntry(entry.id), { logger })
+
+      expect(orchestrator.getDeploymentStatus).toHaveBeenCalledTimes(2)
+      expect(orchestrator.requestDeployment).not.toHaveBeenCalled()
+    })
+
+    test('records a revert that completes and leaves the entry as it was', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = revertingEntry()
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue({
+        operationId: 'revert-op',
+        status: 'active',
+        links: {}
+      })
+
+      const refreshed = await refresh(orchestrator, doc, entry)
+
+      expect(refreshed.failureReason).toBe(entry.failureReason)
+      expect(refreshed.gitops.revert.status).toBe('active')
+      expect(
+        (await auditEvents(entry)).map(({ action, outcome }) => [
+          action,
+          outcome
+        ])
+      ).toContainEqual(['teamDeployment.revertCompleted', 'success'])
+    })
+
+    test('keeps a revert’s last known status when its poll fails', async () => {
+      const orchestrator = fakeOrchestrator()
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const entry = revertingEntry()
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockRejectedValue(
+        new Error('GitHub unavailable')
+      )
+
+      const refreshed = await refresh(orchestrator, doc, entry, { logger })
+
+      expect(refreshed.gitops.revert.status).toBe('requested')
+      expect(logger.warn).toHaveBeenCalledWith(
+        { code: null, operationId: entry.operationId },
+        'The revert status poll failed, keeping its last known status'
+      )
+    })
+
+    test('writes nothing for a revert poll that read nothing new', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = revertingEntry()
+      const doc = await insertDocument(entry)
+
+      const refreshed = await refresh(orchestrator, doc, entry)
+
+      expect(orchestrator.getDeploymentStatus).toHaveBeenCalledTimes(1)
+      expect(refreshed).toBe(entry)
+    })
+
+    test('does not poll a revert again inside the minimum interval', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = revertingEntry()
+
+      entry.gitops.revert.lastPolledAt = justNow()
+
+      const doc = await insertDocument(entry)
+      const refreshed = await refresh(orchestrator, doc, entry, {
+        pollMinIntervalMs: 60000
+      })
+
+      expect(orchestrator.getDeploymentStatus).not.toHaveBeenCalled()
+      expect(refreshed.gitops.revert.status).toBe('requested')
+    })
+
+    test('never overwrites a newer revert status with a slower poll’s', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = revertingEntry()
+      const doc = await insertDocument({
+        ...entry,
+        gitops: {
+          ...entry.gitops,
+          revert: { ...entry.gitops.revert, status: 'merged' }
+        }
+      })
+
+      orchestrator.getDeploymentStatus.mockResolvedValue({
+        operationId: 'revert-op',
+        status: 'pr-raised',
+        links: {}
+      })
+
+      // This poll read the revert while it was still `requested`.
+      const refreshed = await refresh(orchestrator, doc, entry)
+
+      expect(refreshed.gitops.revert.status).toBe('merged')
+      expect((await storedEntry(entry.id)).gitops.revert.status).toBe('merged')
+    })
+  })
 
   describe('sweepGitopsDeployments', () => {
     beforeEach(async () => {
@@ -100,11 +545,11 @@ describe('team-deployment-gitops', () => {
       const orchestrator = fakeOrchestrator()
       const inProgress = githubEntry()
 
-      await insertDocument(inProgress, {
-        id: 'mock-sibling',
-        status: 'requested',
-        orchestrator: 'mock'
-      })
+      await insertDocument(
+        inProgress,
+        { id: 'mock-sibling', status: 'requested', orchestrator: 'mock' },
+        githubEntry({ status: 'active' })
+      )
       await insertDocument(githubEntry({ status: 'active' }))
       await insertDocument({
         id: 'mock-entry',
@@ -149,6 +594,28 @@ describe('team-deployment-gitops', () => {
       )
     })
 
+    test('abandons once when two sweeps race', async () => {
+      const orchestrator = fakeOrchestrator()
+
+      await insertDocument(
+        githubEntry({
+          status: 'checks-failed',
+          gitops: { pullRequestNumber: 7 }
+        })
+      )
+
+      await Promise.all([
+        gitops.sweepGitopsDeployments(db, {
+          registry: githubRegistry(orchestrator)
+        }),
+        gitops.sweepGitopsDeployments(db, {
+          registry: githubRegistry(orchestrator)
+        })
+      ])
+
+      expect(orchestrator.requestDeployment).toHaveBeenCalledTimes(1)
+    })
+
     test('clears a failed abandon so the next sweep tries again', async () => {
       const orchestrator = fakeOrchestrator()
       const failed = githubEntry({
@@ -166,7 +633,107 @@ describe('team-deployment-gitops', () => {
         logger: { warn: vi.fn(), error: vi.fn() }
       })
 
-      expect((await storedEntry(failed.id)).gitops.abandon).toBeNull()
+      expect((await storedEntry(failed.id)).gitops.abandon).toEqual({
+        claimedAt: null
+      })
+
+      const retried = await gitops.sweepGitopsDeployments(db, {
+        registry: githubRegistry(orchestrator)
+      })
+
+      expect(retried.abandoned).toBe(1)
+      expect(orchestrator.requestDeployment).toHaveBeenCalledTimes(2)
+    })
+
+    test('claims an abandon again only once a claim that never dispatched outlives its lease', async () => {
+      const orchestrator = fakeOrchestrator()
+      const held = githubEntry({
+        status: 'checks-failed',
+        gitops: { pullRequestNumber: 7, abandon: { claimedAt: justNow() } }
+      })
+      const stale = githubEntry({
+        status: 'checks-failed',
+        gitops: { pullRequestNumber: 7, abandon: { claimedAt: anHourAgo() } }
+      })
+
+      await insertDocument(held)
+      await insertDocument(stale)
+
+      const result = await gitops.sweepGitopsDeployments(db, {
+        registry: githubRegistry(orchestrator)
+      })
+
+      expect(result).toEqual({ polled: 0, transitioned: 0, abandoned: 1 })
+      expect(orchestrator.requestDeployment).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operationId: stale.operationId,
+          action: 'abandon'
+        })
+      )
+      expect((await storedEntry(stale.id)).gitops.abandon).toMatchObject({
+        action: 'abandon',
+        dispatchedAt: expect.any(String),
+        status: 'requested',
+        submitRunId: 1001
+      })
+    })
+
+    test('follows a dispatched abandon to its end and alerts when it fails', async () => {
+      const orchestrator = fakeOrchestrator()
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const abandoning = githubEntry({
+        status: 'checks-failed',
+        gitops: {
+          pullRequestNumber: 7,
+          abandon: {
+            claimedAt: '2026-10-13T12:40:00.000Z',
+            action: 'abandon',
+            submitRunId: 4004,
+            submitRunUrl: SUBMIT_RUN_URL,
+            dispatchedAt: '2026-10-13T12:40:01.000Z',
+            status: 'requested'
+          }
+        }
+      })
+
+      await insertDocument(abandoning)
+      orchestrator.getDeploymentStatus.mockResolvedValue({
+        operationId: abandoning.operationId,
+        status: 'checks-failed',
+        failureReason: 'The submit workflow could not abandon the pull request',
+        links: {}
+      })
+
+      const deps = { registry: githubRegistry(orchestrator), logger }
+      const result = await gitops.sweepGitopsDeployments(db, deps)
+
+      expect(result).toEqual({ polled: 1, transitioned: 0, abandoned: 0 })
+      expect(orchestrator.getDeploymentStatus).toHaveBeenCalledWith(
+        expect.objectContaining({
+          operationId: abandoning.operationId,
+          gitops: expect.objectContaining({
+            action: 'abandon',
+            submitRunId: 4004
+          })
+        })
+      )
+      expect((await storedEntry(abandoning.id)).gitops.abandon.status).toBe(
+        'checks-failed'
+      )
+      expect(
+        (await auditEvents(abandoning)).map(({ action }) => action)
+      ).toContain('teamDeployment.abandonFailed')
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'checks-failed' }),
+        'The abandon ended checks-failed and needs a platform engineer'
+      )
+
+      // Never retried: the next sweep leaves it alone.
+      expect(await gitops.sweepGitopsDeployments(db, deps)).toEqual({
+        polled: 0,
+        transitioned: 0,
+        abandoned: 0
+      })
     })
   })
 })

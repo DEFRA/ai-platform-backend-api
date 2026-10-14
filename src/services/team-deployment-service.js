@@ -19,6 +19,7 @@ import {
   findEntry
 } from '#/services/team-deployment-entries.js'
 import { refreshEntryStatus } from '#/services/team-deployment-gitops.js'
+import { settleGitopsStep } from '#/services/team-deployment-gitops-steps.js'
 
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
 const DESIRED_STATE_TOO_LARGE = 'desired-state-too-large'
@@ -495,12 +496,99 @@ export async function listDeploymentsForTeam(
   return views
 }
 
+function entryFields(fields) {
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [
+      `deployments.$.${key}`,
+      value
+    ])
+  )
+}
+
+// What a retry or reconcile claims before it dispatches: a failed
+// deployment resuming, and the apply about to go out as its one D14 retry.
+function redispatchClaim(entry, kind) {
+  const resumes = entry.status === DEPLOY_FAILED
+
+  return {
+    resumes,
+    changes: resumes ? { status: 'deploying', failureReason: null } : {},
+    applyRetry: entry.gitops
+      ? { claimedAt: new Date().toISOString(), reason: kind }
+      : null
+  }
+}
+
+// Claims before dispatching. Resuming is a compare-and-set from
+// `deploy-failed`, so of two concurrent requests only one dispatches; a
+// claim that resumes nothing cannot conflict. False if another request won.
+async function claimRedispatch(db, doc, entry, claim) {
+  const update = {
+    ...claim.changes,
+    ...(claim.applyRetry ? { 'gitops.applyRetry': claim.applyRetry } : {})
+  }
+
+  if (Object.keys(update).length === 0) {
+    return true
+  }
+
+  const { matchedCount } = await db
+    .collection('teamDeployments')
+    .updateOne(
+      claim.resumes
+        ? entryFilter(doc, entry)
+        : { _id: doc._id, 'deployments.id': entry.id },
+      { $set: entryFields(update) }
+    )
+
+  return matchedCount === 1
+}
+
+// Puts the entry back as it was after GitHub refused the dispatch, unless
+// something has moved it on since.
+async function releaseRedispatch(db, doc, entry, claim) {
+  const restore = {
+    ...(claim.resumes
+      ? { status: entry.status, failureReason: entry.failureReason }
+      : {}),
+    ...(claim.applyRetry
+      ? { 'gitops.applyRetry': entry.gitops.applyRetry ?? null }
+      : {})
+  }
+  const held = {
+    id: entry.id,
+    ...(claim.resumes ? { status: claim.changes.status } : {}),
+    ...(claim.applyRetry
+      ? { 'gitops.applyRetry.claimedAt': claim.applyRetry.claimedAt }
+      : {})
+  }
+
+  if (Object.keys(restore).length > 0) {
+    await db
+      .collection('teamDeployments')
+      .updateOne(
+        { _id: doc._id, deployments: { $elemMatch: held } },
+        { $set: entryFields(restore) }
+      )
+  }
+}
+
+// The deployment as the request that won a concurrent retry left it.
+async function currentView(db, doc, entry) {
+  const fresh = await db.collection('teamDeployments').findOne({ _id: doc._id })
+
+  return toDeploymentView(doc, findEntry(fresh, entry.id) ?? entry)
+}
+
 /**
  * Platform Admin retry or reconcile: dispatches a fresh tenants apply on
  * `main` for the deployment's environment (never a re-run), recorded as
  * `retry` or `reconcile`. A `deploy-failed` deployment goes back to
  * `deploying` and is polled again; the dispatched apply counts as its one
  * D14 retry. Retry is only for a failed deployment; reconcile is for any.
+ * The request claims the deployment atomically before dispatching, so of
+ * two concurrent requests to resume it one dispatches; the other dispatches
+ * and audits nothing and returns the deployment as the first left it.
  * @param {import('mongodb').Db} db
  * @param {{id: string, actorUserId: string, kind: 'retry'|'reconcile'}} params
  * @param {{registry?: object}} [deps]
@@ -529,6 +617,12 @@ export async function redispatchApply(
     )
   }
 
+  const claim = redispatchClaim(entry, kind)
+
+  if (!(await claimRedispatch(db, doc, entry, claim))) {
+    return currentView(db, doc, entry)
+  }
+
   let run
 
   try {
@@ -537,6 +631,7 @@ export async function redispatchApply(
       reason: `${kind} ${entry.operationId}`
     })
   } catch {
+    await releaseRedispatch(db, doc, entry, claim)
     await auditDeployment(db, entry, {
       action: `teamDeployment.${kind}`,
       actorUserId,
@@ -551,138 +646,32 @@ export async function redispatchApply(
     )
   }
 
-  const resumes = entry.status === DEPLOY_FAILED
-  const applyRetry = {
+  const applyRetry = claim.applyRetry && {
+    ...claim.applyRetry,
     dispatchedAt: new Date().toISOString(),
-    reason: kind,
     ...run
   }
-  const update = {
-    ...(resumes ? { status: 'deploying', failureReason: null } : {}),
-    ...(entry.gitops ? { 'gitops.applyRetry': applyRetry } : {})
-  }
 
-  if (Object.keys(update).length > 0) {
-    await db.collection('teamDeployments').updateOne(entryFilter(doc, entry), {
-      $set: Object.fromEntries(
-        Object.entries(update).map(([key, value]) => [
-          `deployments.$.${key}`,
-          value
-        ])
-      )
-    })
+  if (applyRetry) {
+    await settleGitopsStep(
+      db,
+      doc,
+      entry,
+      'applyRetry',
+      claim.applyRetry,
+      applyRetry
+    )
   }
 
   await auditDeployment(db, entry, {
     action: `teamDeployment.${kind}`,
     actorUserId,
-    reason: resumes ? 'deploy-failed -> deploying' : null
+    reason: claim.resumes ? 'deploy-failed -> deploying' : null
   })
 
   return toDeploymentView(doc, {
     ...entry,
-    ...(resumes ? { status: 'deploying', failureReason: null } : {}),
+    ...claim.changes,
     gitops: entry.gitops ? { ...entry.gitops, applyRetry } : null
   })
-}
-
-/**
- * Finds the active deployment entry for a team+model+environment, used by
- * `credential-service.js` to gate team-tier credential issuance. Does not
- * refresh status itself - the requester's poll of `getDeployment` above is
- * what keeps the persisted record up to date.
- * @param {import('mongodb').Db} db
- * @param {{teamId: string, modelSlug: string, environment: string}} params
- */
-export async function findActiveDeployment(
-  db,
-  { teamId, modelSlug, environment }
-) {
-  const doc = await db.collection('teamDeployments').findOne({
-    teamId,
-    environment,
-    deployments: { $elemMatch: { modelSlug, status: 'active' } }
-  })
-
-  return (
-    doc?.deployments?.find(
-      (deployment) =>
-        deployment.modelSlug === modelSlug && deployment.status === 'active'
-    ) ?? null
-  )
-}
-
-/**
- * Fixes a team's gateway credential type for an environment on first use, or
- * rejects a later request that asks for a different one
- * (`credential-type-fixed`) - design C's "one credential type per team per
- * environment", chosen once and changed only by a team-file edit.
- * @param {import('mongodb').Db} db
- * @param {{teamId: string, environment: string, credentialType: 'oauth'|'subscription-key'}} params
- * @returns {Promise<{credentialType: 'oauth'|'subscription-key', wasNewlyReserved: boolean}>}
- */
-export async function reserveCredentialType(
-  db,
-  { teamId, environment, credentialType }
-) {
-  const now = new Date().toISOString()
-
-  const reserved = await db.collection('teamDeployments').findOneAndUpdate(
-    { teamId, environment, 'gateway.credentialType': null },
-    {
-      $set: {
-        'gateway.credentialType': credentialType,
-        'oauthClient.enabled': credentialType === 'oauth',
-        updatedAt: now
-      }
-    },
-    { returnDocument: 'after' }
-  )
-
-  if (reserved) {
-    return { credentialType, wasNewlyReserved: true }
-  }
-
-  const doc = await db
-    .collection('teamDeployments')
-    .findOne({ teamId, environment })
-  const existingType = doc?.gateway?.credentialType
-
-  if (existingType && existingType !== credentialType) {
-    throw boomWithCode(
-      Boom.conflict,
-      'This team already uses a different credential type in this environment',
-      'credential-type-fixed'
-    )
-  }
-
-  return {
-    credentialType: existingType ?? credentialType,
-    wasNewlyReserved: false
-  }
-}
-
-/**
- * Undoes a reservation made by `reserveCredentialType` when the credential
- * issue that relied on it subsequently fails, so a retry (or another team
- * member) isn't permanently locked into a credential type that was never
- * actually issued. Only resets the gateway if it's still set to the type
- * being released, so it can't clobber a genuine concurrent reservation.
- * @param {import('mongodb').Db} db
- * @param {{teamId: string, environment: string, credentialType: 'oauth'|'subscription-key'}} params
- */
-export async function releaseCredentialTypeReservation(
-  db,
-  { teamId, environment, credentialType }
-) {
-  await db.collection('teamDeployments').updateOne(
-    { teamId, environment, 'gateway.credentialType': credentialType },
-    {
-      $set: {
-        'gateway.credentialType': null,
-        'oauthClient.enabled': false,
-        updatedAt: new Date().toISOString()
-      }
-    }
-  )
 }

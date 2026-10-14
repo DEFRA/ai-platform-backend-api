@@ -141,14 +141,15 @@ describe('#config tenant orchestrator and GitOps', () => {
     vi.unstubAllEnvs()
   })
 
-  test('defaults to the mock orchestrator, the DEFRA state repositories and a 30 second poll interval', async () => {
+  test('defaults to the mock orchestrator, the DEFRA state repositories, a 30 second poll interval and a 10 minute claim lease', async () => {
     const { config } = await loadConfig({})
 
     expect(config.get('tenantOrchestrator')).toBe('mock')
     expect(config.get('gitops')).toEqual({
       tenantsRepo: 'DEFRA/ai-platform-tenants',
       deploymentsRepo: 'DEFRA/ai-platform-deployments',
-      pollMinIntervalMs: 30000
+      pollMinIntervalMs: 30000,
+      claimLeaseMs: 600000
     })
     expect(config.get('aipEnvironments')).toEqual({})
   })

@@ -159,11 +159,13 @@ describe('team-deployment-service (GitOps)', () => {
     ).map((event) => [event.action, event.code, event.reason])
   }
 
+  // Polls as a member's page does, with no minimum interval so a test can
+  // poll the same operation again straight away.
   function poll(orchestrator, { deployment, teamId, userId }, logger) {
     return service.getDeployment(
       db,
       { id: deployment._id, teamId, userId },
-      { registry: githubRegistry(orchestrator), logger }
+      { registry: githubRegistry(orchestrator), logger, pollMinIntervalMs: 0 }
     )
   }
 
@@ -310,6 +312,18 @@ describe('team-deployment-service (GitOps)', () => {
   })
 
   describe('polling', () => {
+    test('finds nothing when a member asks after an unknown deployment', async () => {
+      const { teamId, userId } = await signedInMember()
+
+      expect(
+        await service.getDeployment(db, {
+          id: 'no-such-deployment',
+          teamId,
+          userId
+        })
+      ).toBeNull()
+    })
+
     test('stores the pull request and merge trail and audits each transition', async () => {
       const orchestrator = fakeOrchestrator()
       const submitted = await submitGithubDeployment(orchestrator)
@@ -531,6 +545,7 @@ describe('team-deployment-service (GitOps)', () => {
       })
       expect(view.status).toBe('deploying')
       expect(entry.gitops.applyRetry).toEqual({
+        claimedAt: expect.any(String),
         dispatchedAt: expect.any(String),
         reason: 'd14-retry',
         runId: 2002,
@@ -662,14 +677,26 @@ describe('team-deployment-service (GitOps)', () => {
       )
 
       const view = await poll(orchestrator, submitted, logger)
+      const { revert } = (await storedEntry(submitted.deployment._id)).gitops
 
       expect(view.status).toBe('deploying')
-      expect(
-        (await storedEntry(submitted.deployment._id)).gitops.revert
-      ).toBeNull()
+      // Released for the next poll, which submits the same operation.
+      expect(revert).toEqual({
+        operationId: expect.any(String),
+        requestedAt: expect.any(String),
+        action: null,
+        claimedAt: null
+      })
       expect(logger.error).toHaveBeenCalledWith(
         expect.objectContaining({ operationId: view.operationId }),
         expect.stringContaining('revert could not be submitted')
+      )
+
+      orchestrator.getPreviousDocument.mockResolvedValue({ document: null })
+      await poll(orchestrator, submitted, logger)
+
+      expect(orchestrator.requestDeployment.mock.calls.at(-1)[0]).toMatchObject(
+        { operationId: revert.operationId, action: 'remove' }
       )
     })
 
@@ -733,7 +760,18 @@ describe('team-deployment-service (GitOps)', () => {
       expect(view.status).toBe('deploying')
       expect(
         (await storedEntry(submitted.deployment._id)).gitops.applyRetry
-      ).toBeNull()
+      ).toEqual({ claimedAt: null, reason: 'd14-retry' })
+
+      orchestrator.requestApply.mockResolvedValue({
+        runId: 2002,
+        runUrl: APPLY_RUN_URL
+      })
+      await poll(orchestrator, submitted, fakeLogger())
+
+      expect(orchestrator.requestApply).toHaveBeenCalledTimes(2)
+      expect(
+        (await storedEntry(submitted.deployment._id)).gitops.applyRetry
+      ).toMatchObject({ dispatchedAt: expect.any(String), runId: 2002 })
     })
   })
 
@@ -813,6 +851,81 @@ describe('team-deployment-service (GitOps)', () => {
           action: 'teamDeployment.retry'
         })
       ).toMatchObject({ actorUserId: adminId, outcome: 'success' })
+    })
+
+    test('dispatches one apply when two retries race, and audits only that one', async () => {
+      const orchestrator = fakeOrchestrator()
+      const { deployment } = await submitGithubDeployment(orchestrator)
+
+      await setEntry(deployment._id, {
+        status: 'deploy-failed',
+        failureReason: 'The apply workflow failed'
+      })
+
+      const views = await Promise.all(
+        [1, 2].map(() =>
+          service.redispatchApply(
+            db,
+            { id: deployment._id, actorUserId: adminId, kind: 'retry' },
+            { registry: githubRegistry(orchestrator) }
+          )
+        )
+      )
+
+      expect(orchestrator.requestApply).toHaveBeenCalledTimes(1)
+      expect(views.map((view) => view.status)).toEqual([
+        'deploying',
+        'deploying'
+      ])
+      expect(
+        await db.collection('auditEvents').countDocuments({
+          resourceId: deployment._id,
+          action: 'teamDeployment.retry'
+        })
+      ).toBe(1)
+    })
+
+    test('puts a failed deployment back when GitHub refuses its retry', async () => {
+      const orchestrator = fakeOrchestrator({
+        requestApply: vi.fn(async () => {
+          throw new Error('GitHub unavailable')
+        })
+      })
+      const { deployment } = await submitGithubDeployment(orchestrator)
+
+      await setEntry(deployment._id, {
+        status: 'deploy-failed',
+        failureReason: 'The apply workflow failed'
+      })
+
+      await expect(
+        service.redispatchApply(
+          db,
+          { id: deployment._id, actorUserId: adminId, kind: 'retry' },
+          { registry: githubRegistry(orchestrator) }
+        )
+      ).rejects.toMatchObject({ data: { code: 'upstream-unavailable' } })
+      expect(await storedEntry(deployment._id)).toMatchObject({
+        status: 'deploy-failed',
+        failureReason: 'The apply workflow failed',
+        gitops: expect.objectContaining({ applyRetry: null })
+      })
+    })
+
+    test('reconciles a deployment with no GitOps trail without claiming anything', async () => {
+      const orchestrator = fakeOrchestrator()
+      const { deployment } = await submitGithubDeployment(orchestrator)
+
+      await setEntry(deployment._id, { status: 'active', gitops: null })
+
+      const view = await service.redispatchApply(
+        db,
+        { id: deployment._id, actorUserId: adminId, kind: 'reconcile' },
+        { registry: githubRegistry(orchestrator) }
+      )
+
+      expect(orchestrator.requestApply).toHaveBeenCalledTimes(1)
+      expect(view).toMatchObject({ status: 'active', links: {} })
     })
 
     test('reconciles any deployment without changing its status', async () => {

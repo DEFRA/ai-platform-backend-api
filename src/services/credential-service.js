@@ -14,7 +14,7 @@ import {
   findActiveDeployment,
   reserveCredentialType,
   releaseCredentialTypeReservation
-} from '#/services/team-deployment-service.js'
+} from '#/services/team-deployment-gateway.js'
 import { getMemberRole } from '#/services/team-service.js'
 
 /**

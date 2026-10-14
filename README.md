@@ -273,7 +273,9 @@ GitOps states on a timer. `github` follows the
 whole canonical document (never committing), then polls the submit run, the `op/{operationId}` pull
 request and `validate-desired-state / validate`, the GitHub Deployment and the apply's run report, and confirms the
 team's resources through ARM (`PROVISIONING_MODE=live`) before `active`. An apply failure gets one
-fresh apply, then a revert or an engineer alert (D14); a failed check gets `abandon`. Platform Admins
+fresh apply, then a revert or an engineer alert (D14); a failed check gets `abandon`. Reverts and
+abandons are polled to their end; one that fails is audited and logged for an engineer, never retried.
+Platform Admins
 (users whose `roles` include `platform-admin`; nothing assigns it yet) can
 `POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`. Until the WS6 desired-state builder
 exists, `github` answers new requests with `501 desired-state-unavailable`.
@@ -284,6 +286,7 @@ exists, `github` answers new requests with `501 desired-state-unavailable`.
 | `GITOPS_TENANTS_REPO`         | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                        |
 | `GITOPS_DEPLOYMENTS_REPO`     | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                   |
 | `GITOPS_POLL_MIN_INTERVAL_MS` | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                        |
+| `GITOPS_CLAIM_LEASE_MS`       | `600000`                        | How long a claimed retry, revert or abandon waits for its dispatch before another poll may claim it again                                           |
 | `AIP_ENVIRONMENTS`            | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group                       |
 
 ```json

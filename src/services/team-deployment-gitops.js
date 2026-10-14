@@ -1,7 +1,6 @@
 import { isDeepStrictEqual } from 'node:util'
 
-import { ObjectId } from 'mongodb'
-
+import { config } from '#/config.js'
 import {
   tenantOrchestratorRegistry,
   GITHUB_ORCHESTRATOR
@@ -9,12 +8,17 @@ import {
 import {
   CHECKS_FAILED,
   DEPLOY_FAILED,
-  SYSTEM_ACTOR,
   TERMINAL_FAILURE_STATUSES,
   auditDeployment,
   entryFilter,
   findEntry
 } from '#/services/team-deployment-entries.js'
+import {
+  abandonOperation,
+  applyFailurePolicy,
+  claimableQuery,
+  needsAbandon
+} from '#/services/team-deployment-gitops-steps.js'
 
 /**
  * GitOps states an operation can still move on from - the only ones polled.
@@ -28,15 +32,20 @@ export const NON_TERMINAL_STATUSES = [
   'verified'
 ]
 
-const D14_FAILURE_REASONS = {
-  reverted:
-    'The apply failed again after a fresh retry, so the change is being reverted',
-  unattributed:
-    'The apply failed again after a fresh retry and platform engineers have been alerted'
-}
+// The operations the backend submits after an entry's own - a D14 revert,
+// an abandon - each followed to its end through the same GitOps states.
+const FOLLOW_UPS = ['revert', 'abandon']
 
-function slugOf(path) {
-  return /\/([^/]+)\.json$/.exec(path ?? '')?.[1] ?? null
+const REVERT_FAILED_REASON =
+  'The apply failed again after a fresh retry and reverting the change failed too, so platform engineers have been alerted'
+
+function settingsOf({
+  registry = tenantOrchestratorRegistry,
+  logger,
+  pollMinIntervalMs = config.get('gitops.pollMinIntervalMs'),
+  claimLeaseMs = config.get('gitops.claimLeaseMs')
+}) {
+  return { registry, logger, pollMinIntervalMs, claimLeaseMs }
 }
 
 // `fields` as a `$set` on the matched entry, each key under `prefix`.
@@ -92,34 +101,16 @@ function gitopsChangesOf(result, gitops) {
   )
 }
 
-async function setGitopsStep(db, doc, entry, step, value) {
-  await db
-    .collection('teamDeployments')
-    .updateOne(
-      { _id: doc._id, 'deployments.id': entry.id },
-      { $set: { [`deployments.$.gitops.${step}`]: value } }
-    )
+// A follow-up dispatched and not yet at a terminal state.
+function isTracked(followUp) {
+  return (
+    Boolean(followUp?.dispatchedAt) &&
+    NON_TERMINAL_STATUSES.includes(followUp.status)
+  )
 }
 
-// Claims a one-off GitOps side effect (retry, revert, abandon) for this
-// entry, so concurrent polls - a member's page and the sweep, or two
-// instances - dispatch it once. Returns false if another poll got there.
-async function claimGitopsStep(db, doc, entry, step, value) {
-  const { modifiedCount } = await db.collection('teamDeployments').updateOne(
-    {
-      _id: doc._id,
-      deployments: {
-        $elemMatch: {
-          id: entry.id,
-          status: entry.status,
-          [`gitops.${step}`]: null
-        }
-      }
-    },
-    { $set: { [`deployments.$.gitops.${step}`]: value } }
-  )
-
-  return modifiedCount === 1
+function trackedFollowUp(entry) {
+  return FOLLOW_UPS.find((step) => isTracked(entry.gitops?.[step]))
 }
 
 // What another, faster poll stored for the entry.
@@ -127,6 +118,40 @@ async function storedEntry(db, doc, entry) {
   const fresh = await db.collection('teamDeployments').findOne({ _id: doc._id })
 
   return findEntry(fresh, entry.id) ?? entry
+}
+
+// Reserves this poll's window before anything reads GitHub or ARM: moves
+// `lastPolledAt` under `prefix` to now in one atomic update, unless another
+// poll - a member's page, the sweep or another instance - did so within the
+// minimum interval. Activation (`verified` -> `active`) reads nothing, so it
+// needs no window.
+async function reservePoll(db, doc, entry, { prefix, status, intervalMs }) {
+  if (status === 'verified') {
+    return true
+  }
+
+  const field = `${prefix}lastPolledAt`
+  const { matchedCount } = await db.collection('teamDeployments').updateOne(
+    {
+      _id: doc._id,
+      deployments: {
+        $elemMatch: {
+          id: entry.id,
+          $or: [
+            { [field]: null },
+            {
+              [field]: {
+                $lte: new Date(Date.now() - intervalMs).toISOString()
+              }
+            }
+          ]
+        }
+      }
+    },
+    { $set: { [`deployments.$.${field}`]: new Date().toISOString() } }
+  )
+
+  return matchedCount === 1
 }
 
 async function auditTransition(db, entry, status) {
@@ -185,226 +210,147 @@ async function persistStatus(db, doc, entry, result) {
   }
 }
 
-/**
- * D14: submits the previous revision of the team file as a system
- * operation (`write` of the old document with a new revision, or `remove`
- * when the file is new). Returns false if it could not be submitted, so a
- * later poll tries again.
- */
-async function submitRevert(
-  db,
-  doc,
-  entry,
-  mergeSha,
-  { orchestrator, logger }
-) {
-  const operationId = new ObjectId().toString()
-  const requestedAt = new Date().toISOString()
-  const claim = { operationId, requestedAt, action: null }
+// The follow-up as an operation of its own, for the orchestrator to read
+// through the same GitOps states.
+function followUpOperation(doc, entry, step) {
+  const followUp = entry.gitops[step]
 
-  if (!(await claimGitopsStep(db, doc, entry, 'revert', claim))) {
-    return false
-  }
-
-  try {
-    const { path, revision = 0 } = entry.gitops
-    const { document: previous } = await orchestrator.getPreviousDocument({
-      path,
-      mergeSha
-    })
-    const action = previous ? 'write' : 'remove'
-    const submitted = await orchestrator.requestDeployment({
-      environment: doc.environment,
-      path,
-      document: previous
-        ? {
-            ...previous,
-            revision: revision + 1,
-            operationId,
-            updatedAt: requestedAt,
-            updatedBy: SYSTEM_ACTOR
-          }
-        : null,
-      operationId,
-      requestedBy: SYSTEM_ACTOR,
-      expectedRevision: revision,
-      action
-    })
-
-    await setGitopsStep(db, doc, entry, 'revert', {
-      ...claim,
-      action,
-      submitRunId: submitted.submitRunId,
-      submitRunUrl: submitted.submitRunUrl
-    })
-    await auditDeployment(db, entry, {
-      action: 'teamDeployment.revert',
-      code: action,
-      reason: `revert operation ${operationId}`
-    })
-
-    return true
-  } catch (error) {
-    await setGitopsStep(db, doc, entry, 'revert', null)
-    logger?.error(
-      { code: error.code ?? null, operationId: entry.operationId },
-      'D14 revert could not be submitted, retrying on the next poll'
-    )
-
-    return false
+  return {
+    operationId: followUp.operationId ?? entry.operationId,
+    status: followUp.status,
+    environment: doc.environment,
+    createdAt: followUp.dispatchedAt,
+    gitops: { ...followUp, path: entry.gitops.path }
   }
 }
 
-/**
- * The D14 failure policy (design C), applied when an apply that includes
- * this operation has failed: dispatch one fresh apply, never a re-run; if
- * the apply after it fails too, revert this team's change when the run
- * report attributes the failure to it, or alert engineers when nothing
- * could be attributed. A failure attributed only to other teams waits for
- * their revert. Returns the status to persist, or null when another poll
- * is already handling it.
- */
-async function applyFailurePolicy(db, doc, entry, result, deps) {
-  const { orchestrator, logger } = deps
-  const retry = entry.gitops.applyRetry
-  const waiting = { ...result, status: 'deploying', failure: null }
+// A follow-up's end is audited; a failure is also logged for an engineer
+// and never retried. Logs carry operation IDs only, no personal data.
+async function reportFollowUpEnd(db, doc, entry, step, logger) {
+  const { operationId, status } = followUpOperation(doc, entry, step)
+  const failed = TERMINAL_FAILURE_STATUSES.has(status)
 
-  if (!retry) {
-    const dispatchedAt = new Date().toISOString()
-    const claim = { dispatchedAt, reason: 'd14-retry' }
+  await auditDeployment(db, entry, {
+    action: `teamDeployment.${step}${failed ? 'Failed' : 'Completed'}`,
+    outcome: failed ? 'failure' : 'success',
+    code: status,
+    reason: `${step} operation ${operationId}`
+  })
 
-    if (!(await claimGitopsStep(db, doc, entry, 'applyRetry', claim))) {
-      return null
-    }
-
-    try {
-      const run = await orchestrator.requestApply({
+  if (failed) {
+    logger?.error(
+      {
+        operationId: entry.operationId,
+        followUpOperationId: operationId,
         environment: doc.environment,
-        reason: `retry ${entry.operationId}`
-      })
-
-      await setGitopsStep(db, doc, entry, 'applyRetry', { ...claim, ...run })
-      await auditDeployment(db, entry, {
-        action: 'teamDeployment.retry',
-        code: 'd14-retry'
-      })
-    } catch (error) {
-      await setGitopsStep(db, doc, entry, 'applyRetry', null)
-      logger?.error(
-        { code: error.code ?? null, operationId: entry.operationId },
-        'D14 retry apply could not be dispatched, retrying on the next poll'
-      )
-    }
-
-    return waiting
-  }
-
-  // The failure GitHub reports may still be the one before the retry.
-  const failedAfterRetry =
-    Date.parse(result.failure.observedAt) > Date.parse(retry.dispatchedAt)
-
-  if (!failedAfterRetry) {
-    return waiting
-  }
-
-  const { failingTeams, unattributedFailure } = result.failure
-
-  if (failingTeams.includes(slugOf(entry.gitops.path))) {
-    const mergeSha = result.mergeSha ?? entry.gitops.mergeSha
-    const reverted = await submitRevert(db, doc, entry, mergeSha, deps)
-
-    return reverted
-      ? { ...result, failureReason: D14_FAILURE_REASONS.reverted }
-      : { ...waiting, status: entry.status }
-  }
-
-  if (unattributedFailure) {
-    logger?.error(
-      { operationId: entry.operationId, environment: doc.environment },
-      'Unattributed tenants apply failure needs a platform engineer'
-    )
-    await auditDeployment(db, entry, {
-      action: 'teamDeployment.deployFailed',
-      outcome: 'failure',
-      code: 'unattributed-failure'
-    })
-
-    return { ...result, failureReason: D14_FAILURE_REASONS.unattributed }
-  }
-
-  return waiting
-}
-
-/**
- * Closes a failed operation's pull request and deletes its branch through
- * `submit`'s `abandon`, releasing the team file (R7). Clears its claim on
- * failure so the sweep tries again.
- */
-async function abandonOperation(db, doc, entry, { orchestrator, logger }) {
-  const claim = { requestedAt: new Date().toISOString() }
-
-  if (!(await claimGitopsStep(db, doc, entry, 'abandon', claim))) {
-    return
-  }
-
-  try {
-    const submitted = await orchestrator.requestDeployment({
-      environment: doc.environment,
-      path: entry.gitops.path,
-      document: null,
-      operationId: entry.operationId,
-      requestedBy: SYSTEM_ACTOR,
-      expectedRevision: entry.gitops.expectedRevision ?? 0,
-      action: 'abandon'
-    })
-
-    await setGitopsStep(db, doc, entry, 'abandon', {
-      ...claim,
-      submitRunId: submitted.submitRunId,
-      submitRunUrl: submitted.submitRunUrl
-    })
-    await auditDeployment(db, entry, { action: 'teamDeployment.abandon' })
-  } catch (error) {
-    await setGitopsStep(db, doc, entry, 'abandon', null)
-    logger?.error(
-      { code: error.code ?? null, operationId: entry.operationId },
-      'Abandon could not be submitted, retrying on the next sweep'
+        status
+      },
+      `The ${step} ended ${status} and needs a platform engineer`
     )
   }
 }
 
-function needsAbandon(entry) {
-  return (
-    entry.status === CHECKS_FAILED &&
-    Boolean(entry.gitops?.pullRequestNumber) &&
-    !entry.gitops.abandon
-  )
-}
+// Persists a follow-up's status and trail with compare-and-set on the
+// status read. A failed revert leaves this team's failed change live, so the
+// entry's failure reason says so.
+async function persistFollowUp(db, doc, entry, step, result, logger) {
+  const followUp = entry.gitops[step]
+  const changes = gitopsChangesOf(result, followUp)
 
-/**
- * Advances one deployment entry's persisted status by asking the
- * orchestrator that submitted it for its current state, if it hasn't
- * already reached a terminal/active state. A GitHub hiccup keeps the last
- * known status rather than failing the caller.
- * @param {import('mongodb').Db} db
- * @param {object} doc
- * @param {object} entry
- * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger}} [deps]
- */
-export async function refreshEntryStatus(
-  db,
-  doc,
-  entry,
-  { registry = tenantOrchestratorRegistry, logger } = {}
-) {
-  if (
-    entry.status === 'active' ||
-    TERMINAL_FAILURE_STATUSES.has(entry.status)
-  ) {
+  if (result.status !== followUp.status) {
+    changes.status = result.status
+  }
+
+  const entryChanges =
+    step === 'revert' && TERMINAL_FAILURE_STATUSES.has(changes.status)
+      ? { failureReason: REVERT_FAILED_REASON }
+      : {}
+
+  if (Object.keys(changes).length === 0) {
     return entry
   }
 
+  const { matchedCount } = await db.collection('teamDeployments').updateOne(
+    {
+      _id: doc._id,
+      deployments: {
+        $elemMatch: { id: entry.id, [`gitops.${step}.status`]: followUp.status }
+      }
+    },
+    {
+      $set: {
+        ...setFields(`gitops.${step}.`, changes),
+        ...setFields('', entryChanges)
+      }
+    }
+  )
+
+  if (matchedCount === 0) {
+    return storedEntry(db, doc, entry)
+  }
+
+  const updated = {
+    ...entry,
+    ...entryChanges,
+    gitops: { ...entry.gitops, [step]: { ...followUp, ...changes } }
+  }
+
+  if (changes.status && !isTracked(updated.gitops[step])) {
+    await reportFollowUpEnd(db, doc, updated, step, logger)
+  }
+
+  return updated
+}
+
+// Polls a dispatched revert or abandon through its own submit run, pull
+// request, merge and apply until it reaches a terminal state.
+async function refreshFollowUp(db, doc, entry, step, settings) {
+  const { registry, logger, pollMinIntervalMs } = settings
+  const operation = followUpOperation(doc, entry, step)
+  const reserved = await reservePoll(db, doc, entry, {
+    prefix: `gitops.${step}.`,
+    status: operation.status,
+    intervalMs: pollMinIntervalMs
+  })
+
+  if (!reserved) {
+    return storedEntry(db, doc, entry)
+  }
+
+  let result
+
+  try {
+    result = await registry.forEntry(entry).getDeploymentStatus(operation)
+  } catch (error) {
+    logger?.warn(
+      { code: error.code ?? null, operationId: entry.operationId },
+      `The ${step} status poll failed, keeping its last known status`
+    )
+
+    return entry
+  }
+
+  return persistFollowUp(db, doc, entry, step, result, logger)
+}
+
+// Polls the entry's own operation, applying the D14 policy to a failed
+// apply and abandoning a pull request that failed its checks.
+async function refreshOperation(db, doc, entry, settings) {
+  const { registry, logger, pollMinIntervalMs, claimLeaseMs } = settings
+  const reserved =
+    !entry.gitops ||
+    (await reservePoll(db, doc, entry, {
+      prefix: 'gitops.',
+      status: entry.status,
+      intervalMs: pollMinIntervalMs
+    }))
+
+  if (!reserved) {
+    return storedEntry(db, doc, entry)
+  }
+
   const orchestrator = registry.forEntry(entry)
+  const deps = { orchestrator, logger, claimLeaseMs }
   let result
 
   try {
@@ -422,10 +368,7 @@ export async function refreshEntryStatus(
   }
 
   if (result.status === DEPLOY_FAILED && result.failure && entry.gitops) {
-    result = await applyFailurePolicy(db, doc, entry, result, {
-      orchestrator,
-      logger
-    })
+    result = await applyFailurePolicy(db, doc, entry, result, deps)
 
     if (!result) {
       return entry
@@ -434,37 +377,71 @@ export async function refreshEntryStatus(
 
   const persisted = await persistStatus(db, doc, entry, result)
 
-  if (persisted.transitioned && needsAbandon(persisted.entry)) {
-    await abandonOperation(db, doc, persisted.entry, { orchestrator, logger })
+  if (persisted.transitioned && needsAbandon(persisted.entry, claimLeaseMs)) {
+    await abandonOperation(db, doc, persisted.entry, deps)
   }
 
   return persisted.entry
 }
 
-// One GitHub-mode entry's turn in the sweep: retry its abandon, or poll it
-// while it is still in progress. Returns what it counted towards.
-async function sweepEntry(db, doc, entry, deps) {
-  const { registry = tenantOrchestratorRegistry, logger } = deps
+/**
+ * Advances one deployment entry's persisted status by asking the
+ * orchestrator that submitted it for its current state, if it hasn't
+ * already reached a terminal/active state - then any revert or abandon it
+ * led to, until that ends. Each GitHub-mode poll first reserves its window
+ * in Mongo, so concurrent polls read GitHub once per minimum interval. A
+ * GitHub hiccup keeps the last known status rather than failing the caller.
+ * @param {import('mongodb').Db} db
+ * @param {object} doc
+ * @param {object} entry
+ * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number}} [deps]
+ */
+export async function refreshEntryStatus(db, doc, entry, deps = {}) {
+  const settings = settingsOf(deps)
 
-  if (needsAbandon(entry)) {
+  if (
+    entry.status === 'active' ||
+    TERMINAL_FAILURE_STATUSES.has(entry.status)
+  ) {
+    const step = trackedFollowUp(entry)
+
+    return step ? refreshFollowUp(db, doc, entry, step, settings) : entry
+  }
+
+  return refreshOperation(db, doc, entry, settings)
+}
+
+const NOTHING_SWEPT = { polled: 0, transitioned: 0, abandoned: 0 }
+
+// One GitHub-mode entry's turn in the sweep: claim its abandon, or poll it
+// (or its revert or abandon) while in progress. Returns what it counted
+// towards.
+async function sweepEntry(db, doc, entry, settings) {
+  const { registry, logger, claimLeaseMs } = settings
+
+  if (needsAbandon(entry, claimLeaseMs)) {
     await abandonOperation(db, doc, entry, {
       orchestrator: registry.forEntry(entry),
-      logger
+      logger,
+      claimLeaseMs
     })
 
-    return { polled: 0, transitioned: 0, abandoned: 1 }
+    return { ...NOTHING_SWEPT, abandoned: 1 }
   }
 
-  if (!NON_TERMINAL_STATUSES.includes(entry.status)) {
-    return { polled: 0, transitioned: 0, abandoned: 0 }
+  if (
+    !NON_TERMINAL_STATUSES.includes(entry.status) &&
+    !trackedFollowUp(entry)
+  ) {
+    return NOTHING_SWEPT
   }
 
-  const refreshed = await refreshEntryStatus(db, doc, entry, deps)
+  const refreshed = await refreshEntryStatus(db, doc, entry, settings)
 
   return {
+    ...NOTHING_SWEPT,
     polled: 1,
-    transitioned: refreshed.status === entry.status ? 0 : 1,
-    abandoned: 0
+    transitioned: refreshed.status === entry.status ? 0 : 1
   }
 }
 
@@ -472,13 +449,15 @@ async function sweepEntry(db, doc, entry, deps) {
  * The maintenance sweep for GitHub-mode operations: polls every
  * non-terminal one (R11 - terminal operations are never polled; each poll
  * still honours the per-operation minimum interval), writing and auditing
- * each transition, and retries an `abandon` that could not be submitted.
- * Operations nobody is watching still progress and reach `active`.
+ * each transition, follows every dispatched revert and abandon to its end,
+ * and claims an `abandon` nobody holds. Operations nobody is watching still
+ * progress and reach `active`.
  * @param {import('mongodb').Db} db
- * @param {{registry?: object, logger?: import('pino').Logger}} [deps]
+ * @param {{registry?: object, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number}} [deps]
  * @returns {Promise<{polled: number, transitioned: number, abandoned: number}>}
  */
 export async function sweepGitopsDeployments(db, deps = {}) {
+  const settings = settingsOf(deps)
   const docs = await db
     .collection('teamDeployments')
     .find({
@@ -490,22 +469,26 @@ export async function sweepGitopsDeployments(db, deps = {}) {
             {
               status: CHECKS_FAILED,
               'gitops.pullRequestNumber': { $ne: null },
-              'gitops.abandon': null
-            }
+              ...claimableQuery('abandon', settings.claimLeaseMs)
+            },
+            ...FOLLOW_UPS.map((step) => ({
+              [`gitops.${step}.dispatchedAt`]: { $ne: null },
+              [`gitops.${step}.status`]: { $in: NON_TERMINAL_STATUSES }
+            }))
           ]
         }
       }
     })
     .toArray()
 
-  const totals = { polled: 0, transitioned: 0, abandoned: 0 }
+  const totals = { ...NOTHING_SWEPT }
 
   // Sequential by design: each step may write back to the same document,
   // and entries share one document per team+environment.
   for (const doc of docs) {
     for (const entry of doc.deployments) {
       if (entry.orchestrator === GITHUB_ORCHESTRATOR) {
-        const swept = await sweepEntry(db, doc, entry, deps)
+        const swept = await sweepEntry(db, doc, entry, settings)
 
         totals.polled += swept.polled
         totals.transitioned += swept.transitioned

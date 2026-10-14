@@ -111,7 +111,7 @@ function replyWithPulls(pulls) {
 function replyWithDeployments(deployments) {
   return nock(GITHUB_API)
     .get(`${TENANTS}/deployments`)
-    .query({ environment: 'infradev', per_page: 30 })
+    .query({ environment: 'infradev', per_page: 100, page: 1 })
     .reply(200, deployments)
 }
 
@@ -419,6 +419,42 @@ describe('#createGithubTenantOrchestrator', () => {
       expect(status).toMatchObject({ status: 'requested', links: {} })
     })
 
+    test.each([
+      ['in_progress', null, 'requested'],
+      ['completed', 'success', 'active'],
+      ['completed', 'failure', 'checks-failed']
+    ])(
+      'follows an abandon by its submit run alone: %s %s is %s',
+      async (runStatus, conclusion, expected) => {
+        nock(GITHUB_API)
+          .get(`${TENANTS}/actions/runs/1001`)
+          .reply(200, github.workflowRun({ status: runStatus, conclusion }))
+
+        const status = await createOrchestrator().getDeploymentStatus(
+          entry({ action: 'abandon' })
+        )
+
+        expect(status.status).toBe(expected)
+      }
+    )
+
+    test('says why an abandon failed', async () => {
+      nock(GITHUB_API)
+        .get(`${TENANTS}/actions/runs/1001`)
+        .reply(
+          200,
+          github.workflowRun({ status: 'completed', conclusion: 'failure' })
+        )
+
+      const status = await createOrchestrator().getDeploymentStatus(
+        entry({ action: 'abandon' })
+      )
+
+      expect(status.failureReason).toBe(
+        'The submit workflow could not abandon the pull request'
+      )
+    })
+
     test('is pr-raised while the pull request is open and validate has not failed', async () => {
       replyWithPulls([github.pullRequest()])
       nock(GITHUB_API)
@@ -548,6 +584,55 @@ describe('#createGithubTenantOrchestrator', () => {
         applyRunId: 2002,
         resources: github.runReport().outputs.teams.value.alpha
       })
+    })
+
+    // A full page of later Deployments, none including the merge.
+    const laterDeployments = Array.from({ length: 100 }, (_, index) =>
+      github.deployment({
+        id: 1000 + index,
+        sha: 'later-sha',
+        created_at: '2026-10-13T11:00:00Z'
+      })
+    )
+
+    test('pages back past later applies to find the operation’s own when it is polled late', async () => {
+      replyWithDeployments(laterDeployments)
+      nock(GITHUB_API)
+        .get(`${TENANTS}/compare/merge-sha...later-sha`)
+        .query({ per_page: 1 })
+        .reply(200, github.comparison('diverged'))
+      nock(GITHUB_API)
+        .get(`${TENANTS}/deployments`)
+        .query({ environment: 'infradev', per_page: 100, page: 2 })
+        .reply(200, [
+          github.deployment(),
+          github.deployment({ id: 400, created_at: '2026-10-13T09:00:00Z' })
+        ])
+      replyWithStatus(501, github.deploymentStatus({ state: 'success' }))
+      replyWithRunReport(2002, github.runReport())
+
+      const status =
+        await createOrchestrator().getDeploymentStatus(mergedEntry())
+
+      expect(status).toMatchObject({ status: 'deployed', applyRunId: 2002 })
+      expect(nock.isDone()).toBe(true)
+    })
+
+    test('stops paging at a Deployment created before the merge', async () => {
+      replyWithDeployments([
+        ...laterDeployments.slice(1),
+        github.deployment({ id: 400, created_at: '2026-10-13T09:00:00Z' })
+      ])
+      nock(GITHUB_API)
+        .get(`${TENANTS}/compare/merge-sha...later-sha`)
+        .query({ per_page: 1 })
+        .reply(200, github.comparison('diverged'))
+
+      const status =
+        await createOrchestrator().getDeploymentStatus(mergedEntry())
+
+      // nock refuses an unexpected page 2, which would fail the poll.
+      expect(status.status).toBe('merged')
     })
 
     test.each([
@@ -822,6 +907,31 @@ describe('#createGithubTenantOrchestrator with GitHub App credentials', () => {
       now: () => NOW
     })
   }
+
+  test('reads the run from the dispatch’s 200 under the pinned API version, which needs no return_run_details', async () => {
+    const orchestrator = await loadOrchestrator()
+    let body
+
+    nock(GITHUB_API)
+      .post(`${TENANTS}/actions/workflows/submit.yml/dispatches`, (sent) => {
+        body = sent
+        return true
+      })
+      .matchHeader('x-github-api-version', '2026-03-10')
+      .reply(200, github.dispatchedRun())
+
+    const submitted = await orchestrator.requestDeployment(deploymentRequest())
+
+    expect(submitted).toMatchObject({
+      submitRunId: 1001,
+      submitRunUrl:
+        'https://github.com/DEFRA/ai-platform-tenants/actions/runs/1001'
+    })
+    expect(Object.keys(body).sort((a, b) => a.localeCompare(b))).toEqual([
+      'inputs',
+      'ref'
+    ])
+  })
 
   test('dispatches with Actions write on the tenants repository only, and reads with read-only status permissions', async () => {
     const orchestrator = await loadOrchestrator()
