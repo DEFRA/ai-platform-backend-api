@@ -19,6 +19,7 @@ Core delivery platform Node.js Backend Template.
   - [MongoDB Locks](#mongodb-locks)
   - [Schema backfills](#schema-backfills)
   - [Proxy](#proxy)
+  - [GitOps tenant orchestrator](#gitops-tenant-orchestrator)
   - [Testing against live Azure resources (sandbox)](#testing-against-live-azure-resources-sandbox)
 - [Docker](#docker)
   - [Development image](#development-image)
@@ -262,6 +263,46 @@ APIM, not a new gateway. A genuinely new gateway needs its issuer and vault adap
 `issuerFactories` and `vaultFactories` in `credential-issuer-registry.js` /
 `credential-vault-registry.js`, and its required config keys added to
 `REQUIRED_CONFIG_BY_GATEWAY` in `config.js`. Nothing in the services changes.
+
+### GitOps tenant orchestrator
+
+Team deployments go through the `TenantOrchestrator` port
+([`src/adapters/tenant-orchestrator.js`](src/adapters/tenant-orchestrator.js)). `mock` walks the
+GitOps states on a timer. `github` follows the
+[GitOps contract](../ai-platform-infra/docs/gitops-contract.md): it dispatches `submit.yml` with the
+whole canonical document (never committing), then polls the submit run, the `op/{operationId}` pull
+request and `validate-desired-state / validate`, the GitHub Deployment and the apply's run report, and confirms the
+team's resources through ARM (`PROVISIONING_MODE=live`) before `active`. An apply failure gets one
+fresh apply, then a revert or an engineer alert (D14); a failed check gets `abandon`. Platform Admins
+(users whose `roles` include `platform-admin`; nothing assigns it yet) can
+`POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`. Until the WS6 desired-state builder
+exists, `github` answers new requests with `501 desired-state-unavailable`.
+
+| Variable                      | Default                         | Purpose                                                                                                                                             |
+| :---------------------------- | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TENANT_ORCHESTRATOR`         | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`) |
+| `GITOPS_TENANTS_REPO`         | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                        |
+| `GITOPS_DEPLOYMENTS_REPO`     | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                   |
+| `GITOPS_POLL_MIN_INTERVAL_MS` | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                        |
+| `AIP_ENVIRONMENTS`            | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group                       |
+
+```json
+{
+  "infradev": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-placeholder",
+    "apimName": "apim-placeholder",
+    "foundryAccounts": ["aif-placeholder"],
+    "tenantsVault": "kv-placeholder"
+  }
+}
+```
+
+Every GitHub request sends `X-GitHub-Api-Version: 2026-03-10`, and each use gets its own
+installation token: Actions write on one repository to dispatch, and Actions, Checks, Contents,
+Deployments and Pull requests read to poll. Polls are conditional on ETags, at most one per
+operation per interval, back off on rate limits and skip finished operations; the maintenance
+scheduler also sweeps operations nobody is watching.
 
 ### Testing against live Azure resources (sandbox)
 

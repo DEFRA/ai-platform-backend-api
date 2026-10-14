@@ -366,7 +366,34 @@ describe('#backfillRegistry', () => {
       expect(credentialsGateway).toBeGreaterThan(credentialsFlat)
       expect(modelsHosting).toBeGreaterThan(credentialsGateway)
       expect(modelsHosting).toBeGreaterThan(modelsFlat)
-      expect(ids.at(-1)).toBe('2026-10-08-models-hosting-gateway')
+    })
+  })
+
+  describe('2026-10-13-team-deployments-orchestrator', () => {
+    test('marks only entries with no orchestrator as mock', async () => {
+      const { insertedId } = await db.collection('teamDeployments').insertOne({
+        teamId: 'pre-orchestrator-team',
+        environment: 'sandbox',
+        deployments: [
+          { id: 'legacy-entry', status: 'active' },
+          { id: 'github-entry', status: 'requested', orchestrator: 'github' }
+        ]
+      })
+
+      const { modifiedCount } = await findBackfill(
+        '2026-10-13-team-deployments-orchestrator'
+      ).run(db)
+
+      expect(modifiedCount).toBeGreaterThanOrEqual(1)
+      const updated = await db
+        .collection('teamDeployments')
+        .findOne({ _id: insertedId })
+      expect(
+        updated.deployments.map((entry) => [entry.id, entry.orchestrator])
+      ).toEqual([
+        ['legacy-entry', 'mock'],
+        ['github-entry', 'github']
+      ])
     })
   })
 

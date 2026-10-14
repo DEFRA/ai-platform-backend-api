@@ -2,9 +2,11 @@ import convict from 'convict'
 import convictFormatWithValidator from 'convict-format-with-validator'
 
 import { convictValidateMongoUri } from '#/common/helpers/convict/validate-mongo-uri.js'
+import { convictValidateAipEnvironments } from '#/common/helpers/convict/validate-aip-environments.js'
 import { AZURE_APIM, DEFAULT_GATEWAY } from '#/adapters/gateway-keys.js'
 
 convict.addFormat(convictValidateMongoUri)
+convict.addFormat(convictValidateAipEnvironments)
 convict.addFormats(convictFormatWithValidator)
 
 const isProduction = process.env.NODE_ENV === 'production'
@@ -158,6 +160,38 @@ export const config = convict({
       default: 3000,
       env: 'TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS'
     }
+  },
+  tenantOrchestrator: {
+    doc: 'TenantOrchestrator for new team deployments: mock advances through the GitOps states on a timer; github dispatches submit.yml in the GitOps state repositories. Refused as mock in prod',
+    format: ['mock', 'github'],
+    default: 'mock',
+    env: 'TENANT_ORCHESTRATOR'
+  },
+  gitops: {
+    tenantsRepo: {
+      doc: 'owner/repo holding team files (environments/{env}/{slug}.json), dispatched when tenantOrchestrator is github',
+      format: String,
+      default: 'DEFRA/ai-platform-tenants',
+      env: 'GITOPS_TENANTS_REPO'
+    },
+    deploymentsRepo: {
+      doc: 'owner/repo holding platform pins (environments/{env}/platform.json), dispatched when tenantOrchestrator is github',
+      format: String,
+      default: 'DEFRA/ai-platform-deployments',
+      env: 'GITOPS_DEPLOYMENTS_REPO'
+    },
+    pollMinIntervalMs: {
+      doc: 'Minimum time in ms between two GitHub/ARM status polls of the same operation',
+      format: 'nat',
+      default: 30 * 1000,
+      env: 'GITOPS_POLL_MIN_INTERVAL_MS'
+    }
+  },
+  aipEnvironments: {
+    doc: 'AI Platform environments as JSON keyed by name: {subscriptionId, resourceGroup, apimName, foundryAccounts, tenantsVault}',
+    format: 'aip-environments',
+    default: {},
+    env: 'AIP_ENVIRONMENTS'
   },
   audit: {
     retentionDays: {
@@ -443,5 +477,13 @@ if (isGithubAppAuth && !config.get('github.installationId')) {
 if (isGithubAppAuth && !config.get('github.privateKey')) {
   throw new Error(
     'GITHUB_APP_ID/GITHUB_CLIENT_ID requires GITHUB_APP_PRIVATE_KEY to be set'
+  )
+}
+
+// Submit and status tokens are down-scoped per use, which only a GitHub App
+// installation token can be - a PAT is never enough for the orchestrator.
+if (config.get('tenantOrchestrator') === 'github' && !isGithubAppAuth) {
+  throw new Error(
+    'TENANT_ORCHESTRATOR=github requires GITHUB_CLIENT_ID or GITHUB_APP_ID (a GitHub App) to be set'
   )
 }

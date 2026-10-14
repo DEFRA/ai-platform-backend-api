@@ -1,0 +1,44 @@
+{
+  "$schema": "../../../../schemas/team.schema.json",
+  "deployments": [
+    {
+      "capacity": 1,
+      "sku": "DataZoneStandard",
+      "slug": "gpt-4-1-nano",
+      "status": "active"
+    }
+  ],
+  "environment": "infradev",
+  "gateway": {
+    "allowedDeployments": [
+      "gpt-4-1-nano"
+    ],
+    "credentialType": "oauth",
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerMinute": 1000
+    }
+  },
+  "oauth": {
+    "externalClients": [],
+    "federations": [
+      {
+        "host": "cdp",
+        "issuer": "https://00000000-0000-0000-0000-000000000000.tokens.sts.global.api.aws",
+        "name": "beta-api",
+        "subject": "arn:aws:iam::000000000000:role/beta-api"
+      }
+    ],
+    "secretsAllowed": true
+  },
+  "operationId": "000000000000000000000002",
+  "revision": 1,
+  "schemaVersion": 1,
+  "status": "active",
+  "team": {
+    "serviceCode": "ZZZ",
+    "slug": "beta"
+  },
+  "updatedAt": "2026-10-13T00:00:00.000Z",
+  "updatedBy": "00000000-0000-0000-0000-000000000001"
+}

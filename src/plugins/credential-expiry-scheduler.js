@@ -1,15 +1,17 @@
 import { config } from '#/config.js'
 import {
   expireCredentials,
-  reconcilePendingCredentials
+  reconcilePendingCredentials,
+  pollTeamDeployments
 } from '#/services/maintenance-service.js'
 
 /**
  * Runs the same sweep as `POST /maintenance/expire-credentials` on an
  * in-process interval, so expiry enforcement doesn't depend on an external
- * caller hitting that route. `server.db`/`server.locker` are only read
- * inside the interval callback, so registration order relative to the
- * `mongodb` plugin doesn't matter.
+ * caller hitting that route, then polls GitHub-mode team deployments still
+ * in progress (WS5). `server.db`/`server.locker` are only read inside the
+ * interval callback, so registration order relative to the `mongodb`
+ * plugin doesn't matter.
  */
 export const credentialExpiryScheduler = {
   plugin: {
@@ -34,18 +36,32 @@ export const credentialExpiryScheduler = {
           )
           const { reconciled, vaultReconciled } =
             await reconcilePendingCredentials(server.db)
+          const { polled, transitioned, abandoned } = await pollTeamDeployments(
+            server.db,
+            server.logger
+          )
+          const result = {
+            expired,
+            suspended,
+            reconciled,
+            vaultReconciled,
+            polled,
+            transitioned,
+            abandoned
+          }
 
           // Always log at debug so a sweep's absence of work is still observable;
           // escalate to info only when the sweep actually changed something.
-          server.logger.debug(
-            { expired, suspended, reconciled, vaultReconciled },
-            'Credential expiry sweep ran'
-          )
-          if (expired || suspended || reconciled || vaultReconciled) {
-            server.logger.info(
-              { expired, suspended, reconciled, vaultReconciled },
-              'Credential expiry sweep completed'
-            )
+          server.logger.debug(result, 'Credential expiry sweep ran')
+          if (
+            expired ||
+            suspended ||
+            reconciled ||
+            vaultReconciled ||
+            transitioned ||
+            abandoned
+          ) {
+            server.logger.info(result, 'Credential expiry sweep completed')
           }
         } catch (error) {
           server.logger.error(error, 'Credential expiry sweep failed')

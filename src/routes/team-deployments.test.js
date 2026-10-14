@@ -55,6 +55,17 @@ describe('#team-deployments routes', () => {
     )
     expect(result.deployment.status).toBe('requested')
     expect(result.deployment.operationId).toBeTruthy()
+    // The mock orchestrator has no GitHub runs or pull request to link to.
+    expect(result.deployment.links).toEqual({})
+
+    const stored = await server.db
+      .collection('teamDeployments')
+      .findOne({ teamId: teamId.toString() })
+
+    expect(stored.deployments[0]).toMatchObject({
+      orchestrator: 'mock',
+      gitops: null
+    })
   })
 
   test('POST /v1/teams/{teamId}/deployments rejects a non-sandbox environment', async () => {

@@ -5,9 +5,22 @@ import {
   writeSecretToVault,
   externalGatewaySubscriptionIdOf
 } from '#/services/credential-service.js'
+import { sweepGitopsDeployments } from '#/services/team-deployment-service.js'
 import { requireLock } from '#/common/helpers/mongo-lock.js'
 
 const PENDING_RECONCILE_AFTER_MS = 10 * 60 * 1000
+
+/**
+ * Polls every non-terminal GitHub-mode team deployment so operations nobody
+ * is watching still progress through the GitOps states, with an audit event
+ * per transition and the D14 failure policy applied.
+ * @param {import('mongodb').Db} db
+ * @param {import('pino').Logger} [logger]
+ * @returns {Promise<{polled: number, transitioned: number, abandoned: number}>}
+ */
+export async function pollTeamDeployments(db, logger) {
+  return sweepGitopsDeployments(db, { logger })
+}
 
 /**
  * Expires past-due active credentials and suspends their APIM subscriptions.

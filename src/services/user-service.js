@@ -90,3 +90,27 @@ export async function findCurrentUser(db, userId) {
 
   return { user, team: null }
 }
+
+// Design F: Platform Admin is a portal role held outside team roles; it is
+// neither a cloud role nor a team credential.
+export const PLATFORM_ADMIN_ROLE = 'platform-admin'
+
+/**
+ * Rejects with `403 platform-admin-required` unless the user holds the
+ * Platform Admin role. Nothing in the portal assigns the role yet.
+ * @param {import('mongodb').Db} db
+ * @param {string} userId
+ */
+export async function requirePlatformAdmin(db, userId) {
+  const user = ObjectId.isValid(userId)
+    ? await db.collection('users').findOne({ _id: new ObjectId(userId) })
+    : null
+
+  if (!user?.roles?.includes(PLATFORM_ADMIN_ROLE)) {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Only a Platform Admin can do this',
+      'platform-admin-required'
+    )
+  }
+}

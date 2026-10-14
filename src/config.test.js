@@ -135,3 +135,60 @@ describe('#config armAuth.authMethod', () => {
     )
   })
 })
+
+describe('#config tenant orchestrator and GitOps', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  test('defaults to the mock orchestrator, the DEFRA state repositories and a 30 second poll interval', async () => {
+    const { config } = await loadConfig({})
+
+    expect(config.get('tenantOrchestrator')).toBe('mock')
+    expect(config.get('gitops')).toEqual({
+      tenantsRepo: 'DEFRA/ai-platform-tenants',
+      deploymentsRepo: 'DEFRA/ai-platform-deployments',
+      pollMinIntervalMs: 30000
+    })
+    expect(config.get('aipEnvironments')).toEqual({})
+  })
+
+  test('parses AIP_ENVIRONMENTS from JSON', async () => {
+    const infradev = {
+      subscriptionId: '00000000-0000-0000-0000-000000000000',
+      resourceGroup: 'rg-placeholder',
+      apimName: 'apim-placeholder',
+      foundryAccounts: ['aif-placeholder'],
+      tenantsVault: 'kv-placeholder'
+    }
+
+    const { config } = await loadConfig({
+      AIP_ENVIRONMENTS: JSON.stringify({ infradev })
+    })
+
+    expect(config.get('aipEnvironments')).toEqual({ infradev })
+  })
+
+  test('rejects an AIP_ENVIRONMENTS entry missing a setting', async () => {
+    await expect(
+      loadConfig({ AIP_ENVIRONMENTS: JSON.stringify({ infradev: {} }) })
+    ).rejects.toThrow(/subscriptionId/)
+  })
+
+  test('the github orchestrator requires GitHub App credentials, not a PAT', async () => {
+    await expect(
+      loadConfig({ TENANT_ORCHESTRATOR: 'github', GITHUB_TOKEN: 'pat' })
+    ).rejects.toThrow('TENANT_ORCHESTRATOR=github requires GITHUB_CLIENT_ID')
+  })
+
+  test('accepts the github orchestrator with GitHub App credentials', async () => {
+    const { config } = await loadConfig({
+      TENANT_ORCHESTRATOR: 'github',
+      GITHUB_CLIENT_ID: 'Iv1.placeholder',
+      GITHUB_APP_INSTALLATION_ID: '1',
+      GITHUB_APP_PRIVATE_KEY: 'cGxhY2Vob2xkZXI='
+    })
+
+    expect(config.get('tenantOrchestrator')).toBe('github')
+  })
+})

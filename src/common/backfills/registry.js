@@ -373,8 +373,8 @@ export const backfillRegistry = [
     }
   },
   // Models now carry a nested `hosting` object and `gateway` derived from the
-  // catalogue offering, replacing the flat `cloud`/`adapter`. Must stay last:
-  // the two 2026-10-07 entries above read or write the flat model fields.
+  // catalogue offering, replacing the flat `cloud`/`adapter`. Must stay after
+  // the two 2026-10-07 entries above, which read or write the flat model fields.
   {
     id: '2026-10-08-models-hosting-gateway',
     description:
@@ -395,6 +395,25 @@ export const backfillRegistry = [
           },
           { $unset: ['cloud', 'adapter'] }
         ])
+
+      return { modifiedCount }
+    }
+  },
+  // Team deployment entries now record the TenantOrchestrator that
+  // submitted them, and the GitOps sweep selects `orchestrator: 'github'`.
+  // Everything submitted before WS5 went through the mock.
+  {
+    id: '2026-10-13-team-deployments-orchestrator',
+    description:
+      'Sets orchestrator: "mock" on teamDeployments entries missing it',
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('teamDeployments')
+        .updateMany(
+          { deployments: { $elemMatch: { orchestrator: { $exists: false } } } },
+          { $set: { 'deployments.$[entry].orchestrator': 'mock' } },
+          { arrayFilters: [{ 'entry.orchestrator': { $exists: false } }] }
+        )
 
       return { modifiedCount }
     }
