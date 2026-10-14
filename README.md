@@ -15,6 +15,7 @@ Core delivery platform Node.js Backend Template.
   - [Formatting](#formatting)
     - [Windows prettier issue](#windows-prettier-issue)
 - [API endpoints](#api-endpoints)
+  - [People and identity](#people-and-identity)
 - [Development helpers](#development-helpers)
   - [MongoDB Locks](#mongodb-locks)
   - [Schema backfills](#schema-backfills)
@@ -128,6 +129,16 @@ git config --global core.autocrlf false
 | `GET: /health`       | Health                         |
 | `GET: /example    `  | Example API (remove as needed) |
 | `GET: /example/<id>` | Example API (remove as needed) |
+
+### People and identity
+
+> [!IMPORTANT]
+> A person is keyed on their Entra object ID and tenant ID (`oid`, `tid`), which `POST /v1/users`
+> receives at every sign-in; a unique index on both holds that key. **Email is not unique**: it is
+> display only and mutable (Microsoft advises never to key data on it), so two `users` records can
+> share an email, for example a leaver who returns with a new object ID. A record with no `oid` (an
+> invited member) binds to the first sign-in with its email. Every GitOps change names its requester as
+> `entra:{oid}`, so look people up by `oid`, never by email (direction 14 October 2026).
 
 ## Development helpers
 
@@ -274,7 +285,9 @@ whole canonical document (never committing), then polls the submit run, the `op/
 request and `validate-desired-state / validate`, the GitHub Deployment and the apply's run report, and confirms the
 team's resources through ARM (`PROVISIONING_MODE=live`) before `active`. An apply failure gets one
 fresh apply, then a revert or an engineer alert (D14); a failed check gets `abandon`. Reverts and
-abandons are polled to their end; one that fails is audited and logged for an engineer, never retried.
+abandons are polled to their end; one that fails is audited and logged for an engineer, never retried,
+and a failed revert's pull request stays open, keeping the team file locked, until the engineer acts
+(direction 14 October 2026).
 Platform Admins
 (users whose `roles` include `platform-admin`; nothing assigns it yet) can
 `POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`. Until the WS6 desired-state builder

@@ -24,9 +24,8 @@
     "federations": [
       {
         "host": "cdp",
-        "issuer": "https://00000000-0000-0000-0000-000000000000.tokens.sts.global.api.aws",
         "name": "beta-api",
-        "subject": "arn:aws:iam::000000000000:role/beta-api"
+        "service": "beta-api"
       }
     ],
     "secretsAllowed": true
