@@ -13,7 +13,7 @@
  * @property {string} path - `environments/{env}/{slug}.json` or `environments/{env}/platform.json`
  * @property {object|null} document - the whole desired-state document for `write`; null otherwise
  * @property {string} operationId - also the branch `op/{operationId}`
- * @property {string} requestedBy - an opaque ID, never a name or email address
+ * @property {string} requestedBy - the principal the change is attributed to: `entra:{oid}` for a person, `app:{name}` for automation (`github:{user ID}` is set by the workflow only, never by the backend)
  * @property {number} expectedRevision - the team file revision last read, 0 for a new file
  * @property {'write'|'remove'|'abandon'} [action] - defaults to `write`
  * @property {string} [traceParent] - optional W3C `traceparent`

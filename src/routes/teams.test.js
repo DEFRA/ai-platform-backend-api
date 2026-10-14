@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
+
 describe('#teams routes', () => {
   let server
 
@@ -199,6 +201,8 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'list-role-teammate@defra.gov.uk',
         displayName: 'List Role Teammate'
       }
@@ -353,6 +357,8 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'user-member@defra.gov.uk',
         displayName: 'User Member'
       }
@@ -426,6 +432,8 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'bound.member@defra.gov.uk',
         displayName: 'Bound Member'
       }
@@ -469,6 +477,8 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'named.member@defra.gov.uk',
         displayName: 'Named Member'
       }
@@ -585,6 +595,8 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'non-admin-actor@defra.gov.uk',
         displayName: 'Non Admin Actor'
       }

@@ -17,10 +17,10 @@ export const DEPLOY_FAILED = 'deploy-failed'
 export const TERMINAL_FAILURE_STATUSES = new Set([CHECKS_FAILED, DEPLOY_FAILED])
 
 /**
- * Opaque ID the backend submits its own GitOps operations (D14 reverts,
- * abandons) as, in place of a user.
+ * The principal the backend submits its own GitOps operations (D14 reverts,
+ * abandons) and audits its own steps as, in place of a person.
  */
-export const SYSTEM_ACTOR = 'ai-platform-backend'
+export const SYSTEM_ACTOR = 'app:ai-platform-backend'
 
 /**
  * Finds one entry of a `teamDeployments` document's `deployments[]` by id.

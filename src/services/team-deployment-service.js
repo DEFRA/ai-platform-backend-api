@@ -6,7 +6,10 @@ import {
   tenantOrchestratorRegistry,
   GITHUB_ORCHESTRATOR
 } from '#/adapters/tenant-orchestrator-registry.js'
-import { requirePlatformAdmin } from '#/services/user-service.js'
+import {
+  requirePlatformAdmin,
+  requireUserPrincipal
+} from '#/services/user-service.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import {
   DEPLOY_FAILED,
@@ -115,11 +118,14 @@ function toDeploymentView(doc, entry) {
  * document, which only the Teams developer's builder (with the team's
  * immutable `slug`) can produce. Until it is supplied, GitHub-mode requests
  * fail with `501 desired-state-unavailable`; the mock needs no document.
+ * The document's `updatedBy` is always the requester's principal, which the
+ * submit workflow requires to equal `requested_by`.
  * @param {(db: import('mongodb').Db, params: {teamId: string, environment: string, modelSlug: string, operationId: string, requestedBy: string}) => Promise<{document: object, expectedRevision: number}|null>} [buildDesiredState]
  * @param {import('mongodb').Db} db
  * @param {object} params
+ * @param {string} principal - `entra:{oid}` of the requester
  */
-async function buildSubmission(buildDesiredState, db, params) {
+async function buildSubmission(buildDesiredState, db, params, principal) {
   const desired = buildDesiredState ? await buildDesiredState(db, params) : null
   const slug = desired?.document?.team?.slug
 
@@ -133,7 +139,7 @@ async function buildSubmission(buildDesiredState, db, params) {
 
   return {
     path: `environments/${params.environment}/${slug}.json`,
-    document: desired.document,
+    document: { ...desired.document, updatedBy: principal },
     expectedRevision: desired.expectedRevision ?? 0
   }
 }
@@ -148,7 +154,9 @@ async function buildSubmission(buildDesiredState, db, params) {
  * today, even though the schema accepts every design C environment - future
  * environments are a policy change, not a schema change. Each entry records
  * the orchestrator that submitted it and, for GitHub, its GitOps trail
- * (`gitops`: path, branch, runs, pull request, SHAs, resources).
+ * (`gitops`: path, branch, runs, pull request, SHAs, resources). The change
+ * is submitted as the requester's `entra:{oid}`; a user with no Entra object
+ * ID is refused with `403 entra-identity-required`.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{teamId: string, modelSlug: string, environment: string, requestedBy: string, idempotencyKey: string, traceParent?: string}} params
@@ -191,6 +199,10 @@ export async function requestDeployment(
     )
   }
 
+  // The GitOps change is attributed to the person's Entra object ID; the
+  // portal's own user ID stays the key for authorisation.
+  const principal = await requireUserPrincipal(db, requestedBy)
+
   // Several models can now be requested for the same team+environment
   // document, so a plain unique index can no longer detect an
   // idempotency-key replay or a duplicate model by itself - every mutation
@@ -208,6 +220,7 @@ export async function requestDeployment(
         modelSlug,
         environment,
         requestedBy,
+        principal,
         idempotencyKey,
         traceParent
       },
@@ -273,19 +286,18 @@ async function addDeployment(db, params, deps) {
 // desired-state document and its GitOps trail; the mock needs neither.
 async function newEntry(
   db,
-  { teamId, environment, modelSlug, requestedBy, idempotencyKey },
+  { teamId, environment, modelSlug, requestedBy, principal, idempotencyKey },
   { registry, buildDesiredState }
 ) {
   const operationId = new ObjectId().toString()
   const isGithub = registry.key === GITHUB_ORCHESTRATOR
   const submission = isGithub
-    ? await buildSubmission(buildDesiredState, db, {
-        teamId,
-        environment,
-        modelSlug,
-        operationId,
-        requestedBy
-      })
+    ? await buildSubmission(
+        buildDesiredState,
+        db,
+        { teamId, environment, modelSlug, operationId, requestedBy },
+        principal
+      )
     : { path: null, document: null, expectedRevision: 0 }
 
   const now = new Date().toISOString()
@@ -344,7 +356,7 @@ async function insertEntry(db, { teamId, environment }, entry) {
 // so a retry can start cleanly - it never reached the orchestrator, so
 // nothing needs unwinding on that side either.
 async function submitEntry(db, params, entry, submission, registry) {
-  const { teamId, environment, requestedBy, traceParent } = params
+  const { teamId, environment, requestedBy, principal, traceParent } = params
 
   try {
     return await registry.orchestrator.requestDeployment({
@@ -352,7 +364,7 @@ async function submitEntry(db, params, entry, submission, registry) {
       path: submission.path,
       document: submission.document,
       operationId: entry.operationId,
-      requestedBy,
+      requestedBy: principal,
       expectedRevision: submission.expectedRevision,
       action: 'write',
       traceParent: W3C_TRACEPARENT.test(traceParent ?? '')

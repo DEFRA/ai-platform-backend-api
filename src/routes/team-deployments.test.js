@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto'
 
+const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
+// The mock orchestrator's reserved requester ranges, by test name prefix.
+const FORCED_FAILURE_OID_RANGES = {
+  'test-checks-fail-': '00000000-0000-0000-0001-',
+  'test-deploy-fail-': '00000000-0000-0000-0002-'
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -24,20 +31,76 @@ describe('#team-deployments routes', () => {
     vi.unstubAllEnvs()
   })
 
-  async function createTeam(userId) {
+  async function createTeam(label) {
+    await signIn(label)
+
     const { result } = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: postHeaders(label),
+      payload: { name: `Team ${label}` }
+    })
+
+    return result.team._id
+  }
+
+  // Each test names its person; createTeam signs them in, and x-user-id is
+  // then their user _id. A name nobody signed in as (a non-member) is sent
+  // as is. A `test-checks-fail-`/`test-deploy-fail-` name gets an object ID
+  // in the mock orchestrator's reserved range for that failure.
+  const userIds = new Map()
+
+  function oidFor(label) {
+    const [, range] =
+      Object.entries(FORCED_FAILURE_OID_RANGES).find(([prefix]) =>
+        label.startsWith(prefix)
+      ) ?? []
+
+    return range ? `${range}${randomUUID().slice(-12)}` : randomUUID()
+  }
+
+  async function signIn(label) {
+    const { result } = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        oid: oidFor(label),
+        tid: ENTRA_TENANT_ID,
+        email: `${label}@defra.gov.uk`,
+        displayName: label
+      }
+    })
+
+    userIds.set(label, result.user._id.toString())
+  }
+
+  function userHeaders(label) {
+    return { 'x-user-id': userIds.get(label) ?? label }
+  }
+
+  function postHeaders(label) {
+    return { ...userHeaders(label), 'idempotency-key': randomUUID() }
+  }
+
+  test('POST /v1/teams/{teamId}/deployments refuses a member with no Entra object ID to attribute it to', async () => {
+    const userId = 'deploy-user-unbound'
+    const { result: created } = await server.inject({
       method: 'POST',
       url: '/v1/teams',
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
       payload: { name: `Team ${userId}` }
     })
 
-    return result.team._id
-  }
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${created.team._id}/deployments`,
+      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+    })
 
-  function postHeaders(userId) {
-    return { 'x-user-id': userId, 'idempotency-key': randomUUID() }
-  }
+    expect(statusCode).toBe(403)
+    expect(result.code).toBe('entra-identity-required')
+  })
 
   test('POST /v1/teams/{teamId}/deployments requests a deployment for an active team member', async () => {
     const teamId = await createTeam('deploy-user-1')
@@ -158,7 +221,7 @@ describe('#team-deployments routes', () => {
     const { result } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-16' }
+      headers: userHeaders('deploy-user-16')
     })
 
     expect(result.items.map((item) => item.modelSlug).sort()).toEqual([
@@ -198,7 +261,7 @@ describe('#team-deployments routes', () => {
     const { statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-14' },
+      headers: userHeaders('deploy-user-14'),
       payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
@@ -216,7 +279,7 @@ describe('#team-deployments routes', () => {
     })
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
-    const headers = { 'x-user-id': 'deploy-user-6' }
+    const headers = userHeaders('deploy-user-6')
 
     const first = await server.inject({ method: 'GET', url, headers })
 
@@ -252,7 +315,7 @@ describe('#team-deployments routes', () => {
     expect(created.result.deployment.progressSteps[1].state).toBe('pending')
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
-    const headers = { 'x-user-id': 'deploy-user-6b' }
+    const headers = userHeaders('deploy-user-6b')
 
     await wait(300)
 
@@ -275,7 +338,7 @@ describe('#team-deployments routes', () => {
     })
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
-    const headers = { 'x-user-id': 'test-checks-fail-6c' }
+    const headers = userHeaders('test-checks-fail-6c')
 
     await wait(300)
 
@@ -298,7 +361,7 @@ describe('#team-deployments routes', () => {
     const { statusCode } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`,
-      headers: { 'x-user-id': 'someone-else' }
+      headers: userHeaders('someone-else')
     })
 
     expect(statusCode).toBe(404)
@@ -319,7 +382,7 @@ describe('#team-deployments routes', () => {
     const { result } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`,
-      headers: { 'x-user-id': 'test-checks-fail-8' }
+      headers: userHeaders('test-checks-fail-8')
     })
 
     expect(result.deployment.status).toBe('checks-failed')
@@ -341,7 +404,7 @@ describe('#team-deployments routes', () => {
     const { result } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`,
-      headers: { 'x-user-id': 'test-deploy-fail-9' }
+      headers: userHeaders('test-deploy-fail-9')
     })
 
     expect(result.deployment.status).toBe('deploy-failed')
@@ -361,7 +424,7 @@ describe('#team-deployments routes', () => {
     const { result, statusCode } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-10' }
+      headers: userHeaders('deploy-user-10')
     })
 
     expect(statusCode).toBe(200)
@@ -385,7 +448,7 @@ describe('#team-deployments routes', () => {
     const { statusCode } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'someone-else' }
+      headers: userHeaders('someone-else')
     })
 
     expect(statusCode).toBe(404)
@@ -406,7 +469,7 @@ describe('#team-deployments routes', () => {
     const { result } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-12' }
+      headers: userHeaders('deploy-user-12')
     })
 
     expect(result.items[0].status).toBe('active')
@@ -423,7 +486,7 @@ describe('#team-deployments routes', () => {
     })
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
-    const headers = { 'x-user-id': 'deploy-user-15' }
+    const headers = userHeaders('deploy-user-15')
 
     await wait(300)
 

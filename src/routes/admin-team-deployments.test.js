@@ -32,14 +32,25 @@ describe('#admin team-deployments routes', () => {
     vi.unstubAllEnvs()
   })
 
-  // A mock-orchestrated deployment that has landed on deploy-failed.
+  // A mock-orchestrated deployment that has landed on deploy-failed: its
+  // requester's object ID is in the mock's reserved deploy-failed range.
   async function failedDeployment() {
-    const userId = `test-deploy-fail-${randomUUID()}`
+    const { result: signedIn } = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        oid: `00000000-0000-0000-0002-${randomUUID().slice(-12)}`,
+        tid: '6f504113-6b64-43f2-ade9-242e05780007',
+        email: 'deploy-failed-requester@defra.gov.uk',
+        displayName: 'Deploy Failed Requester'
+      }
+    })
+    const userId = signedIn.user._id.toString()
     const { result: created } = await server.inject({
       method: 'POST',
       url: '/v1/teams',
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { name: `Admin routes ${userId.slice(-12)}` }
+      payload: { name: `Admin routes ${randomUUID().slice(-12)}` }
     })
     const teamId = created.team._id
     const { result } = await server.inject({

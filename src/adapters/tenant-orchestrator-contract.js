@@ -23,7 +23,7 @@ const request = {
     team: { slug: 'alpha', serviceCode: 'ZZZ' }
   },
   operationId,
-  requestedBy: 'contract-user-1',
+  requestedBy: 'entra:00000000-0000-0000-0000-000000000001',
   expectedRevision: 0,
   action: 'write'
 }

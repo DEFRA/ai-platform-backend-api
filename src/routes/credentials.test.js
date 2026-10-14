@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 
 import { ObjectId } from 'mongodb'
 
+const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -318,6 +320,8 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'viewer-teammate@defra.gov.uk',
         displayName: 'Viewer Teammate'
       }
@@ -363,6 +367,8 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'leak-teammate@defra.gov.uk',
         displayName: 'Leak Teammate'
       }
@@ -512,11 +518,25 @@ describe('#credentials routes', () => {
       payload: { name: `Team ${userId}` }
     })
     const teamId = team.result.team._id.toString()
+    // A deployment request is attributed to the requester's Entra object ID,
+    // so a signed-in member requests it; `userId` stays the team admin.
+    const requesterId = await inviteAndSignIn(
+      teamId,
+      userId,
+      `${userId}-requester@defra.gov.uk`,
+      'Deployment Requester'
+    )
 
+    await requestActiveDeployment(teamId, requesterId, modelSlug)
+
+    return teamId
+  }
+
+  async function requestActiveDeployment(teamId, requesterId, modelSlug) {
     const deployment = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+      headers: { 'x-user-id': requesterId, 'idempotency-key': randomUUID() },
       payload: { modelSlug, environment: 'sandbox' }
     })
 
@@ -526,10 +546,8 @@ describe('#credentials routes', () => {
     await server.inject({
       method: 'GET',
       url: pollUrl,
-      headers: { 'x-user-id': userId }
+      headers: { 'x-user-id': requesterId }
     })
-
-    return teamId
   }
 
   test('POST /v1/credentials issues a team tier credential once the deployment is active', async () => {
@@ -655,18 +673,14 @@ describe('#credentials routes', () => {
       }
     })
 
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { modelSlug: 'gpt-4-1-nano', environment: 'sandbox' }
-    })
-    await wait(300)
-    await server.inject({
-      method: 'GET',
-      url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': userId }
-    })
+    const requesterId = await inviteAndSignIn(
+      teamId,
+      userId,
+      'second-model-requester@defra.gov.uk',
+      'Second Model Requester'
+    )
+
+    await requestActiveDeployment(teamId, requesterId, 'gpt-4-1-nano')
 
     const second = await server.inject({
       method: 'POST',
@@ -746,6 +760,8 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'rollback-teammate@defra.gov.uk',
         displayName: 'Rollback Teammate'
       }
@@ -801,16 +817,24 @@ describe('#credentials routes', () => {
       payload: { name: 'Team team-cred-user-3' }
     })
     const teamId = team.result.team._id.toString()
+    const requesterId = await inviteAndSignIn(
+      teamId,
+      'team-cred-user-3',
+      'not-ready-requester@defra.gov.uk',
+      'Not Ready Requester'
+    )
 
-    await server.inject({
+    const requested = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: {
-        'x-user-id': 'team-cred-user-3',
+        'x-user-id': requesterId,
         'idempotency-key': randomUUID()
       },
       payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
+
+    expect(requested.statusCode).toBe(201)
 
     const { result, statusCode } = await server.inject({
       method: 'POST',
@@ -883,7 +907,12 @@ describe('#credentials routes', () => {
     const signIn = await server.inject({
       method: 'POST',
       url: '/v1/users',
-      payload: { email: 'teammate@defra.gov.uk', displayName: 'Teammate' }
+      payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
+        email: 'teammate@defra.gov.uk',
+        displayName: 'Teammate'
+      }
     })
 
     const { result, statusCode } = await server.inject({
@@ -909,7 +938,7 @@ describe('#credentials routes', () => {
     const signIn = await server.inject({
       method: 'POST',
       url: '/v1/users',
-      payload: { email, displayName }
+      payload: { oid: randomUUID(), tid: ENTRA_TENANT_ID, email, displayName }
     })
 
     return signIn.result.user._id.toString()

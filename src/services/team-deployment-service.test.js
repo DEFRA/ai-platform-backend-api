@@ -90,9 +90,25 @@ describe('team-deployment-service (GitOps)', () => {
     return teamId
   }
 
+  // A team member who signed in with an Entra object ID, which a deployment
+  // request is attributed to; `fields` overrides the user record.
+  async function signedInMember(fields = {}) {
+    const oid = randomUUID()
+    const { insertedId } = await db.collection('users').insertOne({
+      oid,
+      tid: '6f504113-6b64-43f2-ade9-242e05780007',
+      email: `gitops-${oid}@defra.gov.uk`,
+      displayName: 'GitOps User',
+      roles: ['research-user'],
+      ...fields
+    })
+    const userId = insertedId.toString()
+
+    return { userId, teamId: await joinTeam(userId), principal: `entra:${oid}` }
+  }
+
   async function submitGithubDeployment(orchestrator, overrides = {}) {
-    const userId = 'gitops-user'
-    const teamId = await joinTeam(userId)
+    const { userId, teamId, principal } = await signedInMember()
     const deployment = await service.requestDeployment(
       db,
       server.locker,
@@ -108,7 +124,7 @@ describe('team-deployment-service (GitOps)', () => {
       { registry: githubRegistry(orchestrator), buildDesiredState }
     )
 
-    return { deployment, teamId, userId }
+    return { deployment, teamId, userId, principal }
   }
 
   async function storedEntry(id) {
@@ -154,7 +170,7 @@ describe('team-deployment-service (GitOps)', () => {
   describe('requestDeployment', () => {
     test('fails with desired-state-unavailable and records nothing until the WS6 builder is supplied', async () => {
       const orchestrator = fakeOrchestrator()
-      const teamId = await joinTeam('gitops-user')
+      const { teamId, userId } = await signedInMember()
 
       await expect(
         service.requestDeployment(
@@ -164,7 +180,7 @@ describe('team-deployment-service (GitOps)', () => {
             teamId,
             modelSlug: 'gpt-4o',
             environment: 'sandbox',
-            requestedBy: 'gitops-user',
+            requestedBy: userId,
             idempotencyKey: randomUUID()
           },
           { registry: githubRegistry(orchestrator) }
@@ -179,9 +195,10 @@ describe('team-deployment-service (GitOps)', () => {
       ).toBeNull()
     })
 
-    test('submits the built document to the team file and stores the GitOps trail', async () => {
+    test('submits the built document to the team file as the requester and stores the GitOps trail', async () => {
       const orchestrator = fakeOrchestrator()
-      const { deployment } = await submitGithubDeployment(orchestrator)
+      const { deployment, userId, principal } =
+        await submitGithubDeployment(orchestrator)
       const entry = await storedEntry(deployment._id)
 
       expect(orchestrator.requestDeployment).toHaveBeenCalledWith({
@@ -191,14 +208,20 @@ describe('team-deployment-service (GitOps)', () => {
           ...alpha,
           environment: 'sandbox',
           operationId: entry.operationId,
-          revision: 2
+          revision: 2,
+          updatedBy: principal
         },
         operationId: entry.operationId,
-        requestedBy: 'gitops-user',
+        requestedBy: principal,
         expectedRevision: 1,
         action: 'write',
         traceParent: VALID_TRACEPARENT
       })
+      expect(principal).toMatch(
+        /^entra:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
+      )
+      // The portal's own user ID stays on the entry for authorisation.
+      expect(entry.requestedBy).toBe(userId)
       expect(entry.orchestrator).toBe('github')
       expect(entry.gitops).toEqual({
         path: 'environments/sandbox/alpha.json',
@@ -232,7 +255,7 @@ describe('team-deployment-service (GitOps)', () => {
           throw error
         })
       })
-      const teamId = await joinTeam('gitops-user')
+      const { teamId, userId } = await signedInMember()
 
       await expect(
         service.requestDeployment(
@@ -242,7 +265,7 @@ describe('team-deployment-service (GitOps)', () => {
             teamId,
             modelSlug: 'gpt-4o',
             environment: 'sandbox',
-            requestedBy: 'gitops-user',
+            requestedBy: userId,
             idempotencyKey: randomUUID()
           },
           { registry: githubRegistry(orchestrator), buildDesiredState }
@@ -255,6 +278,34 @@ describe('team-deployment-service (GitOps)', () => {
       const doc = await db.collection('teamDeployments').findOne({ teamId })
 
       expect(doc.deployments).toEqual([])
+    })
+
+    test('refuses a member with no Entra object ID, before recording or submitting anything', async () => {
+      const orchestrator = fakeOrchestrator()
+      // A record from before oid keying, until its next sign-in binds one.
+      const { teamId, userId } = await signedInMember({ oid: undefined })
+
+      await expect(
+        service.requestDeployment(
+          db,
+          server.locker,
+          {
+            teamId,
+            modelSlug: 'gpt-4o',
+            environment: 'sandbox',
+            requestedBy: userId,
+            idempotencyKey: randomUUID()
+          },
+          { registry: githubRegistry(orchestrator), buildDesiredState }
+        )
+      ).rejects.toMatchObject({
+        output: { statusCode: 403 },
+        data: { code: 'entra-identity-required' }
+      })
+      expect(orchestrator.requestDeployment).not.toHaveBeenCalled()
+      expect(
+        await db.collection('teamDeployments').findOne({ teamId })
+      ).toBeNull()
     })
   })
 
@@ -401,7 +452,7 @@ describe('team-deployment-service (GitOps)', () => {
         path: 'environments/sandbox/alpha.json',
         document: null,
         operationId: entry.operationId,
-        requestedBy: 'ai-platform-backend',
+        requestedBy: 'app:ai-platform-backend',
         expectedRevision: 1,
         action: 'abandon'
       })
@@ -557,10 +608,10 @@ describe('team-deployment-service (GitOps)', () => {
           revision: 3,
           operationId: entry.gitops.revert.operationId,
           updatedAt: entry.gitops.revert.requestedAt,
-          updatedBy: 'ai-platform-backend'
+          updatedBy: 'app:ai-platform-backend'
         },
         operationId: entry.gitops.revert.operationId,
-        requestedBy: 'ai-platform-backend',
+        requestedBy: 'app:ai-platform-backend',
         expectedRevision: 2,
         action: 'write'
       })

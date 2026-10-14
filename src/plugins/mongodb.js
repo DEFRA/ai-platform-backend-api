@@ -107,7 +107,19 @@ async function createIndexes(db) {
   await db.collection('models').createIndex({ provider: 1, offering: 1 })
   // `syncCatalogue` upserts providers by `id`.
   await db.collection('providers').createIndex({ id: 1 }, { unique: true })
-  await db.collection('users').createIndex({ email: 1 }, { unique: true })
+  // People are keyed on their Entra object and tenant IDs (design F).
+  // Partial: records from before that keying have no `oid` until their next
+  // sign-in binds one.
+  await db
+    .collection('users')
+    .createIndex(
+      { oid: 1, tid: 1 },
+      { unique: true, partialFilterExpression: { oid: { $type: 'string' } } }
+    )
+  // Not unique: email is display only, so a returning leaver (a new object
+  // ID) or an email change never collides with another record. Rebuilds
+  // the unique index older deploys created.
+  await ensureIndex(db.collection('users'), { email: 1 }, {})
   await db
     .collection('teams')
     .createIndex({ normalisedName: 1 }, { unique: true })

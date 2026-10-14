@@ -15,10 +15,12 @@ const HAPPY_PATH_STAGES = [
 ]
 
 // Reserved-test-pattern failure simulation, same approach as the mock credential
-// issuer's `test-fail-` userId prefix: a requester id with one of these prefixes
-// makes the mock orchestrator land on a terminal failure state instead of `active`.
-const FORCED_CHECKS_FAILED_PREFIX = 'test-checks-fail-'
-const FORCED_DEPLOY_FAILED_PREFIX = 'test-deploy-fail-'
+// issuer's `test-fail-` userId prefix: a requester principal in one of these
+// Entra object ID ranges makes the mock orchestrator land on a terminal failure
+// state instead of `active`. Entra object IDs are random version 4 GUIDs, which
+// never start `00000000-0000-0000-`, so no real person falls in these ranges.
+const FORCED_CHECKS_FAILED_PREFIX = 'entra:00000000-0000-0000-0001-'
+const FORCED_DEPLOY_FAILED_PREFIX = 'entra:00000000-0000-0000-0002-'
 
 // Keyed by operationId so a later getDeploymentStatus poll (a separate call,
 // possibly on a different request) still knows about the forced outcome.

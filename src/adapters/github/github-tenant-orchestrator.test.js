@@ -67,7 +67,7 @@ function deploymentRequest(overrides = {}) {
     path: PATH,
     document: reversedKeys(JSON.parse(alphaText)),
     operationId: OPERATION_ID,
-    requestedBy: 'user-1',
+    requestedBy: 'entra:00000000-0000-0000-0000-000000000001',
     expectedRevision: 0,
     ...overrides
   }
@@ -203,7 +203,7 @@ describe('#createGithubTenantOrchestrator', () => {
           document: alphaText,
           operation_id: OPERATION_ID,
           expected_revision: '0',
-          requested_by: 'user-1',
+          requested_by: 'entra:00000000-0000-0000-0000-000000000001',
           trace_parent:
             '00-0af7651916cd43dd8448eb211c80319c-b7ad6b7169203331-01'
         }

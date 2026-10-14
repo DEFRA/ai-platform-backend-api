@@ -16,7 +16,10 @@ describe('mockTenantOrchestrator', () => {
   }
 
   test('reaches active once every stage has elapsed', async () => {
-    const status = await statusAfterEveryStage('user-1', 'mock-op-00000001')
+    const status = await statusAfterEveryStage(
+      'entra:3f2504e0-4f89-41d3-9a0c-0305e82c3301',
+      'mock-op-00000001'
+    )
 
     expect(status).toEqual({
       operationId: 'mock-op-00000001',
@@ -25,9 +28,9 @@ describe('mockTenantOrchestrator', () => {
     })
   })
 
-  test('lands on checks-failed for the reserved requester prefix', async () => {
+  test('lands on checks-failed for the reserved requester range', async () => {
     const status = await statusAfterEveryStage(
-      'test-checks-fail-1',
+      'entra:00000000-0000-0000-0001-000000000001',
       'mock-op-00000002'
     )
 
@@ -35,9 +38,9 @@ describe('mockTenantOrchestrator', () => {
     expect(status.failureReason).toContain('checks failed')
   })
 
-  test('lands on deploy-failed with no run report attribution for the reserved prefix', async () => {
+  test('lands on deploy-failed with no run report attribution for the reserved range', async () => {
     const status = await statusAfterEveryStage(
-      'test-deploy-fail-1',
+      'entra:00000000-0000-0000-0002-000000000001',
       'mock-op-00000003'
     )
 
