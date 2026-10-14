@@ -801,4 +801,164 @@ describe('#teams routes', () => {
 
     expect(statusCode).toBe(404)
   })
+
+  describe('PATCH /v1/teams/{id}/members/{memberId}', () => {
+    // A team with its creator as admin and a second, signed-in member.
+    async function teamWithMember(label) {
+      const email = `${label}@defra.gov.uk`
+      const created = await server.inject({
+        method: 'POST',
+        url: '/v1/teams',
+        headers: postHeaders(label),
+        payload: { name: `Role Team ${label}`, serviceCode: 'ABC' }
+      })
+      const teamId = created.result.team._id.toString()
+
+      await server.inject({
+        method: 'POST',
+        url: `/v1/teams/${teamId}/members`,
+        headers: postHeaders(label),
+        payload: { email }
+      })
+      const signedIn = await server.inject({
+        method: 'POST',
+        url: '/v1/users',
+        payload: {
+          oid: randomUUID(),
+          tid: ENTRA_TENANT_ID,
+          email,
+          displayName: 'Role Member'
+        }
+      })
+
+      const team = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${teamId}`,
+        headers: { 'x-user-id': label }
+      })
+
+      return {
+        teamId,
+        admin: team.result.members.find((member) => member.role === 'admin'),
+        member: team.result.members.find((member) => member.email === email),
+        memberUserId: signedIn.result.user._id.toString()
+      }
+    }
+
+    test('promotes a member to admin', async () => {
+      const { teamId, member } = await teamWithMember('role-user-1')
+
+      const { result, statusCode } = await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${teamId}/members/${member._id}`,
+        headers: { 'x-user-id': 'role-user-1' },
+        payload: { role: 'admin' }
+      })
+
+      expect(statusCode).toBe(200)
+      expect(result.member.role).toBe('admin')
+    })
+
+    test('refuses to demote the last admin', async () => {
+      const { teamId, admin } = await teamWithMember('role-user-2')
+
+      const { result, statusCode } = await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${teamId}/members/${admin._id}`,
+        headers: { 'x-user-id': 'role-user-2' },
+        payload: { role: 'user' }
+      })
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('last-admin')
+    })
+
+    test('demotes an admin once the team has another one', async () => {
+      const { teamId, admin, member, memberUserId } =
+        await teamWithMember('role-user-3')
+
+      await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${teamId}/members/${member._id}`,
+        headers: { 'x-user-id': 'role-user-3' },
+        payload: { role: 'admin' }
+      })
+
+      const { result, statusCode } = await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${teamId}/members/${admin._id}`,
+        headers: { 'x-user-id': memberUserId },
+        payload: { role: 'user' }
+      })
+
+      expect(statusCode).toBe(200)
+      expect(result.member.role).toBe('user')
+    })
+
+    test('refuses a member who is not an admin', async () => {
+      const { teamId, admin, memberUserId } =
+        await teamWithMember('role-user-4')
+
+      const { result, statusCode } = await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${teamId}/members/${admin._id}`,
+        headers: { 'x-user-id': memberUserId },
+        payload: { role: 'user' }
+      })
+
+      expect(statusCode).toBe(403)
+      expect(result.code).toBe('admin-required')
+    })
+
+    test('keeps at least one admin when two admins demote each other at once', async () => {
+      const { teamId, admin, member, memberUserId } =
+        await teamWithMember('role-user-5')
+
+      await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${teamId}/members/${member._id}`,
+        headers: { 'x-user-id': 'role-user-5' },
+        payload: { role: 'admin' }
+      })
+
+      await Promise.all([
+        server.inject({
+          method: 'PATCH',
+          url: `/v1/teams/${teamId}/members/${member._id}`,
+          headers: { 'x-user-id': 'role-user-5' },
+          payload: { role: 'user' }
+        }),
+        server.inject({
+          method: 'PATCH',
+          url: `/v1/teams/${teamId}/members/${admin._id}`,
+          headers: { 'x-user-id': memberUserId },
+          payload: { role: 'user' }
+        })
+      ])
+
+      const team = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${teamId}`,
+        headers: { 'x-user-id': 'role-user-5' }
+      })
+      const admins = team.result.members.filter(
+        (one) => one.role === 'admin' && one.status === 'active'
+      )
+
+      expect(admins).toHaveLength(1)
+    })
+
+    test('refuses a role it does not know', async () => {
+      const { teamId, member } = await teamWithMember('role-user-6')
+
+      const { statusCode } = await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${teamId}/members/${member._id}`,
+        headers: { 'x-user-id': 'role-user-6' },
+        payload: { role: 'owner' }
+      })
+
+      expect(statusCode).toBe(400)
+    })
+  })
 })

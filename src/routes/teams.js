@@ -7,7 +7,8 @@ import {
   findTeamById,
   setServiceCode,
   addMember,
-  removeMember
+  removeMember,
+  setMemberRole
 } from '#/services/team-service.js'
 
 // Three characters, as the team file's schema requires; entered in any case
@@ -152,13 +153,36 @@ export const teams = [
     }
   },
   {
+    method: 'PATCH',
+    path: '/v1/teams/{id}/members/{memberId}',
+    options: {
+      validate: {
+        headers: userIdHeader,
+        params: memberIdParam,
+        payload: Joi.object({
+          role: Joi.string().valid('admin', 'user').required()
+        }).unknown(false)
+      }
+    },
+    handler: async (request, h) => {
+      const { member } = await setMemberRole(request.db, request.locker, {
+        teamId: request.params.id,
+        actorUserId: request.headers['x-user-id'],
+        memberId: request.params.memberId,
+        role: request.payload.role
+      })
+
+      return h.response({ member })
+    }
+  },
+  {
     method: 'DELETE',
     path: '/v1/teams/{id}/members/{memberId}',
     options: {
       validate: { headers: userIdHeader, params: memberIdParam }
     },
     handler: async (request, h) => {
-      await removeMember(request.db, {
+      await removeMember(request.db, request.locker, {
         teamId: request.params.id,
         actorUserId: request.headers['x-user-id'],
         memberId: request.params.memberId
