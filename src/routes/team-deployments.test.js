@@ -38,7 +38,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers: postHeaders(label),
-      payload: { name: `Team ${label}` }
+      payload: { name: `Team ${label}`, serviceCode: 'ABC' }
     })
 
     return result.team._id
@@ -88,7 +88,7 @@ describe('#team-deployments routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { name: `Team ${userId}` }
+      payload: { name: `Team ${userId}`, serviceCode: 'ABC' }
     })
 
     const { result, statusCode } = await server.inject({

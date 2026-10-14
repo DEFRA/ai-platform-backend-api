@@ -240,6 +240,20 @@ export const config = convict({
       env: 'MAINTENANCE_SCHEDULER_INTERVAL_MS'
     }
   },
+  serviceCode: {
+    verifier: {
+      doc: 'ServiceCodeVerifier that confirms a team service code is real. Only mock exists while no authoritative CDP/CCoE source is agreed',
+      format: ['mock'],
+      default: 'mock',
+      env: 'SERVICE_CODE_VERIFIER'
+    },
+    knownCodes: {
+      doc: 'Comma-separated service codes the mock verifier accepts as confirmed. Empty means every code stays "to be verified"',
+      format: Array,
+      default: [],
+      env: 'SERVICE_CODE_KNOWN_CODES'
+    }
+  },
   provisioning: {
     mode: {
       doc: 'mock generates fake keys locally; live issues through each enabled gateway. "azure" is a deprecated alias for live',

@@ -2,11 +2,21 @@ import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { deriveTeamSlug, withSlugSuffix } from '#/common/helpers/team-slug.js'
+import { serviceCodeVerifier } from '#/adapters/service-code-verifier-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 
 // Two names that differ only in punctuation ("Data Team" and "Data Team!")
 // pass the name check but derive one slug, so a clash needs a numbered retry.
 const MAX_SLUG_ATTEMPTS = 10
+
+/**
+ * The three-character service code the team's AI use is charged to, as the
+ * team file's schema requires it (design F, R01).
+ * @param {string} serviceCode
+ */
+function normaliseServiceCode(serviceCode) {
+  return serviceCode.trim().toUpperCase()
+}
 
 /**
  * Normalises a team name for duplicate detection, same pattern as the
@@ -68,11 +78,13 @@ async function insertTeamWithUniqueSlug(db, fields, replayKey) {
  * Creates a team and makes the creator its first admin, or replays a prior
  * call with the same Idempotency-Key.
  * @param {import('mongodb').Db} db
- * @param {{name: string, serviceCode?: string, description?: string, createdBy: string, idempotencyKey: string}} params
+ * @param {{name: string, serviceCode: string, description?: string, createdBy: string, idempotencyKey: string}} params
+ * @param {{verifier?: import('#/adapters/service-code-verifier.js').ServiceCodeVerifier}} [deps]
  */
 export async function createTeam(
   db,
-  { name, serviceCode, description, createdBy, idempotencyKey }
+  { name, serviceCode, description, createdBy, idempotencyKey },
+  { verifier = serviceCodeVerifier } = {}
 ) {
   const existing = await db
     .collection('teams')
@@ -82,12 +94,14 @@ export async function createTeam(
     return { team: existing, replay: true }
   }
 
+  const code = normaliseServiceCode(serviceCode)
+  const { verified } = await verifier.verify(code)
   const now = new Date().toISOString()
   const team = {
     name,
     normalisedName: normaliseName(name),
-    serviceCode: serviceCode || null,
-    verified: false,
+    serviceCode: code,
+    verified,
     description: description || null,
     createdBy,
     idempotencyKey,
@@ -165,6 +179,58 @@ export async function listTeamsForUser(db, userId) {
     ...team,
     role: roleByTeamId.get(team._id.toString()) ?? null
   }))
+}
+
+/**
+ * Sets a team's service code, for a team created before one was required or
+ * one given the wrong code. Admins only, re-verified on every change, and
+ * audited: the code attributes the team's AI spend, and the team file carries
+ * it to Azure as a tag.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, actorUserId: string, serviceCode: string}} params
+ * @param {{verifier?: import('#/adapters/service-code-verifier.js').ServiceCodeVerifier}} [deps]
+ */
+export async function setServiceCode(
+  db,
+  { teamId, actorUserId, serviceCode },
+  { verifier = serviceCodeVerifier } = {}
+) {
+  if (!ObjectId.isValid(teamId)) {
+    throw Boom.notFound()
+  }
+
+  const role = await getMemberRole(db, { teamId, userId: actorUserId })
+
+  if (role !== 'admin') {
+    // A non-member learns nothing about the team; a member learns only that
+    // they are not an admin.
+    throw role ? Boom.forbidden() : Boom.notFound()
+  }
+
+  const code = normaliseServiceCode(serviceCode)
+  const { verified } = await verifier.verify(code)
+  const team = await db
+    .collection('teams')
+    .findOneAndUpdate(
+      { _id: new ObjectId(teamId) },
+      { $set: { serviceCode: code, verified } },
+      { returnDocument: 'after' }
+    )
+
+  if (!team) {
+    throw Boom.notFound()
+  }
+
+  await recordAuditEvent(db, {
+    actorUserId,
+    action: 'team.setServiceCode',
+    resource: 'team',
+    resourceId: teamId,
+    outcome: 'success',
+    code
+  })
+
+  return { team }
 }
 
 /**

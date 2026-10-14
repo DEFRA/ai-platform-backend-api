@@ -50,7 +50,10 @@ describe('#admin team-deployments routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { name: `Admin routes ${randomUUID().slice(-12)}` }
+      payload: {
+        name: `Admin routes ${randomUUID().slice(-12)}`,
+        serviceCode: 'ABC'
+      }
     })
     const teamId = created.team._id
     const { result } = await server.inject({

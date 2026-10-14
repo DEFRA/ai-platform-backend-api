@@ -515,7 +515,7 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { name: `Team ${userId}` }
+      payload: { name: `Team ${userId}`, serviceCode: 'ABC' }
     })
     const teamId = team.result.team._id.toString()
     // A deployment request is attributed to the requester's Entra object ID,
@@ -810,7 +810,7 @@ describe('#credentials routes', () => {
         'x-user-id': 'team-cred-user-3',
         'idempotency-key': randomUUID()
       },
-      payload: { name: 'Team team-cred-user-3' }
+      payload: { name: 'Team team-cred-user-3', serviceCode: 'ABC' }
     })
     const teamId = team.result.team._id.toString()
     const requesterId = await inviteAndSignIn(
@@ -1075,7 +1075,7 @@ describe('#credentials routes', () => {
         'x-user-id': 'team-cred-revoke-3-other',
         'idempotency-key': randomUUID()
       },
-      payload: { name: 'A Different Team' }
+      payload: { name: 'A Different Team', serviceCode: 'ABC' }
     })
 
     const { statusCode } = await server.inject({

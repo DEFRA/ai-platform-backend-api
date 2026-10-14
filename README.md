@@ -146,6 +146,15 @@ git config --global core.autocrlf false
 > (`environments/{env}/{slug}.json`), its gateway API path (`/{slug}`) and its model deployments
 > (`{slug}-{model}`), so it is never regenerated when a team is renamed.
 
+> [!IMPORTANT]
+> A team also carries a three-character `serviceCode` (`^[A-Z0-9]{3}$`, stored upper case), required
+> on `POST /v1/teams` and changeable by an admin with `PATCH /v1/teams/{id}`. It attributes the
+> team's AI use to its service for chargeback and reaches Azure as a resource tag. Every change goes
+> through the `ServiceCodeVerifier` port, whose only adapter today is the mock
+> (`SERVICE_CODE_KNOWN_CODES`, empty by default), so `verified` stays `false` until an authoritative
+> CDP or Cloud Centre of Excellence source is agreed and a real adapter replaces it - the prod
+> mock-refusal guard the other ports have belongs with that adapter.
+
 ## Development helpers
 
 ### MongoDB Locks

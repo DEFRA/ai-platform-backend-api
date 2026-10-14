@@ -29,14 +29,117 @@ describe('#teams routes', () => {
         'x-user-id': 'team-user-1',
         'idempotency-key': randomUUID()
       },
-      payload: { name: 'Flood Risk Team' }
+      payload: { name: 'Flood Risk Team', serviceCode: 'ABC' }
     })
 
     expect(statusCode).toBe(201)
     expect(headers.location).toBe(`/v1/teams/${result.team._id}`)
     expect(result.team.normalisedName).toBe('flood-risk-team')
     expect(result.team.slug).toBe('flood-risk-team')
+    expect(result.team.serviceCode).toBe('ABC')
     expect(result.team.verified).toBe(false)
+  })
+
+  test('POST /v1/teams stores the service code in upper case', async () => {
+    const { result } = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: postHeaders('team-service-code-user'),
+      payload: { name: 'Lower Case Code Team', serviceCode: 'a1b' }
+    })
+
+    expect(result.team.serviceCode).toBe('A1B')
+  })
+
+  test.each([
+    ['no service code', {}],
+    ['a code that is not three characters', { serviceCode: 'AB' }],
+    ['a code with punctuation', { serviceCode: 'A-B' }]
+  ])('POST /v1/teams refuses %s', async (_, payload) => {
+    const { statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: postHeaders('team-service-code-user'),
+      payload: { name: 'Bad Service Code Team', ...payload }
+    })
+
+    expect(statusCode).toBe(400)
+  })
+
+  test('PATCH /v1/teams/{id} lets an admin set the service code and re-verifies it', async () => {
+    const headers = postHeaders('team-patch-admin')
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers,
+      payload: { name: 'Service Code Change Team', serviceCode: 'ABC' }
+    })
+    const teamId = created.result.team._id.toString()
+
+    const { result, statusCode } = await server.inject({
+      method: 'PATCH',
+      url: `/v1/teams/${teamId}`,
+      headers: { 'x-user-id': 'team-patch-admin' },
+      payload: { serviceCode: 'xyz' }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.team.serviceCode).toBe('XYZ')
+    expect(result.team.verified).toBe(false)
+  })
+
+  test('PATCH /v1/teams/{id} refuses a member who is not an admin', async () => {
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: postHeaders('team-patch-admin-2'),
+      payload: { name: 'Service Code Guard Team', serviceCode: 'ABC' }
+    })
+    const teamId = created.result.team._id.toString()
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/members`,
+      headers: postHeaders('team-patch-admin-2'),
+      payload: { email: 'service.code.member@defra.gov.uk' }
+    })
+    const member = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
+        email: 'service.code.member@defra.gov.uk',
+        displayName: 'Service Code Member'
+      }
+    })
+
+    const { statusCode } = await server.inject({
+      method: 'PATCH',
+      url: `/v1/teams/${teamId}`,
+      headers: { 'x-user-id': member.result.user._id.toString() },
+      payload: { serviceCode: 'XYZ' }
+    })
+
+    expect(statusCode).toBe(403)
+  })
+
+  test('PATCH /v1/teams/{id} is not found for someone outside the team', async () => {
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: postHeaders('team-patch-admin-3'),
+      payload: { name: 'Service Code Stranger Team', serviceCode: 'ABC' }
+    })
+
+    const { statusCode } = await server.inject({
+      method: 'PATCH',
+      url: `/v1/teams/${created.result.team._id}`,
+      headers: { 'x-user-id': 'not-a-member' },
+      payload: { serviceCode: 'XYZ' }
+    })
+
+    expect(statusCode).toBe(404)
   })
 
   test('POST /v1/teams numbers the slug when a differently punctuated name derives the same one', async () => {
@@ -44,13 +147,13 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers: postHeaders('team-slug-user'),
-      payload: { name: 'Coastal Erosion' }
+      payload: { name: 'Coastal Erosion', serviceCode: 'ABC' }
     })
     const second = await server.inject({
       method: 'POST',
       url: '/v1/teams',
       headers: postHeaders('team-slug-user'),
-      payload: { name: 'Coastal Erosion!' }
+      payload: { name: 'Coastal Erosion!', serviceCode: 'ABC' }
     })
 
     expect(first.result.team.slug).toBe('coastal-erosion')
@@ -64,7 +167,7 @@ describe('#teams routes', () => {
       'x-user-id': 'team-user-2',
       'idempotency-key': idempotencyKey
     }
-    const payload = { name: 'Replay Team' }
+    const payload = { name: 'Replay Team', serviceCode: 'ABC' }
 
     const first = await server.inject({
       method: 'POST',
@@ -98,7 +201,7 @@ describe('#teams routes', () => {
           method: 'POST',
           url: '/v1/teams',
           headers,
-          payload: { name: 'Concurrent Replay Team' }
+          payload: { name: 'Concurrent Replay Team', serviceCode: 'ABC' }
         })
       )
     )
@@ -116,7 +219,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers: postHeaders('team-user-2c'),
-      payload: { name: 'Concurrent Invite Team' }
+      payload: { name: 'Concurrent Invite Team', serviceCode: 'ABC' }
     })
     const teamId = created.result.team._id.toString()
 
@@ -158,14 +261,14 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'Unique Team' }
+      payload: { name: 'Unique Team', serviceCode: 'ABC' }
     })
 
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: '/v1/teams',
       headers: { ...headers, 'idempotency-key': randomUUID() },
-      payload: { name: 'Unique Team' }
+      payload: { name: 'Unique Team', serviceCode: 'ABC' }
     })
 
     expect(statusCode).toBe(409)
@@ -182,7 +285,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 4' }
+      payload: { name: 'My Team 4', serviceCode: 'ABC' }
     })
 
     const { result, statusCode } = await server.inject({
@@ -207,7 +310,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 4b' }
+      payload: { name: 'My Team 4b', serviceCode: 'ABC' }
     })
     const teamId = created.result.team._id.toString()
 
@@ -249,7 +352,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 5' }
+      payload: { name: 'My Team 5', serviceCode: 'ABC' }
     })
 
     const { result, statusCode } = await server.inject({
@@ -274,7 +377,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 6' }
+      payload: { name: 'My Team 6', serviceCode: 'ABC' }
     })
 
     const { statusCode } = await server.inject({
@@ -306,7 +409,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 7' }
+      payload: { name: 'My Team 7', serviceCode: 'ABC' }
     })
 
     const { result, statusCode } = await server.inject({
@@ -331,7 +434,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 7b' }
+      payload: { name: 'My Team 7b', serviceCode: 'ABC' }
     })
 
     await server.inject({
@@ -362,7 +465,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 8' }
+      payload: { name: 'My Team 8', serviceCode: 'ABC' }
     })
 
     await server.inject({
@@ -415,7 +518,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 9' }
+      payload: { name: 'My Team 9', serviceCode: 'ABC' }
     })
 
     const { statusCode } = await server.inject({
@@ -438,7 +541,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 10' }
+      payload: { name: 'My Team 10', serviceCode: 'ABC' }
     })
 
     await server.inject({
@@ -483,7 +586,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 11' }
+      payload: { name: 'My Team 11', serviceCode: 'ABC' }
     })
 
     await server.inject({
@@ -527,7 +630,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 11b' }
+      payload: { name: 'My Team 11b', serviceCode: 'ABC' }
     })
 
     await server.inject({
@@ -560,7 +663,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 12' }
+      payload: { name: 'My Team 12', serviceCode: 'ABC' }
     })
     const teamId = created.result.team._id.toString()
 
@@ -601,7 +704,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 13' }
+      payload: { name: 'My Team 13', serviceCode: 'ABC' }
     })
     const teamId = created.result.team._id.toString()
 
@@ -651,7 +754,7 @@ describe('#teams routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers,
-      payload: { name: 'My Team 14' }
+      payload: { name: 'My Team 14', serviceCode: 'ABC' }
     })
     const teamId = created.result.team._id.toString()
 
@@ -680,7 +783,7 @@ describe('#teams routes', () => {
         'x-user-id': 'team-user-15',
         'idempotency-key': randomUUID()
       },
-      payload: { name: 'My Team 15' }
+      payload: { name: 'My Team 15', serviceCode: 'ABC' }
     })
     const teamId = created.result.team._id.toString()
 

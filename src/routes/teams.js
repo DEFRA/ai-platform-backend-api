@@ -5,9 +5,17 @@ import {
   createTeam,
   listTeamsForUser,
   findTeamById,
+  setServiceCode,
   addMember,
   removeMember
 } from '#/services/team-service.js'
+
+// Three characters, as the team file's schema requires; entered in any case
+// and stored upper.
+const serviceCode = Joi.string()
+  .trim()
+  .uppercase()
+  .pattern(/^[A-Z0-9]{3}$/)
 
 const userIdHeader = Joi.object({
   'x-user-id': Joi.string().required()
@@ -34,7 +42,7 @@ export const teams = [
         headers: idempotentHeaders,
         payload: Joi.object({
           name: Joi.string().trim().min(3).max(60).required(),
-          serviceCode: Joi.string().trim().max(20).allow('').optional(),
+          serviceCode: serviceCode.required(),
           description: Joi.string().trim().max(500).allow('').optional()
         }).unknown(false)
       }
@@ -93,6 +101,28 @@ export const teams = [
       }
 
       return h.response(result)
+    }
+  },
+  {
+    method: 'PATCH',
+    path: '/v1/teams/{id}',
+    options: {
+      validate: {
+        headers: userIdHeader,
+        params: idParam,
+        payload: Joi.object({
+          serviceCode: serviceCode.required()
+        }).unknown(false)
+      }
+    },
+    handler: async (request, h) => {
+      const { team } = await setServiceCode(request.db, {
+        teamId: request.params.id,
+        actorUserId: request.headers['x-user-id'],
+        serviceCode: request.payload.serviceCode
+      })
+
+      return h.response({ team })
     }
   },
   {
