@@ -309,7 +309,7 @@ describe('#team-deployments routes', () => {
       'Request recorded',
       'Team checked',
       'Setting up access in Azure',
-      'Creating your key'
+      'Creating your client secret'
     ])
     expect(created.result.deployment.progressSteps[0].state).toBe('current')
     expect(created.result.deployment.progressSteps[1].state).toBe('pending')

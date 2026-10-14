@@ -39,15 +39,16 @@ const W3C_TRACEPARENT = /^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/
 // team-facing, so it is a valid schema value but never policy-allowed here.
 const TEAM_FACING_ENVIRONMENT = 'sandbox'
 
-// User-facing progress steps for the "being set up" wait page - the mapping
-// from design C's real GitOps states (never shown to the user directly) to
-// these four friendly, fixed labels is a business rule, so it lives here
-// rather than being guessed at again in the frontend.
+// User-facing progress steps for the team's "being set up" wait page - the
+// mapping from design C's real GitOps states (never shown to the user
+// directly) to these four friendly, fixed labels is a business rule, so it
+// lives here rather than being guessed at again in the frontend. The team
+// tier is OAuth only, so its last step creates an OAuth client secret.
 const PROGRESS_STEP_LABELS = [
   'Request recorded',
   'Team checked',
   'Setting up access in Azure',
-  'Creating your key'
+  'Creating your client secret'
 ]
 
 const PROGRESS_STEP_INDEX_BY_STATUS = {

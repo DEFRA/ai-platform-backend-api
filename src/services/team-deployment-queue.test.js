@@ -172,7 +172,7 @@ describe('team deployment queue', () => {
         { label: 'Request recorded', state: 'current' },
         { label: 'Team checked', state: 'pending' },
         { label: 'Setting up access in Azure', state: 'pending' },
-        { label: 'Creating your key', state: 'pending' }
+        { label: 'Creating your client secret', state: 'pending' }
       ]
     })
     expect(member.orchestrator.requestDeployment).toHaveBeenCalledTimes(1)
