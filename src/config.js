@@ -183,7 +183,7 @@ export const config = convict({
     pollMinIntervalMs: {
       doc: 'Minimum time in ms between two GitHub/ARM status polls of the same operation',
       format: 'nat',
-      default: 30 * 1000,
+      default: 30000,
       env: 'GITOPS_POLL_MIN_INTERVAL_MS'
     }
   },

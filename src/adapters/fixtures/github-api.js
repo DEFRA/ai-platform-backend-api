@@ -6,13 +6,17 @@
 // against a live response - do that in WS5 milestone M6 and note it here.
 
 const REPOSITORY_URL = 'https://github.com/DEFRA/ai-platform-tenants'
+// The workflow run a dispatch starts, and the apply run whose job a
+// Deployment status links to.
+const DISPATCHED_RUN_ID = 1001
+const APPLY_RUN_ID = 2002
 
 /**
  * Body of `POST .../actions/workflows/{id}/dispatches` on 200.
  * @param {object} [overrides]
  */
 export function dispatchedRun(overrides = {}) {
-  const runId = overrides.workflow_run_id ?? 1001
+  const runId = overrides.workflow_run_id ?? DISPATCHED_RUN_ID
 
   return {
     workflow_run_id: runId,
@@ -28,10 +32,10 @@ export function dispatchedRun(overrides = {}) {
  */
 export function workflowRun(overrides = {}) {
   return {
-    id: 1001,
+    id: DISPATCHED_RUN_ID,
     status: 'in_progress',
     conclusion: null,
-    html_url: `${REPOSITORY_URL}/actions/runs/1001`,
+    html_url: `${REPOSITORY_URL}/actions/runs/${DISPATCHED_RUN_ID}`,
     ...overrides
   }
 }
@@ -92,19 +96,18 @@ export function deployment(overrides = {}) {
 /**
  * One item of `GET .../deployments/{id}/statuses`; Actions links it to the
  * job of the apply run.
- * @param {object} [overrides]
+ * @param {object} [overrides] - `runId` sets the apply run the links name
  */
-export function deploymentStatus(overrides = {}) {
-  const runId = overrides.runId ?? 2002
-  const { runId: _runId, ...rest } = overrides
+export function deploymentStatus({ runId, ...overrides } = {}) {
+  const linkedRunId = runId ?? APPLY_RUN_ID
 
   return {
     id: 9001,
     state: 'in_progress',
     created_at: '2026-10-13T10:06:00Z',
-    log_url: `${REPOSITORY_URL}/actions/runs/${runId}/job/3003`,
-    target_url: `${REPOSITORY_URL}/actions/runs/${runId}/job/3003`,
-    ...rest
+    log_url: `${REPOSITORY_URL}/actions/runs/${linkedRunId}/job/3003`,
+    target_url: `${REPOSITORY_URL}/actions/runs/${linkedRunId}/job/3003`,
+    ...overrides
   }
 }
 
@@ -166,7 +169,11 @@ export function runReport(overrides = {}) {
     environment: 'infradev',
     state: 'tenants',
     release: 'v0.4.0',
-    run: { id: 2002, attempt: 1, url: `${REPOSITORY_URL}/actions/runs/2002` },
+    run: {
+      id: APPLY_RUN_ID,
+      attempt: 1,
+      url: `${REPOSITORY_URL}/actions/runs/${APPLY_RUN_ID}`
+    },
     outcome: 'success',
     appliedSha: 'merge-sha',
     baseSha: 'parent-sha',

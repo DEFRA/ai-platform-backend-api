@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 
 import {
   canonicalJson,
+  compareCodeUnits,
   isCanonical,
   sortKeys
 } from '#/common/helpers/canonical-json.js'
@@ -55,6 +56,16 @@ describe('#canonicalJson', () => {
     )
     expect(text).not.toContain('\r')
   })
+
+  test('orders keys by UTF-16 code unit, as the workflows do, not by locale', () => {
+    const keys = ['b', 'é', 'aa', 'Z', '_', 'a', 'B', 'A']
+
+    expect(
+      Object.keys(
+        JSON.parse(canonicalJson(Object.fromEntries(keys.map((k) => [k, 1]))))
+      )
+    ).toEqual(['A', 'B', 'Z', '_', 'a', 'aa', 'b', 'é'])
+  })
 })
 
 describe('#isCanonical', () => {
@@ -74,5 +85,14 @@ describe('#sortKeys', () => {
     expect(sortKeys('text')).toBe('text')
     expect(sortKeys(3)).toBe(3)
     expect(sortKeys(null)).toBeNull()
+  })
+})
+
+describe('#compareCodeUnits', () => {
+  test('orders exactly as the default sort does, and ties equal strings', () => {
+    const keys = ['b', 'é', 'aa', 'Z', '_', 'a', 'B', 'A']
+
+    expect([...keys].sort(compareCodeUnits)).toEqual([...keys].sort())
+    expect(compareCodeUnits('a', 'a')).toBe(0)
   })
 })

@@ -1,6 +1,13 @@
+import { statusCodes } from '#/common/constants/status-codes.js'
+
 const DEFAULT_BACKOFF_MS = 60 * 1000
-const MAX_BACKOFF_MS = 15 * 60 * 1000
+const MAX_BACKOFF_MINUTES = 15
+const MAX_BACKOFF_MS = MAX_BACKOFF_MINUTES * 60 * 1000
 const MAX_CACHED_URLS = 500
+const RATE_LIMIT_STATUSES = new Set([
+  statusCodes.forbidden,
+  statusCodes.tooManyRequests
+])
 
 /**
  * Whether a GitHub error is a primary or secondary rate limit: a 403 or 429
@@ -12,7 +19,7 @@ export function isRateLimited(error) {
   const headers = error?.response?.headers ?? {}
 
   return (
-    [403, 429].includes(error?.status) &&
+    RATE_LIMIT_STATUSES.has(error?.status) &&
     (headers['retry-after'] !== undefined ||
       headers['x-ratelimit-remaining'] === '0')
   )
@@ -88,7 +95,7 @@ export function createConditionalReader({
 
       return response.data
     } catch (error) {
-      if (error.status === 304 && cached) {
+      if (error.status === statusCodes.notModified && cached) {
         backoffMs = 0
         return cached.data
       }

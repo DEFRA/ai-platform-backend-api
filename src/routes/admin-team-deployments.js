@@ -1,5 +1,6 @@
 import Joi from 'joi'
 
+import { statusCodes } from '#/common/constants/status-codes.js'
 import { redispatchApply } from '#/services/team-deployment-service.js'
 
 const userIdHeader = Joi.object({
@@ -25,7 +26,7 @@ function redispatchRoute(kind) {
         kind
       })
 
-      return h.response({ deployment }).code(202)
+      return h.response({ deployment }).code(statusCodes.accepted)
     }
   }
 }

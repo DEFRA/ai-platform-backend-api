@@ -1,4 +1,20 @@
 /**
+ * Compares two strings by UTF-16 code unit, the order `sort()` uses by
+ * default and the workflows' canonical serialiser relies on. Never
+ * `localeCompare`: locale order would change the canonical bytes.
+ * @param {string} a
+ * @param {string} b
+ * @returns {number} Negative, zero or positive, as `sort()` expects.
+ */
+export function compareCodeUnits(a, b) {
+  if (a < b) {
+    return -1
+  }
+
+  return a > b ? 1 : 0
+}
+
+/**
  * Sorts object keys recursively so equal documents serialise to equal bytes.
  * @param {unknown} value - Any JSON value.
  * @returns {unknown} The same value with every object's keys sorted.
@@ -11,7 +27,7 @@ export function sortKeys(value) {
   if (value !== null && typeof value === 'object') {
     return Object.fromEntries(
       Object.keys(value)
-        .sort()
+        .sort(compareCodeUnits)
         .map((key) => [key, sortKeys(value[key])])
     )
   }

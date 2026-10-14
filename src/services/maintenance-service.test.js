@@ -82,7 +82,7 @@ describe('#expireCredentials', () => {
 describe('#pollTeamDeployments', () => {
   afterEach(() => {
     vi.resetModules()
-    vi.doUnmock('#/services/team-deployment-service.js')
+    vi.doUnmock('#/services/team-deployment-gitops.js')
   })
 
   test('sweeps GitHub-mode team deployments with the scheduler logger', async () => {
@@ -90,7 +90,7 @@ describe('#pollTeamDeployments', () => {
       .fn()
       .mockResolvedValue({ polled: 2, transitioned: 1, abandoned: 0 })
 
-    vi.doMock('#/services/team-deployment-service.js', () => ({
+    vi.doMock('#/services/team-deployment-gitops.js', () => ({
       sweepGitopsDeployments
     }))
 

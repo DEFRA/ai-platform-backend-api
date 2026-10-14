@@ -1,21 +1,35 @@
 import { config } from '#/config.js'
 import { createArmClient } from '#/adapters/azure/arm-client.js'
 
+const APIM_API_VERSION = '2024-05-01'
+const COGNITIVE_SERVICES_API_VERSION = '2025-06-01'
+
 // ARM needs a provider-specific api-version on every read. Only the types a
 // team's Terraform outputs can name are listed; an unknown type fails
 // verification rather than being skipped, so nothing goes unchecked.
 const API_VERSION_BY_RESOURCE_TYPE = {
-  'microsoft.apimanagement/service': '2024-05-01',
-  'microsoft.apimanagement/service/apis': '2024-05-01',
-  'microsoft.cognitiveservices/accounts': '2025-06-01',
-  'microsoft.cognitiveservices/accounts/deployments': '2025-06-01',
-  'microsoft.cognitiveservices/accounts/projects': '2025-06-01',
+  'microsoft.apimanagement/service': APIM_API_VERSION,
+  'microsoft.apimanagement/service/apis': APIM_API_VERSION,
+  'microsoft.cognitiveservices/accounts': COGNITIVE_SERVICES_API_VERSION,
+  'microsoft.cognitiveservices/accounts/deployments':
+    COGNITIVE_SERVICES_API_VERSION,
+  'microsoft.cognitiveservices/accounts/projects':
+    COGNITIVE_SERVICES_API_VERSION,
   'microsoft.keyvault/vaults': '2023-07-01',
   'microsoft.managedidentity/userassignedidentities': '2023-01-31'
 }
 
 const ARM_RESOURCE_ID =
   /^\/subscriptions\/[^/]+\/resourcegroups\/[^/]+\/providers\//i
+
+// The values nested in an array or object; none for anything else.
+function childValuesOf(value) {
+  if (Array.isArray(value)) {
+    return value
+  }
+
+  return value !== null && typeof value === 'object' ? Object.values(value) : []
+}
 
 /**
  * Every ARM resource ID (a string starting `/subscriptions/.../providers/`)
@@ -32,10 +46,8 @@ export function collectResourceIds(outputs) {
       if (ARM_RESOURCE_ID.test(value)) {
         ids.add(value)
       }
-    } else if (Array.isArray(value)) {
-      value.forEach(visit)
-    } else if (value !== null && typeof value === 'object') {
-      Object.values(value).forEach(visit)
+    } else {
+      childValuesOf(value).forEach(visit)
     }
   }
 

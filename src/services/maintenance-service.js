@@ -5,7 +5,7 @@ import {
   writeSecretToVault,
   externalGatewaySubscriptionIdOf
 } from '#/services/credential-service.js'
-import { sweepGitopsDeployments } from '#/services/team-deployment-service.js'
+import { sweepGitopsDeployments } from '#/services/team-deployment-gitops.js'
 import { requireLock } from '#/common/helpers/mongo-lock.js'
 
 const PENDING_RECONCILE_AFTER_MS = 10 * 60 * 1000

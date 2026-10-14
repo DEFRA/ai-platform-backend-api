@@ -10,6 +10,36 @@ const CONTRACT_STATES = [
   'deploy-failed'
 ]
 
+const operationId = 'contract-op-00000001'
+const path = 'environments/infradev/alpha.json'
+const request = {
+  environment: 'infradev',
+  path,
+  document: {
+    schemaVersion: 1,
+    revision: 1,
+    environment: 'infradev',
+    operationId,
+    team: { slug: 'alpha', serviceCode: 'ZZZ' }
+  },
+  operationId,
+  requestedBy: 'contract-user-1',
+  expectedRevision: 0,
+  action: 'write'
+}
+
+function isNullableInteger(value) {
+  return value === null || Number.isInteger(value)
+}
+
+function isNullableString(value) {
+  return value === null || typeof value === 'string'
+}
+
+function sortedKeysOf(value) {
+  return Object.keys(value).sort((a, b) => a.localeCompare(b))
+}
+
 /**
  * Shared `TenantOrchestrator` contract suite, run against every adapter (the
  * mock and the nocked GitHub adapter) so Liskov substitution is enforced by
@@ -26,32 +56,6 @@ export function describeTenantOrchestratorContract(
   createOrchestrator,
   { arrange = () => {} } = {}
 ) {
-  const operationId = 'contract-op-00000001'
-  const path = 'environments/infradev/alpha.json'
-  const request = {
-    environment: 'infradev',
-    path,
-    document: {
-      schemaVersion: 1,
-      revision: 1,
-      environment: 'infradev',
-      operationId,
-      team: { slug: 'alpha', serviceCode: 'ZZZ' }
-    },
-    operationId,
-    requestedBy: 'contract-user-1',
-    expectedRevision: 0,
-    action: 'write'
-  }
-
-  function isNullableInteger(value) {
-    return value === null || Number.isInteger(value)
-  }
-
-  function isNullableString(value) {
-    return value === null || typeof value === 'string'
-  }
-
   describe(`TenantOrchestrator contract: ${name}`, () => {
     beforeEach(() => {
       arrange()
@@ -60,7 +64,7 @@ export function describeTenantOrchestratorContract(
     test('requestDeployment returns the operation ID as requested, with the submit run or nulls', async () => {
       const submitted = await createOrchestrator().requestDeployment(request)
 
-      expect(Object.keys(submitted).sort()).toEqual([
+      expect(sortedKeysOf(submitted)).toEqual([
         'operationId',
         'status',
         'submitRunId',
@@ -99,7 +103,7 @@ export function describeTenantOrchestratorContract(
         reason: `retry ${operationId}`
       })
 
-      expect(Object.keys(applied).sort()).toEqual(['runId', 'runUrl'])
+      expect(sortedKeysOf(applied)).toEqual(['runId', 'runUrl'])
       expect(isNullableInteger(applied.runId)).toBe(true)
       expect(isNullableString(applied.runUrl)).toBe(true)
     })
