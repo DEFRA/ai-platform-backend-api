@@ -27,6 +27,7 @@ import {
   submissionRequest
 } from '#/services/team-deployment-submission.js'
 import { settleGitopsStep } from '#/services/team-deployment-gitops-steps.js'
+import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
 
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
 const REQUEST_ACTION = 'teamDeployment.request'
@@ -145,7 +146,10 @@ export async function requestDeployment(
   db,
   locker,
   { teamId, modelSlug, environment, requestedBy, idempotencyKey, traceParent },
-  { registry = tenantOrchestratorRegistry, buildDesiredState } = {}
+  {
+    registry = tenantOrchestratorRegistry,
+    buildDesiredState = teamDesiredStateBuilder
+  } = {}
 ) {
   if (environment !== TEAM_FACING_ENVIRONMENT) {
     throw boomWithCode(

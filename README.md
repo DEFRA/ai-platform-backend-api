@@ -303,17 +303,28 @@ environment is still in progress (or being reverted or abandoned) is stored as `
 its document built then, once that one ends.
 Platform Admins
 (users whose `roles` include `platform-admin`; nothing assigns it yet) can
-`POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`. Until the WS6 desired-state builder
-exists, `github` answers new requests with `501 desired-state-unavailable`.
+`POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`.
 
-| Variable                      | Default                         | Purpose                                                                                                                                             |
-| :---------------------------- | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TENANT_ORCHESTRATOR`         | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`) |
-| `GITOPS_TENANTS_REPO`         | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                        |
-| `GITOPS_DEPLOYMENTS_REPO`     | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                   |
-| `GITOPS_POLL_MIN_INTERVAL_MS` | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                        |
-| `GITOPS_CLAIM_LEASE_MS`       | `600000`                        | How long a claimed retry, revert or abandon waits for its dispatch before another poll may claim it again                                           |
-| `AIP_ENVIRONMENTS`            | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group                       |
+The document itself is built by
+[`team-desired-state.js`](src/services/team-desired-state.js) (WS6), always from the file `main`
+holds now rather than from the portal's own record, since the file is written whole and an engineer
+or a revert may have changed it: the model is added to `deployments[]` and
+`gateway.allowedDeployments`, `revision` is the file's plus one, and the team's federations,
+external clients and agreed limits are carried over untouched. A new file starts at revision 1 with
+the catalogue's team SKU, that environment's default capacity and the default limits below. The
+team needs a three-character `serviceCode` first, or the request is refused with
+`409 service-code-required`.
+
+| Variable                           | Default                         | Purpose                                                                                                                                             |
+| :--------------------------------- | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`) |
+| `GITOPS_TENANTS_REPO`              | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                        |
+| `GITOPS_DEPLOYMENTS_REPO`          | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                   |
+| `GITOPS_POLL_MIN_INTERVAL_MS`      | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                        |
+| `GITOPS_CLAIM_LEASE_MS`            | `600000`                        | How long a claimed retry, revert or abandon waits for its dispatch before another poll may claim it again                                           |
+| `TEAM_DEFAULT_TOKENS_PER_MINUTE`   | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                        |
+| `TEAM_DEFAULT_REQUESTS_PER_MINUTE` | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                      |
+| `AIP_ENVIRONMENTS`                 | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group                       |
 
 ```json
 {

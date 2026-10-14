@@ -178,23 +178,12 @@ async function dispatchWorkflow(client, repo, workflowId, inputs) {
 // read-only client for the repository and that repository, plus the run
 // report and ancestry caches shared across polls.
 
-async function readPreviousDocument({ reader, client, repo }, path, mergeSha) {
-  const commit = await reader.read(
-    client,
-    'GET /repos/{owner}/{repo}/commits/{ref}',
-    { ...repo, ref: mergeSha }
-  )
-  const parentSha = commit.parents?.[0]?.sha
-
-  if (!parentSha) {
-    return { document: null }
-  }
-
+async function readJsonFile({ reader, client, repo }, path, ref) {
   try {
     const file = await reader.read(
       client,
       'GET /repos/{owner}/{repo}/contents/{+path}',
-      { ...repo, path, ref: parentSha }
+      { ...repo, path, ...(ref ? { ref } : {}) }
     )
 
     return {
@@ -209,6 +198,21 @@ async function readPreviousDocument({ reader, client, repo }, path, mergeSha) {
 
     throw error
   }
+}
+
+async function readPreviousDocument(reads, path, mergeSha) {
+  const commit = await reads.reader.read(
+    reads.client,
+    'GET /repos/{owner}/{repo}/commits/{ref}',
+    { ...reads.repo, ref: mergeSha }
+  )
+  const parentSha = commit.parents?.[0]?.sha
+
+  if (!parentSha) {
+    return { document: null }
+  }
+
+  return readJsonFile(reads, path, parentSha)
 }
 
 // A write or remove is still `requested` after its submit run succeeds, until
@@ -616,6 +620,12 @@ export function createGithubTenantOrchestrator({
     return readPreviousDocument(readsFor(path), path, mergeSha)
   }
 
+  // No `ref`: the default branch, which is the only branch an applied team
+  // file lives on.
+  async function getCurrentDocument({ path }) {
+    return readJsonFile(readsFor(path), path)
+  }
+
   async function getDeploymentStatus(entry) {
     const { operationId, status, gitops = {} } = entry
     const links = linksOf(gitops)
@@ -643,6 +653,7 @@ export function createGithubTenantOrchestrator({
     requestDeployment,
     getDeploymentStatus,
     requestApply,
-    getPreviousDocument
+    getPreviousDocument,
+    getCurrentDocument
   }
 }

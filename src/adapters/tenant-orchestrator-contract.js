@@ -116,5 +116,11 @@ export function describeTenantOrchestratorContract(
 
       expect(previous).toEqual({ document: null })
     })
+
+    test('getCurrentDocument returns null for a team with no file on main', async () => {
+      const current = await createOrchestrator().getCurrentDocument({ path })
+
+      expect(current).toEqual({ document: null })
+    })
   })
 }

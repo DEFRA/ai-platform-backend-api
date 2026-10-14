@@ -22,6 +22,7 @@ import {
   needsAbandon
 } from '#/services/team-deployment-gitops-steps.js'
 import { releaseQueue } from '#/services/team-deployment-queue.js'
+import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
 
 // The operations the backend submits after an entry's own - a D14 revert,
 // an abandon - each followed to its end through the same GitOps states.
@@ -35,7 +36,7 @@ function settingsOf({
   logger,
   pollMinIntervalMs = config.get('gitops.pollMinIntervalMs'),
   claimLeaseMs = config.get('gitops.claimLeaseMs'),
-  buildDesiredState
+  buildDesiredState = teamDesiredStateBuilder
 }) {
   return {
     registry,

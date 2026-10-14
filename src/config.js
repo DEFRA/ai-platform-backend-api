@@ -159,6 +159,18 @@ export const config = convict({
       format: 'nat',
       default: 3000,
       env: 'TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS'
+    },
+    defaultTokensPerMinute: {
+      doc: "Gateway token limit a new team file starts with, until B17 agrees per-environment bounds. An existing team file's limits are never overwritten",
+      format: 'nat',
+      default: 1000,
+      env: 'TEAM_DEFAULT_TOKENS_PER_MINUTE'
+    },
+    defaultRequestsPerMinute: {
+      doc: 'Gateway request limit a new team file starts with when the catalogue model states none',
+      format: 'nat',
+      default: 60,
+      env: 'TEAM_DEFAULT_REQUESTS_PER_MINUTE'
     }
   },
   tenantOrchestrator: {

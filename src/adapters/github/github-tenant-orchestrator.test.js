@@ -374,6 +374,28 @@ describe('#createGithubTenantOrchestrator', () => {
     })
   })
 
+  describe('getCurrentDocument', () => {
+    test('reads the file from the default branch', async () => {
+      nock(GITHUB_API)
+        .get(`${TENANTS}/contents/${PATH}`)
+        .reply(200, github.fileContents(alphaText))
+
+      await expect(
+        createOrchestrator().getCurrentDocument({ path: PATH })
+      ).resolves.toEqual({ document: JSON.parse(alphaText) })
+    })
+
+    test('has no document for a team with no file yet', async () => {
+      nock(GITHUB_API)
+        .get(`${TENANTS}/contents/${PATH}`)
+        .reply(404, { message: 'Not Found' })
+
+      await expect(
+        createOrchestrator().getCurrentDocument({ path: PATH })
+      ).resolves.toEqual({ document: null })
+    })
+  })
+
   describe('getDeploymentStatus', () => {
     test('is requested while the submit run is queued or running', async () => {
       replyWithPulls([])

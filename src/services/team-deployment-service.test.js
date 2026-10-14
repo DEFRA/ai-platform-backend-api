@@ -179,7 +179,7 @@ describe('team-deployment-service (GitOps)', () => {
   }
 
   describe('requestDeployment', () => {
-    test('fails with desired-state-unavailable and records nothing until the WS6 builder is supplied', async () => {
+    test('fails with desired-state-unavailable and records nothing when the team has no file to build', async () => {
       const orchestrator = fakeOrchestrator()
       const { teamId, userId } = await signedInMember()
 

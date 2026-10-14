@@ -87,5 +87,11 @@ export const mockTenantOrchestrator = {
 
   async getPreviousDocument() {
     return { document: null }
+  },
+
+  // The mock keeps no files, so every team starts from nothing: a document
+  // built against it is always revision 1.
+  async getCurrentDocument() {
+    return { document: null }
   }
 }
