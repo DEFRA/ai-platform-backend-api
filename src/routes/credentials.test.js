@@ -576,7 +576,8 @@ describe('#credentials routes', () => {
       `team-${teamId}-sandbox`
     )
     expect(result.credential.allowedDeployments).toEqual(['gpt-4o'])
-    expect(result.credential.credentialType).toBe('subscription-key')
+    // The team tier is OAuth only, so the type defaults to it.
+    expect(result.credential.credentialType).toBe('oauth')
     // A team credential spans models, so it keeps cloud/gateway but no single provider/offering.
     expect(result.credential).toMatchObject({
       provider: null,
@@ -584,7 +585,15 @@ describe('#credentials routes', () => {
       cloud: 'azure',
       gateway: 'azure-apim'
     })
-    expect(result.secret).toEqual(expect.stringContaining('mock-key-'))
+    expect(result.secret).toEqual(expect.stringContaining('mock-oauth-'))
+    expect(
+      await server.db
+        .collection('teamDeployments')
+        .findOne({ teamId, environment: 'sandbox' })
+    ).toMatchObject({
+      gateway: expect.objectContaining({ credentialType: 'oauth' }),
+      oauthClient: { enabled: true, appRoles: [] }
+    })
   })
 
   test('POST /v1/credentials creates only one active credential when a team requests concurrently', async () => {
@@ -705,10 +714,10 @@ describe('#credentials routes', () => {
     ])
   })
 
-  test('POST /v1/credentials rejects a different credentialType for a team that already has one fixed', async () => {
+  test('POST /v1/credentials refuses a team subscription key, since the team tier is OAuth only', async () => {
     const teamId = await createTeamWithActiveDeployment('team-cred-user-7')
 
-    await server.inject({
+    const { statusCode } = await server.inject({
       method: 'POST',
       url: '/v1/credentials',
       headers: {
@@ -724,27 +733,15 @@ describe('#credentials routes', () => {
       }
     })
 
-    const { result, statusCode } = await server.inject({
-      method: 'POST',
-      url: '/v1/credentials',
-      headers: {
-        'x-user-id': 'team-cred-user-7',
-        'idempotency-key': randomUUID()
-      },
-      payload: {
-        modelSlug: 'gpt-4o',
-        tier: 'team',
-        teamId,
-        environment: 'sandbox',
-        credentialType: 'oauth'
-      }
-    })
-
-    expect(statusCode).toBe(409)
-    expect(result.code).toBe('credential-type-fixed')
+    expect(statusCode).toBe(400)
+    expect(
+      await server.db
+        .collection('credentials')
+        .countDocuments({ teamId, tier: 'team' })
+    ).toBe(0)
   })
 
-  test('POST /v1/credentials releases the credentialType reservation when the issuer fails, so a retry is not locked to a type that was never issued', async () => {
+  test('POST /v1/credentials still issues the team credential to a teammate after another member’s attempt failed', async () => {
     const teamId = await createTeamWithActiveDeployment('test-fail-rollback-1')
 
     await server.inject({
@@ -797,13 +794,12 @@ describe('#credentials routes', () => {
         modelSlug: 'gpt-4o',
         tier: 'team',
         teamId,
-        environment: 'sandbox',
-        credentialType: 'subscription-key'
+        environment: 'sandbox'
       }
     })
 
     expect(statusCode).toBe(201)
-    expect(result.credential.credentialType).toBe('subscription-key')
+    expect(result.credential.credentialType).toBe('oauth')
   })
 
   test('POST /v1/credentials returns 409 deployment-not-ready before the deployment is active', async () => {
@@ -967,7 +963,7 @@ describe('#credentials routes', () => {
     })
 
     expect(statusCode).toBe(200)
-    expect(result.secret).toEqual(expect.stringContaining('mock-key-'))
+    expect(result.secret).toEqual(expect.stringContaining('mock-oauth-'))
     expect(result.secret).not.toBe(issued.result.secret)
     expect(result.credential.keyHint).toBe(result.secret.slice(-4))
     expect(result.credential.keyHint).not.toBe(issued.result.credential.keyHint)

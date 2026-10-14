@@ -143,8 +143,7 @@ async function reconcileUnwrittenVaultSecrets(db, registry, vault) {
         modelSlug: credential.modelSlug,
         tier: credential.tier,
         teamId: credential.teamId,
-        environment: credential.environment,
-        credentialType: credential.credentialType
+        environment: credential.environment
       })
 
       if (await writeSecretToVault(db, vault, credential, reissued.secret)) {

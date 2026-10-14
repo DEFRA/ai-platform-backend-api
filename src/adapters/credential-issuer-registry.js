@@ -9,6 +9,12 @@ import { AZURE_APIM } from '#/adapters/gateway-keys.js'
  * @property {(credential: object) => {issuerKey: string, issuer: import('#/adapters/credential-issuer.js').CredentialIssuer}} forCredential
  */
 
+function notEnabled(message) {
+  const error = new Error(message)
+  error.code = 'gateway-not-enabled'
+  return error
+}
+
 /**
  * Creates a registry that resolves which `CredentialIssuer` handles a given
  * model or already-issued credential. Bedrock and direct APIs are hosting
@@ -29,11 +35,9 @@ export function createCredentialIssuerRegistry(
     const issuer = issuersByKey[issuerKey]
 
     if (!issuer) {
-      const error = new Error(
+      throw notEnabled(
         `No credential issuer registered for issuerKey "${issuerKey}"`
       )
-      error.code = 'gateway-not-enabled'
-      throw error
     }
 
     return { issuerKey, issuer }
@@ -42,10 +46,16 @@ export function createCredentialIssuerRegistry(
   return {
     // `mock` mode (local dev) never reaches a real gateway whatever the
     // model's gateway says, and neither does a tier listed in `mockTiers`;
-    // otherwise the catalogue's gateway picks it.
+    // otherwise the catalogue's gateway picks it. The team tier is OAuth
+    // only and no gateway issues OAuth client secrets yet, so in `live`
+    // mode only `mockTiers` can serve it - never a subscription key.
     forModel(model, tier) {
       if (mode === 'mock' || mockTiers.includes(tier)) {
         return resolve('mock')
+      }
+
+      if (tier === 'team') {
+        throw notEnabled('No gateway issues team OAuth credentials yet')
       }
 
       return resolve(model?.gateway)

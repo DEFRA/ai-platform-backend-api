@@ -262,7 +262,11 @@ enabled is refused with `501 gateway-not-enabled`. A credential records the `iss
 minted it, and its renew/rotate/revoke/reveal use that issuer and its matching vault.
 `MOCK_TIERS` (comma-separated `research`/`team`, default empty, refused in prod) keeps the named
 tiers on the mock issuer and vault even in `live` mode, e.g. `MOCK_TIERS=team` to demo the team
-tier without a real team gateway while the research tier uses the real gateways.
+tier without a real team gateway while the research tier uses the real gateways. Research
+credentials are time-bound APIM subscription keys. The team tier is OAuth only (a client secret or
+a federated credential, local development included; `credentialType` accepts only `oauth`), and no
+gateway issues team OAuth credentials yet, so in `live` mode it needs `MOCK_TIERS=team` and is
+otherwise refused with `501 gateway-not-enabled`.
 
 The catalogue sync reads only the `hosting`/`gateway` offering shape (`ai-platform-infra` `v0.2.0`
 onwards) and stores it nested on each model. An offering without `hosting.platform` and `gateway`,

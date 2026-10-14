@@ -330,7 +330,8 @@ async function newEntry(
 }
 
 // Adds the entry to the team's document for the environment, creating the
-// document on the team's first request there.
+// document on the team's first request there. The team tier is OAuth only,
+// so a team's gateway always takes OAuth credentials.
 async function insertEntry(db, { teamId, environment }, entry) {
   await db.collection('teamDeployments').updateOne(
     { teamId, environment },
@@ -340,11 +341,11 @@ async function insertEntry(db, { teamId, environment }, entry) {
         teamId,
         environment,
         gateway: {
-          credentialType: null,
+          credentialType: 'oauth',
           allowedDeployments: [],
           limits: {}
         },
-        oauthClient: { enabled: false, appRoles: [] },
+        oauthClient: { enabled: true, appRoles: [] },
         createdAt: entry.createdAt
       },
       $set: { updatedAt: entry.createdAt }

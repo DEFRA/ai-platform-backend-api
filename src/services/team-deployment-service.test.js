@@ -11,6 +11,15 @@ const alpha = JSON.parse(
   )
 )
 
+// The team document the WS6 builder will produce: the team tier is OAuth
+// only, so its gateway always takes OAuth credentials and it carries an
+// `oauth` block, whatever the infra example says.
+const desiredAlpha = {
+  ...alpha,
+  gateway: { ...alpha.gateway, credentialType: 'oauth' },
+  oauth: { externalClients: [], federations: [], secretsAllowed: true }
+}
+
 const SUBMIT_RUN_URL =
   'https://github.com/DEFRA/ai-platform-tenants/actions/runs/1001'
 const APPLY_RUN_URL =
@@ -48,11 +57,11 @@ function githubRegistry(orchestrator) {
   }
 }
 
-// Stands in for the WS6 desired-state builder: the infra example team file,
-// at the operation being submitted.
+// Stands in for the WS6 desired-state builder: the team document at the
+// operation being submitted.
 async function buildDesiredState(db, { environment, operationId }) {
   return {
-    document: { ...alpha, environment, operationId, revision: 2 },
+    document: { ...desiredAlpha, environment, operationId, revision: 2 },
     expectedRevision: 1
   }
 }
@@ -207,7 +216,7 @@ describe('team-deployment-service (GitOps)', () => {
         environment: 'sandbox',
         path: 'environments/sandbox/alpha.json',
         document: {
-          ...alpha,
+          ...desiredAlpha,
           environment: 'sandbox',
           operationId: entry.operationId,
           revision: 2,
