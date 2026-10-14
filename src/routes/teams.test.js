@@ -35,7 +35,27 @@ describe('#teams routes', () => {
     expect(statusCode).toBe(201)
     expect(headers.location).toBe(`/v1/teams/${result.team._id}`)
     expect(result.team.normalisedName).toBe('flood-risk-team')
+    expect(result.team.slug).toBe('flood-risk-team')
     expect(result.team.verified).toBe(false)
+  })
+
+  test('POST /v1/teams numbers the slug when a differently punctuated name derives the same one', async () => {
+    const first = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: postHeaders('team-slug-user'),
+      payload: { name: 'Coastal Erosion' }
+    })
+    const second = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: postHeaders('team-slug-user'),
+      payload: { name: 'Coastal Erosion!' }
+    })
+
+    expect(first.result.team.slug).toBe('coastal-erosion')
+    expect(second.statusCode).toBe(201)
+    expect(second.result.team.slug).toBe('coastal-erosion-2')
   })
 
   test('POST /v1/teams replays without creating a duplicate for a repeated Idempotency-Key', async () => {

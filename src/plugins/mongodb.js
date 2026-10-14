@@ -123,6 +123,10 @@ async function createIndexes(db) {
   await db
     .collection('teams')
     .createIndex({ normalisedName: 1 }, { unique: true })
+  // The slug names the team's GitOps file and gateway API path, so it must be
+  // unique across the platform. The `2026-10-14-add-team-slug` backfill gives
+  // older teams one before this index is created.
+  await ensureIndex(db.collection('teams'), { slug: 1 }, { unique: true })
   // Makes the Idempotency-Key replay on POST /v1/teams atomic rather than
   // check-then-insert, so concurrent retries cannot create two teams.
   // Partial: excludes legacy/null idempotencyKey docs from the uniqueness check.

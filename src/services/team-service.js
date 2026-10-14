@@ -1,7 +1,12 @@
 import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
+import { deriveTeamSlug, withSlugSuffix } from '#/common/helpers/team-slug.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
+
+// Two names that differ only in punctuation ("Data Team" and "Data Team!")
+// pass the name check but derive one slug, so a clash needs a numbered retry.
+const MAX_SLUG_ATTEMPTS = 10
 
 /**
  * Normalises a team name for duplicate detection, same pattern as the
@@ -10,6 +15,53 @@ import { recordAuditEvent } from '#/services/audit-service.js'
  */
 function normaliseName(name) {
   return name.toLowerCase().trim().replace(/\s+/g, '-')
+}
+
+/**
+ * Inserts a team, taking the next numbered slug when the derived one is
+ * already held, and replaying an Idempotency-Key winner when a concurrent
+ * retry got there first.
+ * @param {import('mongodb').Db} db
+ * @param {object} fields - the team document without its slug
+ * @param {{createdBy: string, idempotencyKey: string}} replayKey
+ * @returns {Promise<{insertedId?: import('mongodb').ObjectId, slug?: string, replay?: object}>}
+ */
+async function insertTeamWithUniqueSlug(db, fields, replayKey) {
+  const base = deriveTeamSlug(fields.name)
+
+  for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
+    const slug = attempt === 1 ? base : withSlugSuffix(base, attempt)
+
+    try {
+      const { insertedId } = await db
+        .collection('teams')
+        .insertOne({ ...fields, slug })
+
+      return { insertedId, slug }
+    } catch (error) {
+      if (error.code !== 11000) {
+        throw error
+      }
+
+      // Either index can trip first when a concurrent retry uses the same key
+      // and the same name, so always check for a replay before reporting a clash.
+      const winner = await db.collection('teams').findOne(replayKey)
+
+      if (winner) {
+        return { replay: winner }
+      }
+
+      if (!error.keyPattern?.slug) {
+        break
+      }
+    }
+  }
+
+  throw boomWithCode(
+    Boom.conflict,
+    'A team with this name already exists',
+    'team-exists'
+  )
 }
 
 /**
@@ -42,31 +94,16 @@ export async function createTeam(
     createdAt: now
   }
 
-  let insertedId
+  const inserted = await insertTeamWithUniqueSlug(db, team, {
+    createdBy,
+    idempotencyKey
+  })
 
-  try {
-    ;({ insertedId } = await db.collection('teams').insertOne(team))
-  } catch (error) {
-    if (error.code === 11000) {
-      // Either index can trip first when a concurrent retry uses the same key
-      // and the same name, so always check for a replay before reporting a clash.
-      const winner = await db
-        .collection('teams')
-        .findOne({ createdBy, idempotencyKey })
-
-      if (winner) {
-        return { team: winner, replay: true }
-      }
-
-      throw boomWithCode(
-        Boom.conflict,
-        'A team with this name already exists',
-        'team-exists'
-      )
-    }
-
-    throw error
+  if (inserted.replay) {
+    return { team: inserted.replay, replay: true }
   }
+
+  const { insertedId, slug } = inserted
 
   try {
     await db.collection('teamMembers').insertOne({
@@ -92,7 +129,7 @@ export async function createTeam(
     outcome: 'success'
   })
 
-  return { team: { _id: insertedId, ...team }, replay: false }
+  return { team: { _id: insertedId, ...team, slug }, replay: false }
 }
 
 /**

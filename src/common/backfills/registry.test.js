@@ -532,4 +532,49 @@ describe('#backfillRegistry', () => {
       expect(deployment.gateway.credentialType).toBe('subscription-key')
     })
   })
+
+  describe('2026-10-14-add-team-slug', () => {
+    test('derives a slug for a team created before the field existed', async () => {
+      const { insertedId } = await db.collection('teams').insertOne({
+        name: 'Legacy Slugless Team',
+        normalisedName: 'legacy-slugless-team',
+        createdBy: 'legacy-user',
+        createdAt: '2026-09-01T00:00:00.000Z'
+      })
+
+      const { modifiedCount } = await findBackfill(
+        '2026-10-14-add-team-slug'
+      ).run(db)
+
+      expect(modifiedCount).toBeGreaterThanOrEqual(1)
+      const updated = await db.collection('teams').findOne({ _id: insertedId })
+      expect(updated.slug).toBe('legacy-slugless-team')
+    })
+
+    test('numbers a derived slug that is already taken and leaves existing slugs alone', async () => {
+      await db.collection('teams').insertOne({
+        name: 'Rainfall',
+        normalisedName: 'rainfall-held',
+        slug: 'rainfall',
+        createdBy: 'legacy-user',
+        createdAt: '2026-09-01T00:00:00.000Z'
+      })
+      const { insertedId } = await db.collection('teams').insertOne({
+        name: 'Rainfall!',
+        normalisedName: 'rainfall!',
+        createdBy: 'legacy-user',
+        createdAt: '2026-09-02T00:00:00.000Z'
+      })
+
+      await findBackfill('2026-10-14-add-team-slug').run(db)
+
+      const updated = await db.collection('teams').findOne({ _id: insertedId })
+      expect(updated.slug).toBe('rainfall-2')
+
+      const held = await db
+        .collection('teams')
+        .findOne({ normalisedName: 'rainfall-held' })
+      expect(held.slug).toBe('rainfall')
+    })
+  })
 })

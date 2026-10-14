@@ -140,6 +140,12 @@ git config --global core.autocrlf false
 > invited member) binds to the first sign-in with its email. Every GitOps change names its requester as
 > `entra:{oid}`, so look people up by `oid`, never by email (direction 14 October 2026).
 
+> [!IMPORTANT]
+> A team carries an immutable `slug`, derived from its name on `POST /v1/teams` and made unique with a
+> numbered suffix when two names derive the same one. It names the team's GitOps file
+> (`environments/{env}/{slug}.json`), its gateway API path (`/{slug}`) and its model deployments
+> (`{slug}-{model}`), so it is never regenerated when a team is renamed.
+
 ## Development helpers
 
 ### MongoDB Locks
