@@ -42,4 +42,7 @@ The plan docs in `ai-platform-frontend/docs/plans/` are the single source of tru
 journey — there is no separate copy in this repo or in agent memory. When a design change affects
 a backend route/service/adapter covered here, edit the relevant `routeN-plan.md` in the frontend
 repo directly (update its `STATUS`/decisions, add a dated note) rather than tracking the change
-separately here.
+separately here. Plans sit in `implemented/` or `in-progress/` by status, with an index in
+`ai-platform-frontend/docs/plans/README.md`: whenever a backend change alters a plan's state, move
+the plan to the right folder and update that README in the same change, following the rules in the
+frontend's [route-plans.instructions.md](../../../ai-platform-frontend/.github/instructions/route-plans.instructions.md#whenever-you-touch-a-plan-keep-the-folders-and-the-readme-in-sync).
