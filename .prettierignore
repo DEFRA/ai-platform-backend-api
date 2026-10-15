@@ -2,3 +2,5 @@ package-lock.json
 node_modules
 coverage
 .github/agents
+# Byte-exact copies of ai-platform-infra's canonical examples (not Prettier's layout)
+src/common/fixtures/gitops

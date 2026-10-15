@@ -9,7 +9,7 @@ beforeAll(() => {
   globalThis.fetch = realFetch
 })
 
-const { createGithubCatalogueSource, toPemPrivateKey } =
+const { createGithubCatalogueSource } =
   await import('#/adapters/github/github-catalogue-source.js')
 const { Octokit } = await import('octokit')
 
@@ -69,21 +69,25 @@ function mockSuccessfulFetch({ ref = 'v0.1.0', etag = 'etag-1' } = {}) {
     })
 }
 
-describe('#toPemPrivateKey', () => {
-  test('decodes a base64-encoded PEM back into a genuine multi-line PEM', () => {
-    const pem =
-      '-----BEGIN RSA PRIVATE KEY-----\nabc123\n-----END RSA PRIVATE KEY-----\n'
-    expect(toPemPrivateKey(Buffer.from(pem).toString('base64'))).toBe(pem)
-  })
-
-  test('returns null when given null', () => {
-    expect(toPemPrivateKey(null)).toBeNull()
-  })
-})
-
 describe('#createGithubCatalogueSource', () => {
   afterEach(() => {
     nock.cleanAll()
+  })
+
+  test('reads through the shared GitHub client by default, with the pinned API version', async () => {
+    let sentApiVersion
+
+    nock(GITHUB_API)
+      .get(`/repos/${REPO}/git/ref/tags%2Fv0.1.0`)
+      .reply(function () {
+        sentApiVersion = this.req.headers['x-github-api-version']
+        return [404, { message: 'not found' }]
+      })
+
+    const source = createGithubCatalogueSource({ repo: REPO })
+
+    await expect(source.fetchCatalogue({ ref: 'v0.1.0' })).rejects.toThrow()
+    expect(sentApiVersion).toBe('2026-03-10')
   })
 
   test('fetches models and providers from catalogue/**.json, excluding catalogue/schema', async () => {

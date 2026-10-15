@@ -14,26 +14,29 @@ describe('mockCredentialIssuer', () => {
     ).rejects.toThrow('Mock issuer forced failure')
   })
 
-  test('issue returns a shared externalId for a team credential, not per-model', async () => {
+  test('issue returns a shared OAuth client secret for a team credential, not per-model', async () => {
     const issued = await mockCredentialIssuer.issue({
       userId: 'user-1',
       modelSlug: 'gpt-4o',
       tier: 'team',
       teamId: 'team-1',
-      environment: 'sandbox',
-      credentialType: 'oauth'
+      environment: 'sandbox'
     })
 
     expect(issued.externalId).toBe('team-team-1-sandbox')
     expect(issued.secret).toMatch(/^mock-oauth-/)
+    expect(issued.keyHint).toBe(issued.secret.slice(-4))
   })
 
-  test('rotate on a team externalId keeps the oauth/subscription-key distinction', async () => {
-    const rotated = await mockCredentialIssuer.rotate({
-      externalId: 'team-team-1-sandbox',
-      credentialType: 'oauth'
+  test('rotate keeps a team credential an OAuth client secret and a research one a key', async () => {
+    const team = await mockCredentialIssuer.rotate({
+      externalId: 'team-team-1-sandbox'
+    })
+    const research = await mockCredentialIssuer.rotate({
+      externalId: 'research-user-1-gpt-4o'
     })
 
-    expect(rotated.secret).toMatch(/^mock-oauth-/)
+    expect(team.secret).toMatch(/^mock-oauth-/)
+    expect(research.secret).toMatch(/^mock_/)
   })
 })

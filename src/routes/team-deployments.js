@@ -46,7 +46,8 @@ export const teamDeployments = [
         modelSlug,
         environment,
         requestedBy,
-        idempotencyKey
+        idempotencyKey,
+        traceParent: request.headers.traceparent
       })
 
       return h
@@ -65,10 +66,14 @@ export const teamDeployments = [
       }
     },
     handler: async (request, h) => {
-      const items = await listDeploymentsForTeam(request.db, {
-        teamId: request.params.teamId,
-        userId: request.headers['x-user-id']
-      })
+      const items = await listDeploymentsForTeam(
+        request.db,
+        {
+          teamId: request.params.teamId,
+          userId: request.headers['x-user-id']
+        },
+        { logger: request.logger }
+      )
 
       return h.response({ items })
     }
@@ -80,11 +85,15 @@ export const teamDeployments = [
       validate: { headers: userIdHeader, params: idsParam }
     },
     handler: async (request, h) => {
-      const deployment = await getDeployment(request.db, {
-        id: request.params.id,
-        teamId: request.params.teamId,
-        userId: request.headers['x-user-id']
-      })
+      const deployment = await getDeployment(
+        request.db,
+        {
+          id: request.params.id,
+          teamId: request.params.teamId,
+          userId: request.headers['x-user-id']
+        },
+        { logger: request.logger }
+      )
 
       if (!deployment) {
         return Boom.notFound()

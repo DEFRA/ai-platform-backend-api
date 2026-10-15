@@ -1,7 +1,27 @@
 import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
+import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
+import { deriveTeamSlug, withSlugSuffix } from '#/common/helpers/team-slug.js'
+import { serviceCodeVerifier } from '#/adapters/service-code-verifier-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
+
+// Two names that differ only in punctuation ("Data Team" and "Data Team!")
+// pass the name check but derive one slug, so a clash needs a numbered retry.
+const MAX_SLUG_ATTEMPTS = 10
+
+function membershipLock(teamId) {
+  return `team-members:${teamId}`
+}
+
+/**
+ * The three-character service code the team's AI use is charged to, as the
+ * team file's schema requires it (design F, R01).
+ * @param {string} serviceCode
+ */
+function normaliseServiceCode(serviceCode) {
+  return serviceCode.trim().toUpperCase()
+}
 
 /**
  * Normalises a team name for duplicate detection, same pattern as the
@@ -13,14 +33,63 @@ function normaliseName(name) {
 }
 
 /**
+ * Inserts a team, taking the next numbered slug when the derived one is
+ * already held, and replaying an Idempotency-Key winner when a concurrent
+ * retry got there first.
+ * @param {import('mongodb').Db} db
+ * @param {object} fields - the team document without its slug
+ * @param {{createdBy: string, idempotencyKey: string}} replayKey
+ * @returns {Promise<{insertedId?: import('mongodb').ObjectId, slug?: string, replay?: object}>}
+ */
+async function insertTeamWithUniqueSlug(db, fields, replayKey) {
+  const base = deriveTeamSlug(fields.name)
+
+  for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
+    const slug = attempt === 1 ? base : withSlugSuffix(base, attempt)
+
+    try {
+      const { insertedId } = await db
+        .collection('teams')
+        .insertOne({ ...fields, slug })
+
+      return { insertedId, slug }
+    } catch (error) {
+      if (error.code !== 11000) {
+        throw error
+      }
+
+      // Either index can trip first when a concurrent retry uses the same key
+      // and the same name, so always check for a replay before reporting a clash.
+      const winner = await db.collection('teams').findOne(replayKey)
+
+      if (winner) {
+        return { replay: winner }
+      }
+
+      if (!error.keyPattern?.slug) {
+        break
+      }
+    }
+  }
+
+  throw boomWithCode(
+    Boom.conflict,
+    'A team with this name already exists',
+    'team-exists'
+  )
+}
+
+/**
  * Creates a team and makes the creator its first admin, or replays a prior
  * call with the same Idempotency-Key.
  * @param {import('mongodb').Db} db
- * @param {{name: string, serviceCode?: string, description?: string, createdBy: string, idempotencyKey: string}} params
+ * @param {{name: string, serviceCode: string, description?: string, createdBy: string, idempotencyKey: string}} params
+ * @param {{verifier?: import('#/adapters/service-code-verifier.js').ServiceCodeVerifier}} [deps]
  */
 export async function createTeam(
   db,
-  { name, serviceCode, description, createdBy, idempotencyKey }
+  { name, serviceCode, description, createdBy, idempotencyKey },
+  { verifier = serviceCodeVerifier } = {}
 ) {
   const existing = await db
     .collection('teams')
@@ -30,43 +99,30 @@ export async function createTeam(
     return { team: existing, replay: true }
   }
 
+  const code = normaliseServiceCode(serviceCode)
+  const { verified } = await verifier.verify(code)
   const now = new Date().toISOString()
   const team = {
     name,
     normalisedName: normaliseName(name),
-    serviceCode: serviceCode || null,
-    verified: false,
+    serviceCode: code,
+    verified,
     description: description || null,
     createdBy,
     idempotencyKey,
     createdAt: now
   }
 
-  let insertedId
+  const inserted = await insertTeamWithUniqueSlug(db, team, {
+    createdBy,
+    idempotencyKey
+  })
 
-  try {
-    ;({ insertedId } = await db.collection('teams').insertOne(team))
-  } catch (error) {
-    if (error.code === 11000) {
-      // Either index can trip first when a concurrent retry uses the same key
-      // and the same name, so always check for a replay before reporting a clash.
-      const winner = await db
-        .collection('teams')
-        .findOne({ createdBy, idempotencyKey })
-
-      if (winner) {
-        return { team: winner, replay: true }
-      }
-
-      throw boomWithCode(
-        Boom.conflict,
-        'A team with this name already exists',
-        'team-exists'
-      )
-    }
-
-    throw error
+  if (inserted.replay) {
+    return { team: inserted.replay, replay: true }
   }
+
+  const { insertedId, slug } = inserted
 
   try {
     await db.collection('teamMembers').insertOne({
@@ -92,7 +148,7 @@ export async function createTeam(
     outcome: 'success'
   })
 
-  return { team: { _id: insertedId, ...team }, replay: false }
+  return { team: { _id: insertedId, ...team, slug }, replay: false }
 }
 
 /**
@@ -128,6 +184,58 @@ export async function listTeamsForUser(db, userId) {
     ...team,
     role: roleByTeamId.get(team._id.toString()) ?? null
   }))
+}
+
+/**
+ * Sets a team's service code, for a team created before one was required or
+ * one given the wrong code. Admins only, re-verified on every change, and
+ * audited: the code attributes the team's AI spend, and the team file carries
+ * it to Azure as a tag.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, actorUserId: string, serviceCode: string}} params
+ * @param {{verifier?: import('#/adapters/service-code-verifier.js').ServiceCodeVerifier}} [deps]
+ */
+export async function setServiceCode(
+  db,
+  { teamId, actorUserId, serviceCode },
+  { verifier = serviceCodeVerifier } = {}
+) {
+  if (!ObjectId.isValid(teamId)) {
+    throw Boom.notFound()
+  }
+
+  const role = await getMemberRole(db, { teamId, userId: actorUserId })
+
+  if (role !== 'admin') {
+    // A non-member learns nothing about the team; a member learns only that
+    // they are not an admin.
+    throw role ? Boom.forbidden() : Boom.notFound()
+  }
+
+  const code = normaliseServiceCode(serviceCode)
+  const { verified } = await verifier.verify(code)
+  const team = await db
+    .collection('teams')
+    .findOneAndUpdate(
+      { _id: new ObjectId(teamId) },
+      { $set: { serviceCode: code, verified } },
+      { returnDocument: 'after' }
+    )
+
+  if (!team) {
+    throw Boom.notFound()
+  }
+
+  await recordAuditEvent(db, {
+    actorUserId,
+    action: 'team.setServiceCode',
+    resource: 'team',
+    resourceId: teamId,
+    outcome: 'success',
+    code
+  })
+
+  return { team }
 }
 
 /**
@@ -213,14 +321,12 @@ async function withMemberDisplayNames(db, members) {
 }
 
 /**
- * Invites a member by email. Only an active admin of the team may do this.
+ * The actor must be an active admin of the team. A non-member is told only
+ * that there is nothing there, so team membership is never disclosed.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, email: string, idempotencyKey: string}} params
+ * @param {{teamId: string, actorUserId: string, action: string}} params
  */
-export async function addMember(
-  db,
-  { teamId, actorUserId, email, idempotencyKey }
-) {
+async function requireTeamAdmin(db, { teamId, actorUserId, action }) {
   const actorMembership = await db
     .collection('teamMembers')
     .findOne({ teamId, userId: actorUserId, status: 'active' })
@@ -232,10 +338,65 @@ export async function addMember(
   if (actorMembership.role !== 'admin') {
     throw boomWithCode(
       Boom.forbidden,
-      'Only a team admin can add members',
+      `Only a team admin can ${action}`,
       'admin-required'
     )
   }
+
+  return actorMembership
+}
+
+/**
+ * A member of this team an admin may act on: active or still invited.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, memberId: string}} params
+ */
+async function findManageableMember(db, { teamId, memberId }) {
+  if (!ObjectId.isValid(memberId)) {
+    throw Boom.notFound()
+  }
+
+  const member = await db
+    .collection('teamMembers')
+    .findOne({ _id: new ObjectId(memberId), teamId })
+
+  if (!member || !['active', 'invited'].includes(member.status)) {
+    throw Boom.notFound()
+  }
+
+  return member
+}
+
+/**
+ * A team always keeps an admin (design F), so the last one can be neither
+ * removed nor demoted. Promote someone else first, as two separate changes.
+ * @param {import('mongodb').Db} db
+ * @param {string} teamId
+ */
+async function refuseIfLastAdmin(db, teamId) {
+  const activeAdminCount = await db
+    .collection('teamMembers')
+    .countDocuments({ teamId, role: 'admin', status: 'active' })
+
+  if (activeAdminCount <= 1) {
+    throw boomWithCode(
+      Boom.conflict,
+      'A team must keep at least one admin',
+      'last-admin'
+    )
+  }
+}
+
+/**
+ * Invites a member by email. Only an active admin of the team may do this.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, actorUserId: string, email: string, idempotencyKey: string}} params
+ */
+export async function addMember(
+  db,
+  { teamId, actorUserId, email, idempotencyKey }
+) {
+  await requireTeamAdmin(db, { teamId, actorUserId, action: 'add members' })
 
   const lowerEmail = email.toLowerCase()
 
@@ -314,64 +475,40 @@ export async function addMember(
  * change (`'removed'`), not a delete, so the audit trail and idempotency
  * history survive.
  * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
  * @param {{teamId: string, actorUserId: string, memberId: string}} params
  */
-export async function removeMember(db, { teamId, actorUserId, memberId }) {
-  const actorMembership = await db
-    .collection('teamMembers')
-    .findOne({ teamId, userId: actorUserId, status: 'active' })
+export async function removeMember(
+  db,
+  locker,
+  { teamId, actorUserId, memberId }
+) {
+  await requireTeamAdmin(db, { teamId, actorUserId, action: 'remove members' })
 
-  if (!actorMembership) {
-    throw Boom.notFound()
-  }
+  // Counting the admins and then writing is not atomic, so two admins
+  // removing or demoting each other at once could leave the team with none.
+  const lock = await acquireLockWithRetry(locker, membershipLock(teamId))
 
-  if (actorMembership.role !== 'admin') {
-    throw boomWithCode(
-      Boom.forbidden,
-      'Only a team admin can remove members',
-      'admin-required'
-    )
-  }
+  try {
+    const member = await findManageableMember(db, { teamId, memberId })
 
-  if (!ObjectId.isValid(memberId)) {
-    throw Boom.notFound()
-  }
-
-  const member = await db.collection('teamMembers').findOne({
-    _id: new ObjectId(memberId),
-    teamId
-  })
-
-  if (!member || !['active', 'invited'].includes(member.status)) {
-    throw Boom.notFound()
-  }
-
-  if (member.role === 'admin') {
-    const activeAdminCount = await db.collection('teamMembers').countDocuments({
-      teamId,
-      role: 'admin',
-      status: 'active'
-    })
-
-    if (activeAdminCount <= 1) {
-      throw boomWithCode(
-        Boom.conflict,
-        'A team must keep at least one admin',
-        'last-admin'
-      )
+    if (member.role === 'admin') {
+      await refuseIfLastAdmin(db, teamId)
     }
-  }
 
-  await db.collection('teamMembers').updateOne(
-    { _id: member._id },
-    {
-      $set: {
-        status: 'removed',
-        removedAt: new Date().toISOString(),
-        removedBy: actorUserId
+    await db.collection('teamMembers').updateOne(
+      { _id: member._id },
+      {
+        $set: {
+          status: 'removed',
+          removedAt: new Date().toISOString(),
+          removedBy: actorUserId
+        }
       }
-    }
-  )
+    )
+  } finally {
+    await lock.free()
+  }
 
   await recordAuditEvent(db, {
     actorUserId,
@@ -380,4 +517,60 @@ export async function removeMember(db, { teamId, actorUserId, memberId }) {
     resourceId: teamId,
     outcome: 'success'
   })
+}
+
+/**
+ * Changes a member's role. Only an active admin may do this, and the team's
+ * last admin can no more be demoted than removed, including by themselves:
+ * promote someone else first.
+ * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
+ * @param {{teamId: string, actorUserId: string, memberId: string, role: 'admin'|'user'}} params
+ */
+export async function setMemberRole(
+  db,
+  locker,
+  { teamId, actorUserId, memberId, role }
+) {
+  await requireTeamAdmin(db, {
+    teamId,
+    actorUserId,
+    action: "change a member's role"
+  })
+
+  const lock = await acquireLockWithRetry(locker, membershipLock(teamId))
+  let updated
+
+  try {
+    const member = await findManageableMember(db, { teamId, memberId })
+
+    if (member.role === role) {
+      return { member }
+    }
+
+    if (member.role === 'admin') {
+      await refuseIfLastAdmin(db, teamId)
+    }
+
+    updated = await db
+      .collection('teamMembers')
+      .findOneAndUpdate(
+        { _id: member._id },
+        { $set: { role, roleChangedAt: new Date().toISOString() } },
+        { returnDocument: 'after' }
+      )
+  } finally {
+    await lock.free()
+  }
+
+  await recordAuditEvent(db, {
+    actorUserId,
+    action: 'team.setMemberRole',
+    resource: 'team',
+    resourceId: teamId,
+    outcome: 'success',
+    code: role
+  })
+
+  return { member: updated }
 }

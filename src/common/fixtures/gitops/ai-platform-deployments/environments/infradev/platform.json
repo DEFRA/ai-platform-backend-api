@@ -1,0 +1,11 @@
+{
+  "$schema": "../../../../schemas/pin.schema.json",
+  "environment": "infradev",
+  "operationId": "rel-v0-4-0-0000000001",
+  "previousRelease": "v0.3.0",
+  "release": "v0.4.0",
+  "requestedAt": "2026-10-13T00:00:00.000Z",
+  "requestedBy": "app:ai-platform-orchestrator",
+  "schemaVersion": 1,
+  "sha": "0000000000000000000000000000000000000000"
+}

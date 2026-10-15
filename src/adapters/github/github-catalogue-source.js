@@ -1,48 +1,5 @@
-import { Octokit } from 'octokit'
-import { createAppAuth } from '@octokit/auth-app'
-
 import { config } from '#/config.js'
-
-/**
- * CDP's secret store (and many others) rejects values containing real
- * newlines, so the private key is stored base64-encoded as a single line -
- * decode it here, since @octokit/auth-app needs a genuine multi-line PEM to
- * sign JWTs.
- * @param {string | null} base64PrivateKey
- * @returns {string | null}
- */
-export function toPemPrivateKey(base64PrivateKey) {
-  return base64PrivateKey
-    ? Buffer.from(base64PrivateKey, 'base64').toString('utf8')
-    : null
-}
-
-function createOctokit() {
-  // Client ID is GitHub's current recommendation over the numeric App ID -
-  // @octokit/auth-app's `appId` field accepts either value interchangeably.
-  const appId = config.get('github.clientId') || config.get('github.appId')
-  const privateKey = toPemPrivateKey(config.get('github.privateKey'))
-
-  // This adapter already has its own resilience strategy (fall back to the
-  // last good mirror on any failure) - octokit's bundled retry plugin would
-  // only add latency on top of that, so it's disabled here.
-  if (appId && privateKey) {
-    return new Octokit({
-      authStrategy: createAppAuth,
-      auth: {
-        appId,
-        privateKey,
-        installationId: config.get('github.installationId')
-      },
-      request: { retries: 0 }
-    })
-  }
-
-  return new Octokit({
-    auth: config.get('github.token'),
-    request: { retries: 0 }
-  })
-}
+import { createGithubAppClient } from '#/adapters/github/github-app-client.js'
 
 function isCatalogueJson(entry) {
   return (
@@ -61,12 +18,16 @@ function isCatalogueJson(entry) {
  * transient GitHub outage), it returns the last good mirror rather than
  * throwing - the catalogue must never go empty because GitHub was briefly
  * unreachable. Only the very first fetch, with no mirror yet, can throw.
- * @param {{octokit?: Octokit, repo?: string}} [deps]
+ * Its App token can read contents of the catalogue repository only.
+ * @param {{octokit?: import('octokit').Octokit, repo?: string}} [deps]
  * @returns {import('../catalogue-source.js').CatalogueSource}
  */
 export function createGithubCatalogueSource({
-  octokit = createOctokit(),
-  repo = config.get('catalogue.repo')
+  repo = config.get('catalogue.repo'),
+  octokit = createGithubAppClient({
+    repositoryNames: [repo.split('/')[1]],
+    permissions: { contents: 'read' }
+  })
 } = {}) {
   const [owner, name] = repo.split('/')
   let lastGood = null

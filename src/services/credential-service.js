@@ -10,12 +10,12 @@ import {
   requireLock,
   acquireLockWithRetry
 } from '#/common/helpers/mongo-lock.js'
-import {
-  findActiveDeployment,
-  reserveCredentialType,
-  releaseCredentialTypeReservation
-} from '#/services/team-deployment-service.js'
+import { findActiveDeployment } from '#/services/team-deployment-gateway.js'
 import { getMemberRole } from '#/services/team-service.js'
+
+// The team tier is OAuth only - a client secret or a federated credential,
+// local development included. Research credentials are subscription keys.
+const TEAM_CREDENTIAL_TYPE = 'oauth'
 
 /**
  * Best-effort lookup of a user's team, tolerant of the day-1 interim trust
@@ -142,7 +142,7 @@ export async function writeSecretToVault(db, vault, credential, secret) {
  * itself on retry.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string, credentialType?: 'oauth'|'subscription-key'}} params
+ * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string, credentialType?: 'oauth'}} params
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  */
 export async function issueCredential(
@@ -196,8 +196,7 @@ async function issueCredentialForParams(
     idempotencyKey,
     tier = 'research',
     teamId,
-    environment,
-    credentialType = 'subscription-key'
+    environment
   },
   registry = credentialIssuerRegistry,
   vault = credentialVault
@@ -239,8 +238,6 @@ async function issueCredentialForParams(
   const { issuerKey, issuer } = resolvedIssuer
 
   let resolvedTeamId = null
-  let resolvedCredentialType = null
-  let credentialTypeReservation = null
 
   if (tier === 'team') {
     const membership = await db
@@ -264,15 +261,6 @@ async function issueCredentialForParams(
         'deployment-not-ready'
       )
     }
-
-    // Design C: one credential type per team per environment, fixed on
-    // first use - throws 409 credential-type-fixed on a later mismatch.
-    credentialTypeReservation = await reserveCredentialType(db, {
-      teamId,
-      environment,
-      credentialType
-    })
-    resolvedCredentialType = credentialTypeReservation.credentialType
 
     const activeTeamCredential = await db
       .collection('credentials')
@@ -340,7 +328,7 @@ async function issueCredentialForParams(
     modelSlug: tier === 'team' ? null : modelSlug,
     ...(tier === 'team' && {
       allowedDeployments: [modelSlug],
-      credentialType: resolvedCredentialType
+      credentialType: TEAM_CREDENTIAL_TYPE
     }),
     tier,
     environment: environment || null,
@@ -398,8 +386,7 @@ async function issueCredentialForParams(
       modelSlug,
       tier,
       teamId: resolvedTeamId,
-      environment: environment || null,
-      credentialType: resolvedCredentialType ?? undefined
+      environment: environment || null
     })
   } catch {
     await db
@@ -416,18 +403,6 @@ async function issueCredentialForParams(
       outcome: 'failure',
       code: 'upstream-unavailable'
     })
-
-    // Don't leave the team permanently locked into a credential type that
-    // was never actually issued - only undo the reservation if this call
-    // was the one that made it (a concurrent caller may have since made a
-    // real reservation of their own).
-    if (tier === 'team' && credentialTypeReservation?.wasNewlyReserved) {
-      await releaseCredentialTypeReservation(db, {
-        teamId,
-        environment,
-        credentialType: resolvedCredentialType
-      })
-    }
 
     throw boomWithCode(
       Boom.badGateway,
@@ -806,8 +781,7 @@ export async function rotateCredential(
 
     const { issuer } = registry.forCredential(credential)
     const rotated = await issuer.rotate({
-      externalId: externalGatewaySubscriptionIdOf(credential),
-      credentialType: credential.credentialType
+      externalId: externalGatewaySubscriptionIdOf(credential)
     })
 
     const now = new Date().toISOString()

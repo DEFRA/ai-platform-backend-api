@@ -1,5 +1,12 @@
 import { randomUUID } from 'node:crypto'
 
+const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
+// The mock orchestrator's reserved requester ranges, by test name prefix.
+const FORCED_FAILURE_OID_RANGES = {
+  'test-checks-fail-': '00000000-0000-0000-0001-',
+  'test-deploy-fail-': '00000000-0000-0000-0002-'
+}
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -24,20 +31,76 @@ describe('#team-deployments routes', () => {
     vi.unstubAllEnvs()
   })
 
-  async function createTeam(userId) {
+  async function createTeam(label) {
+    await signIn(label)
+
     const { result } = await server.inject({
       method: 'POST',
       url: '/v1/teams',
-      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { name: `Team ${userId}` }
+      headers: postHeaders(label),
+      payload: { name: `Team ${label}`, serviceCode: 'ABC' }
     })
 
     return result.team._id
   }
 
-  function postHeaders(userId) {
-    return { 'x-user-id': userId, 'idempotency-key': randomUUID() }
+  // Each test names its person; createTeam signs them in, and x-user-id is
+  // then their user _id. A name nobody signed in as (a non-member) is sent
+  // as is. A `test-checks-fail-`/`test-deploy-fail-` name gets an object ID
+  // in the mock orchestrator's reserved range for that failure.
+  const userIds = new Map()
+
+  function oidFor(label) {
+    const [, range] =
+      Object.entries(FORCED_FAILURE_OID_RANGES).find(([prefix]) =>
+        label.startsWith(prefix)
+      ) ?? []
+
+    return range ? `${range}${randomUUID().slice(-12)}` : randomUUID()
   }
+
+  async function signIn(label) {
+    const { result } = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        oid: oidFor(label),
+        tid: ENTRA_TENANT_ID,
+        email: `${label}@defra.gov.uk`,
+        displayName: label
+      }
+    })
+
+    userIds.set(label, result.user._id.toString())
+  }
+
+  function userHeaders(label) {
+    return { 'x-user-id': userIds.get(label) ?? label }
+  }
+
+  function postHeaders(label) {
+    return { ...userHeaders(label), 'idempotency-key': randomUUID() }
+  }
+
+  test('POST /v1/teams/{teamId}/deployments refuses a member with no Entra object ID to attribute it to', async () => {
+    const userId = 'deploy-user-unbound'
+    const { result: created } = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+      payload: { name: `Team ${userId}`, serviceCode: 'ABC' }
+    })
+
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${created.team._id}/deployments`,
+      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+    })
+
+    expect(statusCode).toBe(403)
+    expect(result.code).toBe('entra-identity-required')
+  })
 
   test('POST /v1/teams/{teamId}/deployments requests a deployment for an active team member', async () => {
     const teamId = await createTeam('deploy-user-1')
@@ -55,6 +118,17 @@ describe('#team-deployments routes', () => {
     )
     expect(result.deployment.status).toBe('requested')
     expect(result.deployment.operationId).toBeTruthy()
+    // The mock orchestrator has no GitHub runs or pull request to link to.
+    expect(result.deployment.links).toEqual({})
+
+    const stored = await server.db
+      .collection('teamDeployments')
+      .findOne({ teamId: teamId.toString() })
+
+    expect(stored.deployments[0]).toMatchObject({
+      orchestrator: 'mock',
+      gitops: null
+    })
   })
 
   test('POST /v1/teams/{teamId}/deployments rejects a non-sandbox environment', async () => {
@@ -147,7 +221,7 @@ describe('#team-deployments routes', () => {
     const { result } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-16' }
+      headers: userHeaders('deploy-user-16')
     })
 
     expect(result.items.map((item) => item.modelSlug).sort()).toEqual([
@@ -187,7 +261,7 @@ describe('#team-deployments routes', () => {
     const { statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-14' },
+      headers: userHeaders('deploy-user-14'),
       payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
     })
 
@@ -205,7 +279,7 @@ describe('#team-deployments routes', () => {
     })
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
-    const headers = { 'x-user-id': 'deploy-user-6' }
+    const headers = userHeaders('deploy-user-6')
 
     const first = await server.inject({ method: 'GET', url, headers })
 
@@ -235,13 +309,13 @@ describe('#team-deployments routes', () => {
       'Request recorded',
       'Team checked',
       'Setting up access in Azure',
-      'Creating your key'
+      'Creating your client secret'
     ])
     expect(created.result.deployment.progressSteps[0].state).toBe('current')
     expect(created.result.deployment.progressSteps[1].state).toBe('pending')
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
-    const headers = { 'x-user-id': 'deploy-user-6b' }
+    const headers = userHeaders('deploy-user-6b')
 
     await wait(300)
 
@@ -264,7 +338,7 @@ describe('#team-deployments routes', () => {
     })
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
-    const headers = { 'x-user-id': 'test-checks-fail-6c' }
+    const headers = userHeaders('test-checks-fail-6c')
 
     await wait(300)
 
@@ -287,7 +361,7 @@ describe('#team-deployments routes', () => {
     const { statusCode } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`,
-      headers: { 'x-user-id': 'someone-else' }
+      headers: userHeaders('someone-else')
     })
 
     expect(statusCode).toBe(404)
@@ -308,7 +382,7 @@ describe('#team-deployments routes', () => {
     const { result } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`,
-      headers: { 'x-user-id': 'test-checks-fail-8' }
+      headers: userHeaders('test-checks-fail-8')
     })
 
     expect(result.deployment.status).toBe('checks-failed')
@@ -330,7 +404,7 @@ describe('#team-deployments routes', () => {
     const { result } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`,
-      headers: { 'x-user-id': 'test-deploy-fail-9' }
+      headers: userHeaders('test-deploy-fail-9')
     })
 
     expect(result.deployment.status).toBe('deploy-failed')
@@ -350,7 +424,7 @@ describe('#team-deployments routes', () => {
     const { result, statusCode } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-10' }
+      headers: userHeaders('deploy-user-10')
     })
 
     expect(statusCode).toBe(200)
@@ -374,10 +448,45 @@ describe('#team-deployments routes', () => {
     const { statusCode } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'someone-else' }
+      headers: userHeaders('someone-else')
     })
 
     expect(statusCode).toBe(404)
+  })
+
+  test('a second request waits as queued behind the one in flight, then is dispatched once that ends', async () => {
+    const teamId = await createTeam('deploy-user-18')
+
+    await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('deploy-user-18'),
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+    })
+
+    const queued = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('deploy-user-18'),
+      payload: { modelSlug: 'gpt-4-1-nano', environment: 'sandbox' }
+    })
+
+    expect(queued.statusCode).toBe(201)
+    expect(queued.result.deployment.status).toBe('queued')
+
+    const url = `/v1/teams/${teamId}/deployments/${queued.result.deployment._id}`
+
+    await wait(300)
+
+    // Polling the queued request polls the one holding the team file, which
+    // has finished, so the queued one is dispatched.
+    const dispatched = await server.inject({
+      method: 'GET',
+      url,
+      headers: userHeaders('deploy-user-18')
+    })
+
+    expect(dispatched.result.deployment.status).toBe('requested')
   })
 
   test('GET /v1/teams/{teamId}/deployments reflects refreshed status', async () => {
@@ -395,7 +504,7 @@ describe('#team-deployments routes', () => {
     const { result } = await server.inject({
       method: 'GET',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': 'deploy-user-12' }
+      headers: userHeaders('deploy-user-12')
     })
 
     expect(result.items[0].status).toBe('active')
@@ -412,7 +521,7 @@ describe('#team-deployments routes', () => {
     })
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
-    const headers = { 'x-user-id': 'deploy-user-15' }
+    const headers = userHeaders('deploy-user-15')
 
     await wait(300)
 

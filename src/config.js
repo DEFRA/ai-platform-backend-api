@@ -2,9 +2,11 @@ import convict from 'convict'
 import convictFormatWithValidator from 'convict-format-with-validator'
 
 import { convictValidateMongoUri } from '#/common/helpers/convict/validate-mongo-uri.js'
+import { convictValidateAipEnvironments } from '#/common/helpers/convict/validate-aip-environments.js'
 import { AZURE_APIM, DEFAULT_GATEWAY } from '#/adapters/gateway-keys.js'
 
 convict.addFormat(convictValidateMongoUri)
+convict.addFormat(convictValidateAipEnvironments)
 convict.addFormats(convictFormatWithValidator)
 
 const isProduction = process.env.NODE_ENV === 'production'
@@ -157,7 +159,57 @@ export const config = convict({
       format: 'nat',
       default: 3000,
       env: 'TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS'
+    },
+    defaultTokensPerMinute: {
+      doc: "Gateway token limit a new team file starts with, until B17 agrees per-environment bounds. An existing team file's limits are never overwritten",
+      format: 'nat',
+      default: 1000,
+      env: 'TEAM_DEFAULT_TOKENS_PER_MINUTE'
+    },
+    defaultRequestsPerMinute: {
+      doc: 'Gateway request limit a new team file starts with when the catalogue model states none',
+      format: 'nat',
+      default: 60,
+      env: 'TEAM_DEFAULT_REQUESTS_PER_MINUTE'
     }
+  },
+  tenantOrchestrator: {
+    doc: 'TenantOrchestrator for new team deployments: mock advances through the GitOps states on a timer; github dispatches submit.yml in the GitOps state repositories. Refused as mock in prod',
+    format: ['mock', 'github'],
+    default: 'mock',
+    env: 'TENANT_ORCHESTRATOR'
+  },
+  gitops: {
+    tenantsRepo: {
+      doc: 'owner/repo holding team files (environments/{env}/{slug}.json), dispatched when tenantOrchestrator is github',
+      format: String,
+      default: 'DEFRA/ai-platform-tenants',
+      env: 'GITOPS_TENANTS_REPO'
+    },
+    deploymentsRepo: {
+      doc: 'owner/repo holding platform pins (environments/{env}/platform.json), dispatched when tenantOrchestrator is github',
+      format: String,
+      default: 'DEFRA/ai-platform-deployments',
+      env: 'GITOPS_DEPLOYMENTS_REPO'
+    },
+    pollMinIntervalMs: {
+      doc: 'Minimum time in ms between two GitHub/ARM status polls of the same operation',
+      format: 'nat',
+      default: 30000,
+      env: 'GITOPS_POLL_MIN_INTERVAL_MS'
+    },
+    claimLeaseMs: {
+      doc: 'How long in ms a claimed GitOps step (retry apply, revert, abandon) waits for its dispatch before another poll may claim it again',
+      format: 'nat',
+      default: 600000,
+      env: 'GITOPS_CLAIM_LEASE_MS'
+    }
+  },
+  aipEnvironments: {
+    doc: 'AI Platform environments as JSON keyed by name: {subscriptionId, resourceGroup, apimName, foundryAccounts, tenantsVault}',
+    format: 'aip-environments',
+    default: {},
+    env: 'AIP_ENVIRONMENTS'
   },
   audit: {
     retentionDays: {
@@ -186,6 +238,20 @@ export const config = convict({
       format: 'nat',
       default: 5 * 60 * 1000,
       env: 'MAINTENANCE_SCHEDULER_INTERVAL_MS'
+    }
+  },
+  serviceCode: {
+    verifier: {
+      doc: 'ServiceCodeVerifier that confirms a team service code is real. Only mock exists while no authoritative CDP/CCoE source is agreed',
+      format: ['mock'],
+      default: 'mock',
+      env: 'SERVICE_CODE_VERIFIER'
+    },
+    knownCodes: {
+      doc: 'Comma-separated service codes the mock verifier accepts as confirmed. Empty means every code stays "to be verified"',
+      format: Array,
+      default: [],
+      env: 'SERVICE_CODE_KNOWN_CODES'
     }
   },
   provisioning: {
@@ -443,5 +509,13 @@ if (isGithubAppAuth && !config.get('github.installationId')) {
 if (isGithubAppAuth && !config.get('github.privateKey')) {
   throw new Error(
     'GITHUB_APP_ID/GITHUB_CLIENT_ID requires GITHUB_APP_PRIVATE_KEY to be set'
+  )
+}
+
+// Submit and status tokens are down-scoped per use, which only a GitHub App
+// installation token can be - a PAT is never enough for the orchestrator.
+if (config.get('tenantOrchestrator') === 'github' && !isGithubAppAuth) {
+  throw new Error(
+    'TENANT_ORCHESTRATOR=github requires GITHUB_CLIENT_ID or GITHUB_APP_ID (a GitHub App) to be set'
   )
 }

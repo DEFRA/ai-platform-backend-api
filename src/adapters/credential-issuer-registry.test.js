@@ -56,6 +56,19 @@ describe('#createCredentialIssuerRegistry', () => {
     })
   })
 
+  test('forModel never sends the OAuth-only team tier to a gateway that issues subscription keys', () => {
+    const registry = createCredentialIssuerRegistry(issuersByKey, 'live')
+
+    expect(() =>
+      registry.forModel({ slug: 'gpt-4o', gateway: 'azure-apim' }, 'team')
+    ).toThrow(
+      expect.objectContaining({
+        code: 'gateway-not-enabled',
+        message: 'No gateway issues team OAuth credentials yet'
+      })
+    )
+  })
+
   test('forModel throws a coded error for a gateway that is not enabled', () => {
     const registry = createCredentialIssuerRegistry(issuersByKey, 'live')
 

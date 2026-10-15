@@ -42,13 +42,13 @@ export const credentials = [
             then: Joi.required(),
             otherwise: Joi.forbidden()
           }),
-          credentialType: Joi.string()
-            .valid('oauth', 'subscription-key')
-            .when('tier', {
-              is: 'team',
-              then: Joi.optional().default('subscription-key'),
-              otherwise: Joi.forbidden()
-            }),
+          // The team tier is OAuth only (a client secret or a federated
+          // credential); research credentials are subscription keys.
+          credentialType: Joi.string().when('tier', {
+            is: 'team',
+            then: Joi.valid('oauth').default('oauth'),
+            otherwise: Joi.forbidden()
+          }),
           purpose: Joi.string().trim().max(500).allow('').optional()
         }).unknown(false)
       }

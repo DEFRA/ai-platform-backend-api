@@ -3,6 +3,16 @@ import Boom from '@hapi/boom'
 
 import { upsertUser, findCurrentUser } from '#/services/user-service.js'
 
+// Entra object and tenant IDs, stored lowercase so `entra:{oid}` always
+// matches the GitOps contract's principal pattern.
+const entraId = Joi.string()
+  .lowercase()
+  .pattern(
+    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
+    'GUID'
+  )
+  .required()
+
 export const users = [
   {
     method: 'POST',
@@ -10,6 +20,8 @@ export const users = [
     options: {
       validate: {
         payload: Joi.object({
+          oid: entraId,
+          tid: entraId,
           email: Joi.string().email().max(254).required(),
           displayName: Joi.string().min(1).max(100).required()
         }).unknown(false)

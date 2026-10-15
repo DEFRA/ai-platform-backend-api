@@ -107,10 +107,26 @@ async function createIndexes(db) {
   await db.collection('models').createIndex({ provider: 1, offering: 1 })
   // `syncCatalogue` upserts providers by `id`.
   await db.collection('providers').createIndex({ id: 1 }, { unique: true })
-  await db.collection('users').createIndex({ email: 1 }, { unique: true })
+  // People are keyed on their Entra object and tenant IDs (design F).
+  // Partial: records from before that keying have no `oid` until their next
+  // sign-in binds one.
+  await db
+    .collection('users')
+    .createIndex(
+      { oid: 1, tid: 1 },
+      { unique: true, partialFilterExpression: { oid: { $type: 'string' } } }
+    )
+  // Not unique: email is display only, so a returning leaver (a new object
+  // ID) or an email change never collides with another record. Rebuilds
+  // the unique index older deploys created.
+  await ensureIndex(db.collection('users'), { email: 1 }, {})
   await db
     .collection('teams')
     .createIndex({ normalisedName: 1 }, { unique: true })
+  // The slug names the team's GitOps file and gateway API path, so it must be
+  // unique across the platform. The `2026-10-14-add-team-slug` backfill gives
+  // older teams one before this index is created.
+  await ensureIndex(db.collection('teams'), { slug: 1 }, { unique: true })
   // Makes the Idempotency-Key replay on POST /v1/teams atomic rather than
   // check-then-insert, so concurrent retries cannot create two teams.
   // Partial: excludes legacy/null idempotencyKey docs from the uniqueness check.

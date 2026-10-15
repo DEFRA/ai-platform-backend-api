@@ -142,19 +142,6 @@ describe('createApimCredentialIssuer', () => {
     expect(capturedBodies[1].properties.expirationDate).toBe(expiresAt)
   })
 
-  test('issue uses a team-scoped externalId shared across the team+environment, not per model', async () => {
-    const issuer = createAzureIssuer()
-    const issued = await issuer.issue({
-      userId: 'user-1',
-      modelSlug: 'gpt-4o',
-      tier: 'team',
-      teamId: 'team-1',
-      environment: 'sandbox'
-    })
-
-    expect(issued.externalId).toBe('team-team-1-sandbox')
-  })
-
   test('rejects without leaking the ARM response body when a call fails', async () => {
     nock.cleanAll()
     nock(ARM_BASE_URL)

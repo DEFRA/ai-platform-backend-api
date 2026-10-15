@@ -15,10 +15,12 @@ Core delivery platform Node.js Backend Template.
   - [Formatting](#formatting)
     - [Windows prettier issue](#windows-prettier-issue)
 - [API endpoints](#api-endpoints)
+  - [People and identity](#people-and-identity)
 - [Development helpers](#development-helpers)
   - [MongoDB Locks](#mongodb-locks)
   - [Schema backfills](#schema-backfills)
   - [Proxy](#proxy)
+  - [GitOps tenant orchestrator](#gitops-tenant-orchestrator)
   - [Testing against live Azure resources (sandbox)](#testing-against-live-azure-resources-sandbox)
 - [Docker](#docker)
   - [Development image](#development-image)
@@ -127,6 +129,31 @@ git config --global core.autocrlf false
 | `GET: /health`       | Health                         |
 | `GET: /example    `  | Example API (remove as needed) |
 | `GET: /example/<id>` | Example API (remove as needed) |
+
+### People and identity
+
+> [!IMPORTANT]
+> A person is keyed on their Entra object ID and tenant ID (`oid`, `tid`), which `POST /v1/users`
+> receives at every sign-in; a unique index on both holds that key. **Email is not unique**: it is
+> display only and mutable (Microsoft advises never to key data on it), so two `users` records can
+> share an email, for example a leaver who returns with a new object ID. A record with no `oid` (an
+> invited member) binds to the first sign-in with its email. Every GitOps change names its requester as
+> `entra:{oid}`, so look people up by `oid`, never by email (direction 14 October 2026).
+
+> [!IMPORTANT]
+> A team carries an immutable `slug`, derived from its name on `POST /v1/teams` and made unique with a
+> numbered suffix when two names derive the same one. It names the team's GitOps file
+> (`environments/{env}/{slug}.json`), its gateway API path (`/{slug}`) and its model deployments
+> (`{slug}-{model}`), so it is never regenerated when a team is renamed.
+
+> [!IMPORTANT]
+> A team also carries a three-character `serviceCode` (`^[A-Z0-9]{3}$`, stored upper case), required
+> on `POST /v1/teams` and changeable by an admin with `PATCH /v1/teams/{id}`. It attributes the
+> team's AI use to its service for chargeback and reaches Azure as a resource tag. Every change goes
+> through the `ServiceCodeVerifier` port, whose only adapter today is the mock
+> (`SERVICE_CODE_KNOWN_CODES`, empty by default), so `verified` stays `false` until an authoritative
+> CDP or Cloud Centre of Excellence source is agreed and a real adapter replaces it - the prod
+> mock-refusal guard the other ports have belongs with that adapter.
 
 ## Development helpers
 
@@ -250,7 +277,11 @@ enabled is refused with `501 gateway-not-enabled`. A credential records the `iss
 minted it, and its renew/rotate/revoke/reveal use that issuer and its matching vault.
 `MOCK_TIERS` (comma-separated `research`/`team`, default empty, refused in prod) keeps the named
 tiers on the mock issuer and vault even in `live` mode, e.g. `MOCK_TIERS=team` to demo the team
-tier without a real team gateway while the research tier uses the real gateways.
+tier without a real team gateway while the research tier uses the real gateways. Research
+credentials are time-bound APIM subscription keys. The team tier is OAuth only (a client secret or
+a federated credential, local development included; `credentialType` accepts only `oauth`), and no
+gateway issues team OAuth credentials yet, so in `live` mode it needs `MOCK_TIERS=team` and is
+otherwise refused with `501 gateway-not-enabled`.
 
 The catalogue sync reads only the `hosting`/`gateway` offering shape (`ai-platform-infra` `v0.2.0`
 onwards) and stores it nested on each model. An offering without `hosting.platform` and `gateway`,
@@ -263,11 +294,70 @@ APIM, not a new gateway. A genuinely new gateway needs its issuer and vault adap
 `credential-vault-registry.js`, and its required config keys added to
 `REQUIRED_CONFIG_BY_GATEWAY` in `config.js`. Nothing in the services changes.
 
+### GitOps tenant orchestrator
+
+Team deployments go through the `TenantOrchestrator` port
+([`src/adapters/tenant-orchestrator.js`](src/adapters/tenant-orchestrator.js)). `mock` walks the
+GitOps states on a timer. `github` follows the
+[GitOps contract](../ai-platform-infra/docs/gitops-contract.md): it dispatches `submit.yml` with the
+whole canonical document (never committing), then polls the submit run, the `op/{operationId}` pull
+request and `validate-desired-state / validate`, the GitHub Deployment and the apply's run report, and confirms the
+team's resources through ARM (`PROVISIONING_MODE=live`) before `active`. An apply failure gets one
+fresh apply, then a revert or an engineer alert (D14); a failed check gets `abandon`. Reverts and
+abandons are polled to their end; one that fails is audited and logged for an engineer, never retried,
+and a failed revert's pull request stays open, keeping the team file locked, until the engineer acts
+(direction 14 October 2026).
+A team's file takes one operation at a time, so a request made while another for the same team and
+environment is still in progress (or being reverted or abandoned) is stored as `queued` and dispatched,
+its document built then, once that one ends.
+Platform Admins
+(users whose `roles` include `platform-admin`; nothing assigns it yet) can
+`POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`.
+
+The document itself is built by
+[`team-desired-state.js`](src/services/team-desired-state.js) (WS6), always from the file `main`
+holds now rather than from the portal's own record, since the file is written whole and an engineer
+or a revert may have changed it: the model is added to `deployments[]` and
+`gateway.allowedDeployments`, `revision` is the file's plus one, and the team's federations,
+external clients and agreed limits are carried over untouched. A new file starts at revision 1 with
+the catalogue's team SKU, that environment's default capacity and the default limits below. The
+team needs a three-character `serviceCode` first, or the request is refused with
+`409 service-code-required`.
+
+| Variable                           | Default                         | Purpose                                                                                                                                             |
+| :--------------------------------- | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`) |
+| `GITOPS_TENANTS_REPO`              | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                        |
+| `GITOPS_DEPLOYMENTS_REPO`          | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                   |
+| `GITOPS_POLL_MIN_INTERVAL_MS`      | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                        |
+| `GITOPS_CLAIM_LEASE_MS`            | `600000`                        | How long a claimed retry, revert or abandon waits for its dispatch before another poll may claim it again                                           |
+| `TEAM_DEFAULT_TOKENS_PER_MINUTE`   | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                        |
+| `TEAM_DEFAULT_REQUESTS_PER_MINUTE` | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                      |
+| `AIP_ENVIRONMENTS`                 | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group                       |
+
+```json
+{
+  "infradev": {
+    "subscriptionId": "00000000-0000-0000-0000-000000000000",
+    "resourceGroup": "rg-placeholder",
+    "apimName": "apim-placeholder",
+    "foundryAccounts": ["aif-placeholder"],
+    "tenantsVault": "kv-placeholder"
+  }
+}
+```
+
+Every GitHub request sends `X-GitHub-Api-Version: 2026-03-10`, and each use gets its own
+installation token: Actions write on one repository to dispatch, and Actions, Checks, Contents,
+Deployments and Pull requests read to poll. Polls are conditional on ETags, at most one per
+operation per interval, back off on rate limits and skip finished operations; the maintenance
+scheduler also sweeps operations nobody is watching.
+
 ### Testing against live Azure resources (sandbox)
 
 By default the credential issuer and vault run in-memory (`PROVISIONING_MODE=mock`, the default) -
 no Azure access needed. To run locally against the **real** sandbox APIM/Key Vault from the
-[research tier integration plan](../ai-platform-frontend/docs/plans/integration/research-tier-integration-plan.md)'s
+[research tier integration plan](../ai-platform-frontend/docs/plans/implemented/integration/research-tier-integration-plan.md)'s
 Phase 0, create a `.env` file in the repo root (already gitignored; `npm run dev`'s
 `--env-file-if-exists=.env` loads it automatically - no other wiring needed) with:
 
