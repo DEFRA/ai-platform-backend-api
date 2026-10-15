@@ -357,7 +357,7 @@ scheduler also sweeps operations nobody is watching.
 
 By default the credential issuer and vault run in-memory (`PROVISIONING_MODE=mock`, the default) -
 no Azure access needed. To run locally against the **real** sandbox APIM/Key Vault from the
-[research tier integration plan](../ai-platform-frontend/docs/plans/integration/research-tier-integration-plan.md)'s
+[research tier integration plan](../ai-platform-frontend/docs/plans/implemented/integration/research-tier-integration-plan.md)'s
 Phase 0, create a `.env` file in the repo root (already gitignored; `npm run dev`'s
 `--env-file-if-exists=.env` loads it automatically - no other wiring needed) with:
 

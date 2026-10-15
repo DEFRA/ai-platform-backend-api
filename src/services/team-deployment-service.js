@@ -38,7 +38,7 @@ const W3C_TRACEPARENT = /^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/
 // Phase 1 (confirmed 24 Sept 2026): the one live team-facing environment is
 // the Sandbox (SND4) - Infradev (SND1) is platform-internal/synthetic, not
 // team-facing, so it is a valid schema value but never policy-allowed here.
-const TEAM_FACING_ENVIRONMENT = 'sandbox'
+const TEAM_FACING_ENVIRONMENT = 'infradev'
 
 // User-facing progress steps for the team's "being set up" wait page - the
 // mapping from design C's real GitOps states (never shown to the user
