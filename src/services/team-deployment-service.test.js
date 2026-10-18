@@ -74,6 +74,7 @@ describe('team-deployment-service (GitOps)', () => {
   let server
   let db
   let service
+  let removal
 
   beforeAll(async () => {
     // Dynamic import needed due to config being updated by vitest-mongodb
@@ -83,6 +84,7 @@ describe('team-deployment-service (GitOps)', () => {
     await server.initialize()
     db = server.db
     service = await import('#/services/team-deployment-service.js')
+    removal = await import('#/services/team-deployment-removal.js')
   })
 
   afterAll(async () => {
@@ -821,7 +823,7 @@ describe('team-deployment-service (GitOps)', () => {
     )
 
     function remove(orchestrator, { deployment, teamId, userId }, actor) {
-      return service.removeDeployment(
+      return removal.removeDeployment(
         db,
         server.locker,
         {

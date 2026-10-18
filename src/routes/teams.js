@@ -13,7 +13,7 @@ import {
 
 // Three characters, as the team file's schema requires; entered in any case
 // and stored upper.
-const serviceCode = Joi.string()
+const serviceCodeField = Joi.string()
   .trim()
   .uppercase()
   .pattern(/^[A-Z0-9]{3}$/)
@@ -43,7 +43,7 @@ export const teams = [
         headers: idempotentHeaders,
         payload: Joi.object({
           name: Joi.string().trim().min(3).max(60).required(),
-          serviceCode: serviceCode.required(),
+          serviceCode: serviceCodeField.required(),
           description: Joi.string().trim().max(500).allow('').optional()
         }).unknown(false)
       }
@@ -112,7 +112,7 @@ export const teams = [
         headers: userIdHeader,
         params: idParam,
         payload: Joi.object({
-          serviceCode: serviceCode.required()
+          serviceCode: serviceCodeField.required()
         }).unknown(false)
       }
     },

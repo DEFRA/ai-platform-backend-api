@@ -76,6 +76,21 @@ export function entryFilter(doc, entry) {
 }
 
 /**
+ * The `$set` fields for the entry an `entryFilter` matched, through the
+ * positional operator.
+ * @param {Record<string, unknown>} fields
+ * @returns {Record<string, unknown>}
+ */
+export function entryFields(fields) {
+  return Object.fromEntries(
+    Object.entries(fields).map(([key, value]) => [
+      `deployments.$.${key}`,
+      value
+    ])
+  )
+}
+
+/**
  * Records an audit event against one deployment entry, as the backend
  * itself unless an actor is given.
  * @param {import('mongodb').Db} db

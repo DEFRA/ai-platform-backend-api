@@ -1,12 +1,14 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
+import { statusCodes } from '#/common/constants/status-codes.js'
+import { REMOVING } from '#/services/team-deployment-entries.js'
 import {
   getDeployment,
   listDeploymentsForTeam,
-  removeDeployment,
   requestDeployment
 } from '#/services/team-deployment-service.js'
+import { removeDeployment } from '#/services/team-deployment-removal.js'
 
 const userIdHeader = Joi.object({
   'x-user-id': Joi.string().required()
@@ -127,9 +129,12 @@ export const teamDeployments = [
         return Boom.notFound()
       }
 
+      // A removal in flight is accepted; one already done is simply done.
       return h
         .response({ deployment })
-        .code(deployment.status === 'removing' ? 202 : 200)
+        .code(
+          deployment.status === REMOVING ? statusCodes.accepted : statusCodes.ok
+        )
     }
   }
 ]

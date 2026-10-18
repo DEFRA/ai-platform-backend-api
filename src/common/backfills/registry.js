@@ -1,4 +1,4 @@
-import { deriveTeamSlug, withSlugSuffix } from '#/common/helpers/team-slug.js'
+import { deriveTeamSlug, firstFreeSlug } from '#/common/helpers/team-slug.js'
 
 /**
  * Ordered registry of one-off data backfills applied by `runBackfills` on
@@ -446,12 +446,9 @@ export const backfillRegistry = [
       let modifiedCount = 0
 
       for (const team of teams) {
-        const base = deriveTeamSlug(team.name)
-        let slug = base
-
-        for (let attempt = 2; taken.has(slug); attempt++) {
-          slug = withSlugSuffix(base, attempt)
-        }
+        const slug = firstFreeSlug(deriveTeamSlug(team.name), (candidate) =>
+          taken.has(candidate)
+        )
 
         await db
           .collection('teams')

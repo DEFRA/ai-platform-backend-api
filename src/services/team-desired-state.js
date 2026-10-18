@@ -74,6 +74,40 @@ function limitsOf(model) {
   }
 }
 
+// What an `add` or a `remove` changes in the file: the deployments list and
+// the grants, nothing else. An add is idempotent for a slug already held.
+function withModelAdded({ held, granted }, deployment) {
+  return {
+    deployments: held.some((entry) => entry.slug === deployment.slug)
+      ? held
+      : [...held, deployment],
+    allowedDeployments: [...new Set([...granted, deployment.slug])]
+  }
+}
+
+function withModelRemoved({ held, granted }, modelSlug) {
+  return {
+    deployments: held.filter((entry) => entry.slug !== modelSlug),
+    allowedDeployments: granted.filter((slug) => slug !== modelSlug)
+  }
+}
+
+// The fields a new file keeps from the one on `main`, when there is one.
+function carriedOver(current) {
+  return {
+    ...(current?.$schema ? { $schema: current.$schema } : {}),
+    ...(current?.promotedFrom ? { promotedFrom: current.promotedFrom } : {})
+  }
+}
+
+async function findTeam(db, teamId) {
+  if (!ObjectId.isValid(teamId)) {
+    return null
+  }
+
+  return db.collection('teams').findOne({ _id: new ObjectId(teamId) })
+}
+
 /**
  * Creates the WS6 builder the GitHub orchestrator submits with. Returns the
  * whole next revision of the team's file and the revision it was built from,
@@ -94,9 +128,7 @@ export function createTeamDesiredStateBuilder({
     db,
     { teamId, environment, modelSlug, operationId, change = 'add' }
   ) {
-    const team = ObjectId.isValid(teamId)
-      ? await db.collection('teams').findOne({ _id: new ObjectId(teamId) })
-      : null
+    const team = await findTeam(db, teamId)
 
     if (!team?.slug) {
       return null
@@ -106,32 +138,27 @@ export function createTeamDesiredStateBuilder({
     const { document: current } =
       await registry.orchestrator.getCurrentDocument({ path })
     const expectedRevision = current?.revision ?? 0
-    const held = current?.deployments ?? []
-    const granted = current?.gateway?.allowedDeployments ?? []
+    const models = {
+      held: current?.deployments ?? [],
+      granted: current?.gateway?.allowedDeployments ?? []
+    }
     const model = change === 'add' ? await findModelBySlug(db, modelSlug) : null
-    const deployment =
-      change === 'add' ? deploymentOf(model, environment) : null
+    const { deployments, allowedDeployments } =
+      change === 'remove'
+        ? withModelRemoved(models, modelSlug)
+        : withModelAdded(models, deploymentOf(model, environment))
 
     const document = {
-      ...(current?.$schema ? { $schema: current.$schema } : {}),
+      ...carriedOver(current),
       schemaVersion: SCHEMA_VERSION,
       revision: expectedRevision + 1,
       environment,
       status: 'active',
-      ...(current?.promotedFrom ? { promotedFrom: current.promotedFrom } : {}),
       team: teamFields(team),
-      deployments:
-        change === 'remove'
-          ? held.filter((entry) => entry.slug !== modelSlug)
-          : held.some((entry) => entry.slug === deployment.slug)
-            ? held
-            : [...held, deployment],
+      deployments,
       gateway: {
         credentialType: 'oauth',
-        allowedDeployments:
-          change === 'remove'
-            ? granted.filter((slug) => slug !== modelSlug)
-            : [...new Set([...granted, modelSlug])],
+        allowedDeployments,
         // A team's agreed limits are never overwritten by a later request;
         // a removal keeps them even when the catalogue has moved on.
         limits: current?.gateway?.limits ?? limitsOf(model ?? {})

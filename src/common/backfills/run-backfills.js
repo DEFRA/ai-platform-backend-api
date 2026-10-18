@@ -1,6 +1,6 @@
 import { backfillRegistry } from '#/common/backfills/registry.js'
+import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
 
-const DUPLICATE_KEY_ERROR = 11000
 // A claim with no `appliedAt` after this long is assumed to belong to an
 // instance that died mid-run (rather than one still legitimately running),
 // so it's safe for the next startup to reclaim and retry it.
@@ -85,7 +85,7 @@ async function claimBackfill(store, backfill) {
     await store.insertClaim(backfill.id, backfill.description)
     return true
   } catch (error) {
-    if (error.code === DUPLICATE_KEY_ERROR) {
+    if (isDuplicateKeyError(error)) {
       return false
     }
     throw error

@@ -79,9 +79,12 @@ export function githubTrailOf(submission, operationId) {
   }
 }
 
+// A W3C trace context header; anything else is dropped rather than forwarded.
+const W3C_TRACEPARENT = /^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/
+
 /**
  * The orchestrator request that submits an operation's desired state as
- * its requester.
+ * its requester. Only a well-formed `traceparent` is passed on.
  * @param {{environment: string, operationId: string, principal: string, traceParent?: string}} operation
  * @param {{path: string|null, document: object|null, expectedRevision: number}} submission
  * @returns {import('#/adapters/tenant-orchestrator.js').DeploymentRequest}
@@ -98,6 +101,8 @@ export function submissionRequest(
     requestedBy: principal,
     expectedRevision: submission.expectedRevision,
     action: 'write',
-    traceParent
+    traceParent: W3C_TRACEPARENT.test(traceParent ?? '')
+      ? traceParent
+      : undefined
   }
 }

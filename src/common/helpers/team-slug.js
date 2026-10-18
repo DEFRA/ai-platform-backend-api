@@ -14,7 +14,13 @@ const FALLBACK_SLUG = 'team'
  * @returns {string}
  */
 function trimToPattern(candidate) {
-  return candidate.slice(0, MAX_LENGTH).replace(/-+$/, '')
+  let trimmed = candidate.slice(0, MAX_LENGTH)
+
+  while (trimmed.endsWith('-')) {
+    trimmed = trimmed.slice(0, -1)
+  }
+
+  return trimmed
 }
 
 /**
@@ -48,4 +54,22 @@ export function withSlugSuffix(slug, attempt) {
   const suffix = `-${attempt}`
 
   return `${trimToPattern(slug.slice(0, MAX_LENGTH - suffix.length))}${suffix}`
+}
+
+/**
+ * The derived slug, or its first numbered variant that is not yet taken.
+ * @param {string} base - the slug derived from the name
+ * @param {(candidate: string) => boolean} isTaken
+ * @returns {string}
+ */
+export function firstFreeSlug(base, isTaken) {
+  let attempt = 1
+  let slug = base
+
+  while (isTaken(slug)) {
+    attempt += 1
+    slug = withSlugSuffix(base, attempt)
+  }
+
+  return slug
 }

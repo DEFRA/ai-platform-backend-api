@@ -1,6 +1,7 @@
 import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
+import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import { deriveTeamSlug, withSlugSuffix } from '#/common/helpers/team-slug.js'
 import { serviceCodeVerifier } from '#/adapters/service-code-verifier-registry.js'
@@ -54,7 +55,7 @@ async function insertTeamWithUniqueSlug(db, fields, replayKey) {
 
       return { insertedId, slug }
     } catch (error) {
-      if (error.code !== 11000) {
+      if (!isDuplicateKeyError(error)) {
         throw error
       }
 
@@ -436,7 +437,7 @@ export async function addMember(
   try {
     ;({ insertedId } = await db.collection('teamMembers').insertOne(member))
   } catch (error) {
-    if (error.code === 11000) {
+    if (isDuplicateKeyError(error)) {
       // Lost a race: either the same key (replay it) or the same email
       // (a genuine duplicate invite). The unique indexes decide, not the
       // earlier reads, so concurrent invites cannot both succeed.
