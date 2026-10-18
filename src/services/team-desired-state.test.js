@@ -1,4 +1,33 @@
 import { randomUUID } from 'node:crypto'
+import { readFileSync } from 'node:fs'
+
+import Ajv2020 from 'ajv/dist/2020.js'
+import addFormats from 'ajv-formats'
+
+// The team file schema as ai-platform-infra publishes it, copied under
+// fixtures: a document the builder produces must validate against it, with
+// only `updatedBy` added by the caller.
+const TEAM_SCHEMA = JSON.parse(
+  readFileSync(
+    new URL(
+      '../common/fixtures/gitops/ai-platform-infra/schemas/team.schema.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+)
+const validateTeamFile = addFormats(new Ajv2020({ allErrors: true })).compile(
+  TEAM_SCHEMA
+)
+const PRINCIPAL = 'entra:00000000-0000-0000-0000-000000000001'
+
+function schemaProblems(document) {
+  validateTeamFile({ ...document, updatedBy: PRINCIPAL })
+
+  return (validateTeamFile.errors ?? []).map(
+    (error) => `${error.instancePath} ${error.message}`
+  )
+}
 
 const TEAM_MODEL = {
   slug: 'gpt-5-nano-desired',
@@ -124,6 +153,15 @@ describe('#createTeamDesiredStateBuilder', () => {
     expect(result.document).not.toHaveProperty('updatedBy')
   })
 
+  test('builds a document the infra team schema accepts, with updatedBy added', async () => {
+    const { result } = await buildFor(null)
+
+    expect(schemaProblems(result.document)).toEqual([])
+    expect(schemaProblems({ ...result.document, status: 'gone' })).not.toEqual(
+      []
+    )
+  })
+
   test('adds the model to the file on main, keeping its federations and agreed limits', async () => {
     const current = {
       $schema: '../../../../schemas/team.schema.json',
@@ -227,6 +265,102 @@ describe('#createTeamDesiredStateBuilder', () => {
     })
 
     expect(result.document.deployments[0].capacity).toBe(5)
+  })
+
+  describe('a removal', () => {
+    const current = {
+      schemaVersion: 1,
+      revision: 6,
+      environment: 'infradev',
+      status: 'active',
+      team: { slug: 'ignored', serviceCode: 'ZZZ' },
+      deployments: [
+        {
+          slug: 'gpt-4-1-nano',
+          sku: 'DataZoneStandard',
+          capacity: 1,
+          status: 'active'
+        },
+        {
+          slug: TEAM_MODEL.slug,
+          sku: 'DataZoneStandard',
+          capacity: 2,
+          status: 'active'
+        }
+      ],
+      gateway: {
+        credentialType: 'oauth',
+        allowedDeployments: ['gpt-4-1-nano', TEAM_MODEL.slug],
+        limits: { tokensPerMinute: 25000, requestsPerMinute: 120 }
+      },
+      oauth: {
+        federations: [{ name: 'beta-api', host: 'cdp', service: 'beta-api' }],
+        externalClients: [],
+        secretsAllowed: false
+      },
+      operationId: 'earlier-operation-id',
+      updatedBy: PRINCIPAL,
+      updatedAt: '2026-10-13T00:00:00.000Z'
+    }
+
+    test('writes the file without the model and its grant, keeping everything else', async () => {
+      const { result, slug } = await buildFor(current, {
+        params: { change: 'remove' }
+      })
+
+      expect(result.expectedRevision).toBe(6)
+      expect(result.document.revision).toBe(7)
+      expect(result.document.team).toEqual({ slug, serviceCode: 'ABC' })
+      expect(result.document.deployments).toEqual([current.deployments[0]])
+      expect(result.document.gateway).toEqual({
+        credentialType: 'oauth',
+        allowedDeployments: ['gpt-4-1-nano'],
+        limits: current.gateway.limits
+      })
+      expect(result.document.oauth).toEqual(current.oauth)
+      expect(schemaProblems(result.document)).toEqual([])
+    })
+
+    test('removes the last model, leaving the team active with none', async () => {
+      const { result } = await buildFor(
+        {
+          ...current,
+          deployments: [current.deployments[1]],
+          gateway: { ...current.gateway, allowedDeployments: [TEAM_MODEL.slug] }
+        },
+        { params: { change: 'remove' } }
+      )
+
+      expect(result.document.status).toBe('active')
+      expect(result.document.deployments).toEqual([])
+      expect(result.document.gateway.allowedDeployments).toEqual([])
+      expect(schemaProblems(result.document)).toEqual([])
+    })
+
+    test('needs no eligible model, so a retired model can still be removed', async () => {
+      const { result } = await buildFor(current, {
+        params: { change: 'remove', modelSlug: 'gpt-4-1-nano' }
+      })
+
+      expect(result.document.deployments.map((d) => d.slug)).toEqual([
+        TEAM_MODEL.slug
+      ])
+      expect(result.document.gateway.allowedDeployments).toEqual([
+        TEAM_MODEL.slug
+      ])
+    })
+
+    test('is the file unchanged, at the next revision, when the model is already absent', async () => {
+      const { result } = await buildFor(current, {
+        params: { change: 'remove', modelSlug: 'never-held' }
+      })
+
+      expect(result.document.revision).toBe(7)
+      expect(result.document.deployments).toEqual(current.deployments)
+      expect(result.document.gateway.allowedDeployments).toEqual(
+        current.gateway.allowedDeployments
+      )
+    })
   })
 
   test('refuses a team whose service code is not three characters', async () => {

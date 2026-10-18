@@ -1,0 +1,222 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "team.schema.json",
+  "title": "AI Platform team file",
+  "description": "environments/{env}/{slug}.json in ai-platform-tenants. Written whole by the submit workflow; never edited in place. Holds no resource names: the naming module derives them.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schemaVersion",
+    "revision",
+    "environment",
+    "status",
+    "team",
+    "deployments",
+    "gateway",
+    "operationId",
+    "updatedBy",
+    "updatedAt"
+  ],
+  "properties": {
+    "$schema": { "type": "string" },
+    "schemaVersion": { "const": 1 },
+    "revision": { "type": "integer", "minimum": 1 },
+    "environment": { "$ref": "#/$defs/environmentName" },
+    "status": { "enum": ["active", "pending-removal", "removed"] },
+    "removeAfter": { "type": "string", "format": "date" },
+    "promotedFrom": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["environment", "sha"],
+      "properties": {
+        "environment": { "$ref": "#/$defs/environmentName" },
+        "sha": { "$ref": "#/$defs/sha" }
+      }
+    },
+    "team": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "serviceCode"],
+      "properties": {
+        "slug": { "$ref": "#/$defs/teamSlug" },
+        "serviceCode": { "type": "string", "pattern": "^[A-Z0-9]{3}$" }
+      }
+    },
+    "deployments": {
+      "type": "array",
+      "maxItems": 20,
+      "items": { "$ref": "#/$defs/deployment" }
+    },
+    "gateway": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["credentialType", "allowedDeployments", "limits"],
+      "properties": {
+        "credentialType": {
+          "description": "The team tier is OAuth only, by federated credential or client secret; subscription keys are the Research tier's (14 October 2026). The property stays so the shape can grow.",
+          "enum": ["oauth"]
+        },
+        "allowedDeployments": {
+          "description": "Catalogue slugs the team API may call; anything else returns 403 model-not-granted.",
+          "type": "array",
+          "uniqueItems": true,
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/catalogueSlug" }
+        },
+        "limits": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["tokensPerMinute", "requestsPerMinute"],
+          "properties": {
+            "tokensPerMinute": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 10000000
+            },
+            "requestsPerMinute": {
+              "type": "integer",
+              "minimum": 1,
+              "maximum": 100000
+            }
+          }
+        }
+      }
+    },
+    "oauth": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["federations", "externalClients", "secretsAllowed"],
+      "properties": {
+        "federations": {
+          "type": "array",
+          "maxItems": 20,
+          "items": { "$ref": "#/$defs/federation" }
+        },
+        "externalClients": {
+          "type": "array",
+          "maxItems": 39,
+          "items": { "$ref": "#/$defs/externalClient" }
+        },
+        "secretsAllowed": { "type": "boolean" },
+        "exception": {
+          "type": "object",
+          "additionalProperties": false,
+          "required": ["host", "reason", "reviewDate"],
+          "properties": {
+            "host": { "type": "string", "minLength": 1, "maxLength": 120 },
+            "reason": { "type": "string", "minLength": 1, "maxLength": 500 },
+            "reviewDate": { "type": "string", "format": "date" }
+          }
+        }
+      }
+    },
+    "operationId": { "$ref": "#/$defs/operationId" },
+    "updatedBy": { "$ref": "#/$defs/principal" },
+    "updatedAt": { "type": "string", "format": "date-time" }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "status": { "const": "pending-removal" } }
+      },
+      "then": { "required": ["removeAfter"] },
+      "else": { "not": { "required": ["removeAfter"] } }
+    },
+    {
+      "if": {
+        "properties": { "status": { "const": "removed" } }
+      },
+      "then": { "not": { "required": ["oauth"] } },
+      "else": { "required": ["oauth"] }
+    }
+  ],
+  "$defs": {
+    "environmentName": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9]{1,15}$"
+    },
+    "teamSlug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,22}[a-z0-9]$"
+    },
+    "catalogueSlug": {
+      "type": "string",
+      "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+      "maxLength": 40
+    },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "operationId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "principal": {
+      "description": "Exactly one identity, never a name or an email address: entra:{object ID} for a person signed in to the portal, github:{user ID} for an engineer who dispatched the change, app:{slug} for automation.",
+      "type": "string",
+      "pattern": "^(entra:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|github:[1-9][0-9]{0,19}|app:[a-z][a-z0-9-]{0,38})$"
+    },
+    "deployment": {
+      "description": "A dedicated deployment of a catalogue model. The SKU and capacity words are the hosting platform's (Foundry: Standard, DataZoneStandard or ProvisionedManaged, capacity in thousands of tokens per minute); the catalogue says which the model offers and the checks say which the hosting needs, so the file stays the same shape whatever hosts the model (18 October 2026).",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["slug", "sku", "status"],
+      "properties": {
+        "slug": { "$ref": "#/$defs/catalogueSlug" },
+        "sku": { "type": "string", "pattern": "^[A-Za-z][A-Za-z0-9-]{0,63}$" },
+        "capacity": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "status": { "enum": ["active"] }
+      }
+    },
+    "federation": {
+      "description": "cdp: the CDP service only; Terraform derives the issuer, subject and audience from the environment's registry entry, so the file holds nothing environment-specific. azure: the Defra tenant issuer and the principal ID of the application's user-assigned managed identity.",
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "host"],
+      "if": { "properties": { "host": { "const": "cdp" } } },
+      "then": {
+        "required": ["service"],
+        "not": {
+          "anyOf": [{ "required": ["issuer"] }, { "required": ["subject"] }]
+        }
+      },
+      "else": {
+        "required": ["issuer", "subject"],
+        "not": { "required": ["service"] }
+      },
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+        "host": { "enum": ["cdp", "azure"] },
+        "service": {
+          "description": "The CDP service, as CDP names its repositories.",
+          "type": "string",
+          "pattern": "^[a-z0-9]+(-[a-z0-9]+)*$",
+          "maxLength": 32
+        },
+        "issuer": {
+          "type": "string",
+          "pattern": "^https://[^\\s]+$",
+          "maxLength": 200
+        },
+        "subject": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 200,
+          "pattern": "^[^\\s*]+$"
+        }
+      }
+    },
+    "externalClient": {
+      "type": "object",
+      "additionalProperties": false,
+      "required": ["name", "tenantId", "clientId"],
+      "properties": {
+        "name": { "type": "string", "pattern": "^[a-z0-9][a-z0-9-]{0,62}$" },
+        "tenantId": { "$ref": "#/$defs/guid" },
+        "clientId": { "$ref": "#/$defs/guid" }
+      }
+    },
+    "guid": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$"
+    }
+  }
+}
