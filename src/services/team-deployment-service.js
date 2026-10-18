@@ -15,6 +15,7 @@ import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import {
   DEPLOY_FAILED,
   QUEUED,
+  REMOVED,
   auditDeployment,
   entryFields,
   entryFilter,
@@ -57,28 +58,36 @@ function requireTeamEnvironment(environment) {
 }
 
 /**
- * Requests provisioning of a team's dedicated model deployment (B09). One
- * document per team per environment holds every model the team has
- * requested there, mirroring design C's `environments/{env}/{team}.json`
- * shape (`gateway.allowedDeployments` etc.) - requesting a second model for
- * a team that already has a document for this environment extends it,
- * rather than creating a sibling document. Only the environments in
- * `teamDeployment.environments` are allowed from this portal instance, even
- * though the schema accepts every design C environment - a new environment
- * is a configuration change, not a code change. Each entry records
- * the orchestrator that submitted it and, for GitHub, its GitOps trail
- * (`gitops`: path, branch, runs, pull request, SHAs, resources). The change
- * is submitted as the requester's `entra:{oid}`; a user with no Entra object
- * ID is refused with `403 entra-identity-required`.
+ * Requests provisioning of a team's dedicated model deployments (B09), one
+ * or several models at once. One document per team per environment holds
+ * every model the team has requested there, mirroring design C's
+ * `environments/{env}/{team}.json` shape (`gateway.allowedDeployments` etc.)
+ * - requesting more models for a team that already has a document for this
+ * environment extends it, rather than creating a sibling document. Only the
+ * environments in `teamDeployment.environments` are allowed from this portal
+ * instance, even though the schema accepts every design C environment - a new
+ * environment is a configuration change, not a code change. Each model gets
+ * its own entry and operation, in the order asked, so one that fails never
+ * holds back the others; submit allows one open operation per team file, so
+ * every entry after the first waits its turn as `queued`. The request is
+ * all or nothing up front - a model that is not eligible, or that the team
+ * already has, refuses the whole request before anything is created - and
+ * idempotent by key: replaying a key returns its entries, and finishes any a
+ * crashed attempt did not get to. Each entry records the orchestrator that
+ * submitted it and, for GitHub, its GitOps trail (`gitops`: path, branch,
+ * runs, pull request, SHAs, resources). The change is submitted as the
+ * requester's `entra:{oid}`; a user with no Entra object ID is refused with
+ * `403 entra-identity-required`.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, modelSlug: string, environment: string, requestedBy: string, idempotencyKey: string, traceParent?: string}} params
+ * @param {{teamId: string, modelSlugs: string[], environment: string, requestedBy: string, idempotencyKey: string, traceParent?: string}} params
  * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, buildDesiredState?: Function}} [deps]
+ * @returns {Promise<object[]>} One view per model, in the order asked.
  */
-export async function requestDeployment(
+export async function requestDeployments(
   db,
   locker,
-  { teamId, modelSlug, environment, requestedBy, idempotencyKey, traceParent },
+  { teamId, modelSlugs, environment, requestedBy, idempotencyKey, traceParent },
   {
     registry = tenantOrchestratorRegistry,
     buildDesiredState = teamDesiredStateBuilder
@@ -94,26 +103,15 @@ export async function requestDeployment(
     throw Boom.notFound()
   }
 
-  const model = await findModelBySlug(db, modelSlug)
+  const slugs = [...new Set(modelSlugs)]
 
-  if (
-    !model ||
-    !model.eligible ||
-    !model.tiers?.includes('team') ||
-    !model.environments?.includes(environment)
-  ) {
-    throw boomWithCode(
-      Boom.forbidden,
-      'Model is not eligible for this environment',
-      'model-not-eligible'
-    )
-  }
+  await requireEligibleModels(db, slugs, environment)
 
   // The GitOps change is attributed to the person's Entra object ID; the
   // portal's own user ID stays the key for authorisation.
   const principal = await requireUserPrincipal(db, requestedBy)
 
-  // Several models can now be requested for the same team+environment
+  // Several models can be requested for the same team+environment
   // document, so a plain unique index can no longer detect an
   // idempotency-key replay or a duplicate model by itself - every mutation
   // of the document is serialised behind this lock instead.
@@ -123,11 +121,11 @@ export async function requestDeployment(
   )
 
   try {
-    return await addDeployment(
+    return await addDeployments(
       db,
       {
         teamId,
-        modelSlug,
+        modelSlugs: slugs,
         environment,
         requestedBy,
         principal,
@@ -141,35 +139,85 @@ export async function requestDeployment(
   }
 }
 
-// The locked part of `requestDeployment`: replays an idempotency key,
-// refuses a second deployment of the same model, otherwise records a new
-// entry and submits it.
-async function addDeployment(db, params, deps) {
-  const { teamId, environment, modelSlug, idempotencyKey } = params
+// Refuses the whole request, naming every offender, if any model cannot be
+// deployed to the team tier in this environment.
+async function requireEligibleModels(db, slugs, environment) {
+  const models = await Promise.all(
+    slugs.map((slug) => findModelBySlug(db, slug))
+  )
+  const refused = slugs.filter((slug, index) => {
+    const model = models[index]
+
+    return (
+      !model?.eligible ||
+      !model.tiers?.includes('team') ||
+      !model.environments?.includes(environment)
+    )
+  })
+
+  if (refused.length > 0) {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Model is not eligible for this environment',
+      'model-not-eligible',
+      { modelSlugs: refused }
+    )
+  }
+}
+
+// The locked part of `requestDeployments`: refuses the request if the team
+// already has any of its models (one it removed does not count), then
+// reuses the entry an earlier attempt of this key made for a model, or
+// records and submits a new one.
+async function addDeployments(db, params, deps) {
+  const { teamId, environment, modelSlugs, idempotencyKey } = params
   const doc = await db
     .collection('teamDeployments')
     .findOne({ teamId, environment })
-
-  const replay = doc?.deployments?.find(
-    (deployment) => deployment.idempotencyKey === idempotencyKey
+  const held = doc?.deployments ?? []
+  const earlier = new Map(
+    held
+      .filter((entry) => entry.idempotencyKey === idempotencyKey)
+      .map((entry) => [entry.modelSlug, entry])
+  )
+  const existing = held.filter(
+    (entry) =>
+      modelSlugs.includes(entry.modelSlug) &&
+      entry.status !== REMOVED &&
+      earlier.get(entry.modelSlug) !== entry
   )
 
-  if (replay) {
-    return toDeploymentView(doc, replay)
-  }
-
-  const conflicting = doc?.deployments?.find(
-    (deployment) => deployment.modelSlug === modelSlug
-  )
-
-  if (conflicting) {
+  if (existing.length > 0) {
     throw boomWithCode(
       Boom.conflict,
       'A deployment already exists for this team and model',
       'deployment-exists',
-      { existingId: conflicting.id }
+      {
+        existingId: existing[0].id,
+        existing: existing.map(({ id, modelSlug }) => ({ id, modelSlug }))
+      }
     )
   }
+
+  const views = []
+
+  for (const modelSlug of modelSlugs) {
+    const entry = earlier.get(modelSlug)
+
+    views.push(
+      entry
+        ? toDeploymentView(doc, entry)
+        : await addDeployment(db, { ...params, modelSlug }, deps)
+    )
+  }
+
+  return views
+}
+
+// Records and submits one model's entry, or queues it behind the operation
+// holding the team file (or the entries already waiting).
+async function addDeployment(db, params, deps) {
+  const { teamId, environment } = params
 
   // Submit allows one open operation per team file, so a request made while
   // another holds it (or earlier ones wait) waits its turn.

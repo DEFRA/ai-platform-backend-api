@@ -118,11 +118,21 @@ describe('team-deployment-service (GitOps)', () => {
     return { userId, teamId: await joinTeam(userId), principal: `entra:${oid}` }
   }
 
-  async function submitGithubDeployment(orchestrator, overrides = {}) {
-    const { userId, teamId, principal } = await signedInMember()
-    const deployment = await service.requestDeployment(
+  // One model's request, as the connect flow makes it for a single model.
+  async function requestOne({ modelSlug, ...params }, deps) {
+    const [deployment] = await service.requestDeployments(
       db,
       server.locker,
+      { ...params, modelSlugs: [modelSlug] },
+      deps
+    )
+
+    return deployment
+  }
+
+  async function submitGithubDeployment(orchestrator, overrides = {}) {
+    const { userId, teamId, principal } = await signedInMember()
+    const deployment = await requestOne(
       {
         teamId,
         modelSlug: 'gpt-4o',
@@ -180,15 +190,13 @@ describe('team-deployment-service (GitOps)', () => {
     )
   }
 
-  describe('requestDeployment', () => {
+  describe('requestDeployments', () => {
     test('fails with desired-state-unavailable and records nothing when the team has no file to build', async () => {
       const orchestrator = fakeOrchestrator()
       const { teamId, userId } = await signedInMember()
 
       await expect(
-        service.requestDeployment(
-          db,
-          server.locker,
+        requestOne(
           {
             teamId,
             modelSlug: 'gpt-4o',
@@ -271,9 +279,7 @@ describe('team-deployment-service (GitOps)', () => {
       const { teamId, userId } = await signedInMember()
 
       await expect(
-        service.requestDeployment(
-          db,
-          server.locker,
+        requestOne(
           {
             teamId,
             modelSlug: 'gpt-4o',
@@ -293,15 +299,88 @@ describe('team-deployment-service (GitOps)', () => {
       expect(doc.deployments).toEqual([])
     })
 
+    test('creates none of several models when the first cannot be submitted', async () => {
+      const orchestrator = fakeOrchestrator({
+        requestDeployment: vi.fn(async () => {
+          throw new Error('GitHub unavailable')
+        })
+      })
+      const { teamId, userId } = await signedInMember()
+
+      await expect(
+        service.requestDeployments(
+          db,
+          server.locker,
+          {
+            teamId,
+            modelSlugs: ['gpt-4o', 'gpt-4-1-nano'],
+            environment: 'sandbox',
+            requestedBy: userId,
+            idempotencyKey: randomUUID()
+          },
+          { registry: githubRegistry(orchestrator), buildDesiredState }
+        )
+      ).rejects.toMatchObject({
+        output: { statusCode: 502 },
+        data: { code: 'upstream-unavailable' }
+      })
+
+      const doc = await db.collection('teamDeployments').findOne({ teamId })
+
+      expect(doc.deployments).toEqual([])
+    })
+
+    test('queues every model after the first, each with its own operation, submitted as the requester', async () => {
+      const orchestrator = fakeOrchestrator()
+      const { teamId, userId, principal } = await signedInMember()
+
+      const views = await service.requestDeployments(
+        db,
+        server.locker,
+        {
+          teamId,
+          modelSlugs: ['gpt-4o', 'gpt-4-1-nano'],
+          environment: 'sandbox',
+          requestedBy: userId,
+          idempotencyKey: randomUUID()
+        },
+        { registry: githubRegistry(orchestrator), buildDesiredState }
+      )
+
+      expect(views.map((view) => view.status)).toEqual(['requested', 'queued'])
+      expect(orchestrator.requestDeployment).toHaveBeenCalledTimes(1)
+      expect((await storedEntry(views[1]._id)).requestedByPrincipal).toBe(
+        principal
+      )
+    })
+
+    test('drops a repeated model from one request', async () => {
+      const orchestrator = fakeOrchestrator()
+      const { teamId, userId } = await signedInMember()
+
+      const views = await service.requestDeployments(
+        db,
+        server.locker,
+        {
+          teamId,
+          modelSlugs: ['gpt-4o', 'gpt-4o'],
+          environment: 'sandbox',
+          requestedBy: userId,
+          idempotencyKey: randomUUID()
+        },
+        { registry: githubRegistry(orchestrator), buildDesiredState }
+      )
+
+      expect(views).toHaveLength(1)
+    })
+
     test('refuses a member with no Entra object ID, before recording or submitting anything', async () => {
       const orchestrator = fakeOrchestrator()
       // A record from before oid keying, until its next sign-in binds one.
       const { teamId, userId } = await signedInMember({ oid: undefined })
 
       await expect(
-        service.requestDeployment(
-          db,
-          server.locker,
+        requestOne(
           {
             teamId,
             modelSlug: 'gpt-4o',
@@ -1091,9 +1170,7 @@ describe('team-deployment-service (GitOps)', () => {
       const orchestrator = fakeOrchestrator()
       const submitted = await activeDeployment(orchestrator)
       // A second model requested for the same team, its operation in flight.
-      await service.requestDeployment(
-        db,
-        server.locker,
+      await requestOne(
         {
           teamId: submitted.teamId,
           modelSlug: 'gpt-4-1-nano',

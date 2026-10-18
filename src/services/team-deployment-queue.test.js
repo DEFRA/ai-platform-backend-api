@@ -99,19 +99,21 @@ describe('team deployment queue', () => {
     }
   }
 
-  function request(member, modelSlug) {
-    return service.requestDeployment(
+  async function request(member, modelSlug) {
+    const [deployment] = await service.requestDeployments(
       db,
       server.locker,
       {
         teamId: member.teamId,
-        modelSlug,
+        modelSlugs: [modelSlug],
         environment: 'sandbox',
         requestedBy: member.userId,
         idempotencyKey: randomUUID()
       },
       member.deps
     )
+
+    return deployment
   }
 
   function poll(member, deployment, deps = {}) {

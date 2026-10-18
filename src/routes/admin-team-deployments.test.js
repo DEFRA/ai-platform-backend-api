@@ -60,14 +60,14 @@ describe('#admin team-deployments routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+      payload: { modelSlugs: ['gpt-4o'], environment: 'sandbox' }
     })
 
     await wait(300)
 
     const { result: polled } = await server.inject({
       method: 'GET',
-      url: `/v1/teams/${teamId}/deployments/${result.deployment._id}`,
+      url: `/v1/teams/${teamId}/deployments/${result.deployments[0]._id}`,
       headers: { 'x-user-id': userId }
     })
 

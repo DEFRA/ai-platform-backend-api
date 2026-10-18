@@ -537,10 +537,10 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: { 'x-user-id': requesterId, 'idempotency-key': randomUUID() },
-      payload: { modelSlug, environment: 'sandbox' }
+      payload: { modelSlugs: [modelSlug], environment: 'sandbox' }
     })
 
-    const pollUrl = `/v1/teams/${teamId}/deployments/${deployment.result.deployment._id}`
+    const pollUrl = `/v1/teams/${teamId}/deployments/${deployment.result.deployments[0]._id}`
 
     await wait(300)
     await server.inject({
@@ -862,7 +862,7 @@ describe('#credentials routes', () => {
         'x-user-id': requesterId,
         'idempotency-key': randomUUID()
       },
-      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+      payload: { modelSlugs: ['gpt-4o'], environment: 'sandbox' }
     })
 
     expect(requested.statusCode).toBe(201)

@@ -310,6 +310,13 @@ and a failed revert's pull request stays open, keeping the team file locked, unt
 A team's file takes one operation at a time, so a request made while another for the same team and
 environment is still in progress (or being reverted or abandoned) is stored as `queued` and dispatched,
 its document built then, once that one ends.
+`POST /v1/teams/{teamId}/deployments` takes `{modelSlugs: [...], environment}` (1 to 20 models) and
+returns `{deployments}` in the order asked: one entry and operation per model, the first in flight
+and the rest queued, so one that fails never holds back the others. The request is all or nothing up
+front (a model that is not eligible is refused as `403 model-not-eligible`, and one the team already
+has as `409 deployment-exists` with `existing`; a model the team removed may be asked for again) and
+idempotent by `Idempotency-Key`: a replay returns its entries and finishes any a crashed attempt did
+not reach.
 Platform Admins
 (users whose `roles` include `platform-admin`; nothing assigns it yet) can
 `POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`.

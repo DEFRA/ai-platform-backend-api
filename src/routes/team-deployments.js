@@ -6,7 +6,7 @@ import { REMOVING } from '#/services/team-deployment-entries.js'
 import {
   getDeployment,
   listDeploymentsForTeam,
-  requestDeployment
+  requestDeployments
 } from '#/services/team-deployment-service.js'
 import { removeDeployment } from '#/services/team-deployment-removal.js'
 
@@ -31,8 +31,12 @@ export const teamDeployments = [
         }).unknown(true),
         params: Joi.object({ teamId: Joi.string().required() }).unknown(false),
         payload: Joi.object({
-          modelSlug: Joi.string()
-            .pattern(/^[a-z0-9-]+$/)
+          // The team file holds at most 20 deployments (team.schema.json).
+          modelSlugs: Joi.array()
+            .items(Joi.string().pattern(/^[a-z0-9-]+$/))
+            .min(1)
+            .max(20)
+            .unique()
             .required(),
           // Any registry-shaped name; which ones this instance may deploy to
           // is configuration, refused as environment-not-available.
@@ -46,11 +50,11 @@ export const teamDeployments = [
       const requestedBy = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
       const { teamId } = request.params
-      const { modelSlug, environment } = request.payload
+      const { modelSlugs, environment } = request.payload
 
-      const deployment = await requestDeployment(request.db, request.locker, {
+      const deployments = await requestDeployments(request.db, request.locker, {
         teamId,
-        modelSlug,
+        modelSlugs,
         environment,
         requestedBy,
         idempotencyKey,
@@ -58,8 +62,8 @@ export const teamDeployments = [
       })
 
       return h
-        .response({ deployment })
-        .header('Location', `/v1/teams/${teamId}/deployments/${deployment._id}`)
+        .response({ deployments })
+        .header('Location', `/v1/teams/${teamId}/deployments`)
         .code(201)
     }
   },
