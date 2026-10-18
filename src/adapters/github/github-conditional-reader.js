@@ -50,7 +50,8 @@ function rateLimitedError(retryAtMs) {
  *   URL, and a `304 Not Modified` (which does not count against the rate
  *   limit) returns the cached body;
  * - a rate-limited response starts a backoff, at least what GitHub asked
- *   for and doubling on each consecutive limit up to 15 minutes, during
+ *   for (honoured in full) and otherwise doubling on each consecutive limit
+ *   up to 15 minutes, during
  *   which every read fails fast with code `github-rate-limited` without
  *   calling GitHub. One success ends it.
  * The backoff is shared by everything using the reader, because GitHub's
@@ -101,10 +102,13 @@ export function createConditionalReader({
       }
 
       if (isRateLimited(error)) {
-        backoffMs = Math.min(
-          MAX_BACKOFF_MS,
-          Math.max(
-            hintedWaitMs(error, now()),
+        // Our own backoff doubles up to the cap; GitHub's explicit wait is
+        // honoured in full, however long, because requests before it are
+        // still refused.
+        backoffMs = Math.max(
+          hintedWaitMs(error, now()),
+          Math.min(
+            MAX_BACKOFF_MS,
             backoffMs ? backoffMs * 2 : DEFAULT_BACKOFF_MS
           )
         )

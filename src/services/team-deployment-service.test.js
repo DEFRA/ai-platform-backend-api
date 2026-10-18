@@ -601,6 +601,56 @@ describe('team-deployment-service (GitOps)', () => {
       expect(orchestrator.getPreviousDocument).not.toHaveBeenCalled()
     })
 
+    test('waits while an apply dispatched before the retry fails after it, judged by run ID', async () => {
+      const orchestrator = fakeOrchestrator()
+      const submitted = await deployingGithubDeployment(orchestrator, {
+        applyRetry: retried
+      })
+
+      // Observed after the retry was dispatched, but run 1999 is the earlier
+      // apply: the retry (2002) is still to run.
+      orchestrator.getDeploymentStatus.mockResolvedValue(
+        failed(
+          submitted.deployment.operationId,
+          { failingTeams: ['alpha'], observedAt: '2026-10-13T12:45:00Z' },
+          { applyRunId: 1999 }
+        )
+      )
+
+      const view = await poll(orchestrator, submitted)
+
+      expect(view.status).toBe('deploying')
+      expect(orchestrator.requestApply).not.toHaveBeenCalled()
+      expect(orchestrator.getPreviousDocument).not.toHaveBeenCalled()
+    })
+
+    test('reverts when the retry itself fails, however the clocks compare', async () => {
+      const previous = {
+        ...alpha,
+        revision: 1,
+        operationId: 'previous-op-0001'
+      }
+      const orchestrator = fakeOrchestrator({
+        getPreviousDocument: vi.fn(async () => ({ document: previous }))
+      })
+      const submitted = await deployingGithubDeployment(orchestrator, {
+        applyRetry: { ...retried, dispatchedAt: '2026-10-13T12:31:00.000Z' }
+      })
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(
+        failed(
+          submitted.deployment.operationId,
+          { failingTeams: ['alpha'] },
+          { applyRunId: 2002 }
+        )
+      )
+
+      const view = await poll(orchestrator, submitted)
+
+      expect(view.status).toBe('deploy-failed')
+      expect(view.failureReason).toContain('reverted')
+    })
+
     test('reverts to the previous revision when the retry failed and this team is attributed', async () => {
       const previous = {
         ...alpha,
@@ -1001,6 +1051,33 @@ describe('team-deployment-service (GitOps)', () => {
       await expect(remove(orchestrator, submitted)).rejects.toMatchObject({
         output: { statusCode: 409 },
         data: { code: 'deployment-in-progress' }
+      })
+    })
+
+    test('leaves a queued request alone while a poll is dispatching it, and removes it once the claim has lapsed', async () => {
+      const orchestrator = fakeOrchestrator()
+      const submitted = await submitGithubDeployment(orchestrator)
+      await setEntry(submitted.deployment._id, {
+        status: 'queued',
+        dispatch: { claimedAt: new Date().toISOString() }
+      })
+
+      // A live claim: the dispatch may already be on its way to GitHub.
+      await expect(remove(orchestrator, submitted)).rejects.toMatchObject({
+        output: { statusCode: 409 },
+        data: { code: 'deployment-in-progress' }
+      })
+      expect((await storedEntry(submitted.deployment._id)).status).toBe(
+        'queued'
+      )
+
+      // A lapsed claim: the poll that held it died before dispatching.
+      await setEntry(submitted.deployment._id, {
+        dispatch: { claimedAt: new Date(0).toISOString() }
+      })
+
+      await expect(remove(orchestrator, submitted)).resolves.toMatchObject({
+        status: 'removed'
       })
     })
 

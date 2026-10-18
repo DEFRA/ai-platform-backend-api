@@ -91,6 +91,7 @@ function gitopsChangesOf(result, gitops) {
       submitRunUrl: result.links?.submitRun,
       pullRequestNumber: result.pullRequestNumber,
       pullRequestUrl: result.links?.pullRequest,
+      pullRequestOpen: result.pullRequestOpen,
       mergeSha: result.mergeSha,
       mergedAt: result.mergedAt,
       applyRunId: result.applyRunId,
@@ -105,11 +106,25 @@ function gitopsChangesOf(result, gitops) {
   )
 }
 
-// A follow-up dispatched and not yet at a terminal state.
+// A follow-up dispatched and not yet at a terminal state, or a failed
+// revert whose pull request is still open: that request is never abandoned
+// by the backend (direction 14 October 2026), but it holds the team file at
+// `submit` until an engineer closes it, so it is polled until then.
 function isTracked(followUp) {
   return (
     Boolean(followUp?.dispatchedAt) &&
-    NON_TERMINAL_STATUSES.includes(followUp.status)
+    (NON_TERMINAL_STATUSES.includes(followUp.status) ||
+      holdsFileWhileFailed(followUp))
+  )
+}
+
+// Whether a failed follow-up still holds the team file: its pull request
+// was opened and has not been closed.
+function holdsFileWhileFailed(followUp) {
+  return (
+    followUp?.status === CHECKS_FAILED &&
+    followUp.pullRequestNumber != null &&
+    followUp.pullRequestOpen === true
   )
 }
 
@@ -549,7 +564,14 @@ export async function sweepGitopsDeployments(db, deps = {}) {
             ...FOLLOW_UPS.map((step) => ({
               [`gitops.${step}.dispatchedAt`]: { $ne: null },
               [`gitops.${step}.status`]: { $in: NON_TERMINAL_STATUSES }
-            }))
+            })),
+            // A failed revert whose pull request is still open holds the
+            // team file; it is polled until an engineer closes it.
+            {
+              'gitops.revert.status': CHECKS_FAILED,
+              'gitops.revert.pullRequestNumber': { $ne: null },
+              'gitops.revert.pullRequestOpen': true
+            }
           ]
         }
       }

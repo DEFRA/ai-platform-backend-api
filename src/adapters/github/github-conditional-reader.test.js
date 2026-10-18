@@ -149,6 +149,55 @@ describe('#createConditionalReader', () => {
     })
   })
 
+  describe('a wait GitHub asks for beyond the 15 minute cap', () => {
+    const HOUR = 3600
+
+    test.each([
+      ['retry-after', () => ({ 'retry-after': String(HOUR) })],
+      [
+        'x-ratelimit-reset',
+        () => ({
+          'x-ratelimit-remaining': '0',
+          'x-ratelimit-reset': String(clock / 1000 + HOUR)
+        })
+      ]
+    ])('is honoured in full (%s)', async (_name, headersFor) => {
+      const reader = createReader()
+      const octokit = createOctokit()
+
+      nock(GITHUB_API).get(runPath()).reply(429, {}, headersFor())
+
+      await expect(reader.read(octokit, ROUTE, params())).rejects.toMatchObject(
+        { retryAt: new Date(clock + HOUR * 1000).toISOString() }
+      )
+
+      // Still limited at 20 minutes, where the cap alone would have let a
+      // call through.
+      clock += 20 * 60 * 1000
+      await expect(reader.read(octokit, ROUTE, params())).rejects.toMatchObject(
+        { code: 'github-rate-limited' }
+      )
+    })
+
+    test('while the doubling of our own wait still stops at the cap', async () => {
+      const reader = createReader()
+      const octokit = createOctokit()
+
+      for (const wait of [60, 120, 240, 480, 900, 900]) {
+        nock(GITHUB_API)
+          .get(runPath())
+          .reply(429, {}, { 'x-ratelimit-remaining': '0' })
+
+        await expect(
+          reader.read(octokit, ROUTE, params())
+        ).rejects.toMatchObject({
+          retryAt: new Date(clock + wait * 1000).toISOString()
+        })
+        clock += wait * 1000
+      }
+    })
+  })
+
   test('forgets the oldest URL once the cache is full', async () => {
     const reader = createReader({ maxCachedUrls: 1 })
     const octokit = createOctokit()

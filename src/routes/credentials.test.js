@@ -666,6 +666,41 @@ describe('#credentials routes', () => {
     )
   })
 
+  test('POST /v1/credentials never reuses a team subscription key from before the tier became OAuth only', async () => {
+    const userId = 'team-cred-user-key'
+    const teamId = await createTeamWithActiveDeployment(userId)
+    const { insertedId } = await server.db.collection('credentials').insertOne({
+      userId,
+      teamId,
+      tier: 'team',
+      credentialType: 'key',
+      allowedDeployments: ['gpt-4o'],
+      environment: 'sandbox',
+      status: 'active',
+      type: 'apim-subscription',
+      issuerKey: 'mock',
+      createdAt: '2026-10-01T00:00:00.000Z'
+    })
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'sandbox'
+      }
+    })
+
+    expect(response.statusCode).toBe(201)
+    expect(response.result.credential._id.toString()).not.toBe(
+      insertedId.toString()
+    )
+    expect(response.result.credential.credentialType).toBe('oauth')
+  })
+
   test('POST /v1/credentials extends the same team credential when a second model becomes active', async () => {
     const userId = 'team-cred-user-6'
     const teamId = await createTeamWithActiveDeployment(userId, 'gpt-4o')

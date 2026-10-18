@@ -366,9 +366,14 @@ export async function applyFailurePolicy(db, doc, entry, result, deps) {
     return (await dispatchRetry(db, doc, entry, deps)) ? waiting : null
   }
 
-  // The failure GitHub reports may still be the one before the retry.
+  // The failure GitHub reports may still be the one before the retry. Run
+  // IDs grow, so a failed run at or after the retry's is the retry or what
+  // superseded it; an earlier run's failure, however late it is observed,
+  // is not. Without run IDs, the time of observation decides.
   const failedAfterRetry =
-    Date.parse(result.failure.observedAt) > Date.parse(retry.dispatchedAt)
+    result.applyRunId != null && retry.runId != null
+      ? result.applyRunId >= retry.runId
+      : Date.parse(result.failure.observedAt) > Date.parse(retry.dispatchedAt)
 
   if (!failedAfterRetry) {
     return waiting

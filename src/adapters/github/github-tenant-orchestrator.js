@@ -271,7 +271,8 @@ async function validateFailed({ reader, client, repo }, sha) {
 }
 
 // An open pull request is checks-failed once its validate check fails, and
-// a closed unmerged one always is.
+// a closed unmerged one always is. `pullRequestOpen` says which, because an
+// open one still holds the team file at `submit`.
 async function unmergedPullState(reads, pull, links) {
   const opened = { links, pullRequestNumber: pull.number }
 
@@ -279,7 +280,8 @@ async function unmergedPullState(reads, pull, links) {
     return {
       ...opened,
       status: CHECKS_FAILED,
-      failureReason: FAILURE_REASONS.closed
+      failureReason: FAILURE_REASONS.closed,
+      pullRequestOpen: false
     }
   }
 
@@ -287,9 +289,10 @@ async function unmergedPullState(reads, pull, links) {
     ? {
         ...opened,
         status: CHECKS_FAILED,
-        failureReason: FAILURE_REASONS.validate
+        failureReason: FAILURE_REASONS.validate,
+        pullRequestOpen: true
       }
-    : { ...opened, status: 'pr-raised' }
+    : { ...opened, status: 'pr-raised', pullRequestOpen: true }
 }
 
 async function includesCommit(reads, mergeSha, sha) {

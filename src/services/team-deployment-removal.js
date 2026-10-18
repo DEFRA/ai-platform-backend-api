@@ -1,6 +1,7 @@
 import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
+import { config } from '#/config.js'
 import {
   tenantOrchestratorRegistry,
   GITHUB_ORCHESTRATOR
@@ -17,6 +18,7 @@ import {
   entryFilter,
   findEntry
 } from '#/services/team-deployment-entries.js'
+import { claimableFieldQuery } from '#/services/team-deployment-gitops-steps.js'
 import { mustQueue } from '#/services/team-deployment-queue.js'
 import {
   buildSubmission,
@@ -107,6 +109,14 @@ export async function removeDeployment(
   }
 }
 
+function inProgress() {
+  return boomWithCode(
+    Boom.conflict,
+    'The deployment is still being set up; try again once it is active',
+    'deployment-in-progress'
+  )
+}
+
 // The locked part of `removeDeployment`.
 async function removeEntry(db, doc, entry, actor, deps) {
   if (entry.status === REMOVING || entry.status === REMOVED) {
@@ -118,11 +128,7 @@ async function removeEntry(db, doc, entry, actor, deps) {
   }
 
   if (entry.status !== 'active' && entry.status !== DEPLOY_FAILED) {
-    throw boomWithCode(
-      Boom.conflict,
-      'The deployment is still being set up; try again once it is active',
-      'deployment-in-progress'
-    )
+    throw inProgress()
   }
 
   if (await mustQueue(db, doc)) {
@@ -140,14 +146,32 @@ async function removeEntry(db, doc, entry, actor, deps) {
   return submitRemoval(db, doc, entry, actor, deps)
 }
 
-// A removal with nothing to apply: the record changes, audited.
+// A removal with nothing to apply: the record changes, audited. A queued
+// request is left alone while a poll holds a live claim on it, because that
+// poll may already be submitting it to GitHub; the match fails and the
+// caller is told to try again once the dispatch has settled.
 async function markRemoved(db, doc, entry, { requestedBy }) {
   const removedAt = new Date().toISOString()
+  const filter = entryFilter(doc, entry)
 
-  await db.collection('teamDeployments').updateOne(entryFilter(doc, entry), {
-    $set: entryFields({ status: REMOVED, removedAt }),
-    $pull: { 'gateway.allowedDeployments': entry.modelSlug }
-  })
+  if (entry.status === QUEUED) {
+    Object.assign(
+      filter.deployments.$elemMatch,
+      claimableFieldQuery('dispatch', config.get('gitops.claimLeaseMs'))
+    )
+  }
+
+  const { matchedCount } = await db
+    .collection('teamDeployments')
+    .updateOne(filter, {
+      $set: entryFields({ status: REMOVED, removedAt }),
+      $pull: { 'gateway.allowedDeployments': entry.modelSlug }
+    })
+
+  if (matchedCount === 0) {
+    throw inProgress()
+  }
+
   await auditDeployment(db, entry, {
     action: REMOVE_ACTION,
     actorUserId: requestedBy,

@@ -262,9 +262,15 @@ async function issueCredentialForParams(
       )
     }
 
-    const activeTeamCredential = await db
-      .collection('credentials')
-      .findOne({ teamId, environment, tier: 'team', status: 'active' })
+    // Only an OAuth credential is the team's; the tier has issued nothing
+    // else since it became OAuth only (14 October 2026).
+    const activeTeamCredential = await db.collection('credentials').findOne({
+      teamId,
+      environment,
+      tier: 'team',
+      credentialType: TEAM_CREDENTIAL_TYPE,
+      status: 'active'
+    })
 
     if (activeTeamCredential) {
       const allowedDeployments = new Set(

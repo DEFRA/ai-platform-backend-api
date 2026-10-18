@@ -18,12 +18,15 @@ import {
 // both check that nothing holds the file and claim the next request.
 
 // Requests that can never be submitted as they stand: their document
-// cannot be built, or is too large or for the wrong file. They end
-// `checks-failed` so the queue moves on; anything else is retried.
+// cannot be built (no builder, no team SKU for the model, no service code),
+// or is too large or for the wrong file. They end `checks-failed` so the
+// queue moves on; anything else is retried.
 const UNSUBMITTABLE = new Set([
   'desired-state-unavailable',
   'desired-state-too-large',
-  'invalid-path'
+  'invalid-path',
+  'model-not-eligible',
+  'service-code-required'
 ])
 
 function unfinished(field) {
@@ -36,13 +39,19 @@ function unfinished(field) {
 }
 
 // An entry holds its team file while its own operation is in progress,
-// while a revert of it is still to dispatch or in progress, while its
-// removal is in progress, and while a failed pull request of its is still
-// to abandon or being abandoned.
+// while a revert of it is still to dispatch or in progress, while a failed
+// revert's pull request is still open (the backend never abandons one; an
+// engineer closes it), while its removal is in progress, and while a failed
+// pull request of its is still to abandon or being abandoned.
 function holdingClauses() {
   return [
     { status: { $in: NON_TERMINAL_STATUSES } },
     { 'gitops.revert': { $ne: null }, ...unfinished('gitops.revert') },
+    {
+      'gitops.revert.status': CHECKS_FAILED,
+      'gitops.revert.pullRequestNumber': { $ne: null },
+      'gitops.revert.pullRequestOpen': true
+    },
     { 'gitops.remove': { $ne: null }, ...unfinished('gitops.remove') },
     {
       status: CHECKS_FAILED,

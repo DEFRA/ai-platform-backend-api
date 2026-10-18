@@ -37,6 +37,7 @@
  * @property {string} [appliedSha] - commit the successful apply ran at
  * @property {object} [resources] - the team's entry in the run report's `outputs.teams`
  * @property {number} [pullRequestNumber]
+ * @property {boolean} [pullRequestOpen] - whether an unmerged pull request is still open; an open one holds the team file at `submit`
  * @property {string} [mergedAt]
  * @property {number} [applyRunId]
  * @property {string} [polledAt] - set when the adapter read GitHub or ARM on this call

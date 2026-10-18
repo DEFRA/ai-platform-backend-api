@@ -440,6 +440,77 @@ describe('team-deployment-gitops', () => {
       expect(orchestrator.requestDeployment).not.toHaveBeenCalled()
     })
 
+    test('keeps a failed revert whose pull request stays open holding the team file until an engineer closes it', async () => {
+      const orchestrator = fakeOrchestrator()
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const entry = revertingEntry()
+      const queued = githubEntry({
+        status: 'queued',
+        requestedBy: 'queue-user',
+        requestedByPrincipal: 'entra:00000000-0000-0000-0000-000000000001'
+      })
+      queued.gitops = null
+      await insertDocument(entry, queued)
+      const settings = {
+        registry: githubRegistry(orchestrator),
+        logger,
+        pollMinIntervalMs: 0,
+        buildDesiredState: async (_, { environment, operationId }) => ({
+          document: {
+            environment,
+            operationId,
+            revision: 1,
+            team: { slug: 'alpha' }
+          },
+          expectedRevision: 0
+        })
+      }
+
+      // The revert's validate failed; its pull request is left open. Any
+      // other operation polled meanwhile is simply still requested.
+      const revertStatus =
+        (status) =>
+        async ({ operationId }) =>
+          operationId === 'revert-op'
+            ? { operationId, pullRequestNumber: 8, links: {}, ...status }
+            : { operationId, status: 'requested', links: {} }
+
+      orchestrator.getDeploymentStatus.mockImplementation(
+        revertStatus({
+          status: 'checks-failed',
+          failureReason: 'The validate check failed on the pull request',
+          pullRequestOpen: true
+        })
+      )
+
+      await gitops.sweepGitopsDeployments(db, settings)
+      await gitops.sweepGitopsDeployments(db, settings)
+
+      expect((await storedEntry(entry.id)).gitops.revert).toMatchObject({
+        status: 'checks-failed',
+        pullRequestOpen: true
+      })
+      expect((await storedEntry(queued.id)).status).toBe('queued')
+      expect(orchestrator.requestDeployment).not.toHaveBeenCalled()
+
+      // An engineer closes the pull request: the file is free.
+      orchestrator.getDeploymentStatus.mockImplementation(
+        revertStatus({
+          status: 'checks-failed',
+          failureReason: 'The pull request was closed without being merged',
+          pullRequestOpen: false
+        })
+      )
+
+      await gitops.sweepGitopsDeployments(db, settings)
+      await gitops.sweepGitopsDeployments(db, settings)
+
+      expect((await storedEntry(queued.id)).status).toBe('requested')
+      expect(orchestrator.requestDeployment).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId: queued.operationId })
+      )
+    })
+
     test('records a revert that completes and leaves the entry as it was', async () => {
       const orchestrator = fakeOrchestrator()
       const entry = revertingEntry()
@@ -627,6 +698,66 @@ describe('team-deployment-gitops', () => {
         })
       )
       expect((await storedEntry(queued.id)).status).toBe('requested')
+    })
+
+    test('fails a queued request its builder refuses for good, so the next one is not stuck behind it', async () => {
+      const { boomWithCode, Boom } =
+        await import('#/common/helpers/boom-with-code.js')
+      const orchestrator = fakeOrchestrator()
+      const ineligible = githubEntry({
+        status: 'queued',
+        modelSlug: 'no-team-sku',
+        requestedByPrincipal: 'entra:00000000-0000-0000-0000-000000000001'
+      })
+      const valid = githubEntry({
+        status: 'queued',
+        modelSlug: 'gpt-4o',
+        requestedByPrincipal: 'entra:00000000-0000-0000-0000-000000000002'
+      })
+      ineligible.gitops = null
+      valid.gitops = null
+      await insertDocument(githubEntry({ status: 'active' }), ineligible, valid)
+
+      const settings = {
+        registry: githubRegistry(orchestrator),
+        pollMinIntervalMs: 0,
+        buildDesiredState: async (
+          _,
+          { modelSlug, environment, operationId }
+        ) => {
+          if (modelSlug === 'no-team-sku') {
+            throw boomWithCode(
+              Boom.forbidden,
+              'Model has no team tier SKU in the catalogue',
+              'model-not-eligible'
+            )
+          }
+
+          return {
+            document: {
+              environment,
+              operationId,
+              revision: 1,
+              team: { slug: 'alpha' }
+            },
+            expectedRevision: 0
+          }
+        }
+      }
+
+      await gitops.sweepGitopsDeployments(db, settings)
+
+      // The refused request fails for good and, in the same sweep, the file
+      // is free for the valid one behind it.
+      expect(await storedEntry(ineligible.id)).toMatchObject({
+        status: 'checks-failed',
+        failureReason: 'Model has no team tier SKU in the catalogue'
+      })
+      expect((await storedEntry(valid.id)).status).toBe('requested')
+      expect(orchestrator.requestDeployment).toHaveBeenCalledTimes(1)
+      expect(orchestrator.requestDeployment).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId: valid.operationId })
+      )
     })
 
     test('abandons once when two sweeps race', async () => {
