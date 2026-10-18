@@ -322,18 +322,28 @@ or a revert may have changed it: the model is added to `deployments[]` and
 external clients and agreed limits are carried over untouched. A new file starts at revision 1 with
 the catalogue's team SKU, that environment's default capacity and the default limits below. The
 team needs a three-character `serviceCode` first, or the request is refused with
-`409 service-code-required`.
+`409 service-code-required`. Its tests validate what it builds against the infra team schema, copied
+under `src/common/fixtures/gitops/ai-platform-infra/`.
 
-| Variable                           | Default                         | Purpose                                                                                                                                             |
-| :--------------------------------- | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`) |
-| `GITOPS_TENANTS_REPO`              | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                        |
-| `GITOPS_DEPLOYMENTS_REPO`          | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                   |
-| `GITOPS_POLL_MIN_INTERVAL_MS`      | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                        |
-| `GITOPS_CLAIM_LEASE_MS`            | `600000`                        | How long a claimed retry, revert or abandon waits for its dispatch before another poll may claim it again                                           |
-| `TEAM_DEFAULT_TOKENS_PER_MINUTE`   | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                        |
-| `TEAM_DEFAULT_REQUESTS_PER_MINUTE` | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                      |
-| `AIP_ENVIRONMENTS`                 | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group                       |
+A team admin removes a model with `DELETE /v1/teams/{teamId}/deployments/{id}` (design C `#actions`):
+the file is submitted whole without the model and its grant, as a `remove` operation tracked on the
+entry like a revert, and the next apply destroys the deployment. The entry is `removing` (202) until
+that apply has run, then `removed` with the grant withdrawn, or `active` again with a failure reason
+if the removal failed; a model that never reached `main` is marked `removed` at once (200). A
+deployment still being set up is refused with `409 deployment-in-progress`, and one whose team file
+another operation holds with `409 team-file-busy`.
+
+| Variable                           | Default                         | Purpose                                                                                                                                                                                |
+| :--------------------------------- | :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`)                                    |
+| `TEAM_ENVIRONMENTS`                | `infradev`                      | Comma-separated environments this instance may deploy a team's models to (D1): `infradev` on the CDP dev instance, `sandbox` on test; anything else is `403 environment-not-available` |
+| `GITOPS_TENANTS_REPO`              | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                                                           |
+| `GITOPS_DEPLOYMENTS_REPO`          | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                                                      |
+| `GITOPS_POLL_MIN_INTERVAL_MS`      | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                                                           |
+| `GITOPS_CLAIM_LEASE_MS`            | `600000`                        | How long a claimed retry, revert or abandon waits for its dispatch before another poll may claim it again                                                                              |
+| `TEAM_DEFAULT_TOKENS_PER_MINUTE`   | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                                                           |
+| `TEAM_DEFAULT_REQUESTS_PER_MINUTE` | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                                                         |
+| `AIP_ENVIRONMENTS`                 | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group                                                          |
 
 ```json
 {

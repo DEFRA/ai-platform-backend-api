@@ -154,6 +154,12 @@ export const config = convict({
     }
   },
   teamDeployment: {
+    environments: {
+      doc: 'The environments a team may request a model deployment in, from this portal instance (design C #control-plane, D1): the CDP dev instance drives infradev, the test instance drives sandbox. Comma separated',
+      format: Array,
+      default: ['infradev'],
+      env: 'TEAM_ENVIRONMENTS'
+    },
     mockStageDurationMs: {
       doc: 'Duration in ms of each mocked GitOps stage for team deployment provisioning',
       format: 'nat',
