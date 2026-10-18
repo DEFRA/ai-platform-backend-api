@@ -347,6 +347,16 @@ async function persistFollowUp(db, doc, entry, step, result, logger) {
   return updated
 }
 
+// What a failed poll logs: why GitHub could not be read, never what it held.
+function pollFailure(error, entry) {
+  return {
+    code: error.code ?? null,
+    status: error.status ?? null,
+    message: error.message,
+    operationId: entry.operationId
+  }
+}
+
 // Polls a dispatched revert or abandon through its own submit run, pull
 // request, merge and apply until it reaches a terminal state.
 async function refreshFollowUp(db, doc, entry, step, settings) {
@@ -368,12 +378,7 @@ async function refreshFollowUp(db, doc, entry, step, settings) {
     result = await registry.forEntry(entry).getDeploymentStatus(operation)
   } catch (error) {
     logger?.warn(
-      {
-        code: error.code ?? null,
-        status: error.status ?? null,
-        message: error.message,
-        operationId: entry.operationId
-      },
+      pollFailure(error, entry),
       `The ${step} status poll failed, keeping its last known status`
     )
 
@@ -410,12 +415,7 @@ async function refreshOperation(db, doc, entry, settings) {
     })
   } catch (error) {
     logger?.warn(
-      {
-        code: error.code ?? null,
-        status: error.status ?? null,
-        message: error.message,
-        operationId: entry.operationId
-      },
+      pollFailure(error, entry),
       'Team deployment status poll failed, keeping the last known status'
     )
 

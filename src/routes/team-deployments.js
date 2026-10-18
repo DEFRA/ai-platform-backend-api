@@ -4,6 +4,7 @@ import Boom from '@hapi/boom'
 import { statusCodes } from '#/common/constants/status-codes.js'
 import { REMOVING } from '#/services/team-deployment-entries.js'
 import {
+  MAX_MODELS_PER_REQUEST,
   getDeployment,
   listDeploymentsForTeam,
   requestDeployments
@@ -31,11 +32,10 @@ export const teamDeployments = [
         }).unknown(true),
         params: Joi.object({ teamId: Joi.string().required() }).unknown(false),
         payload: Joi.object({
-          // The team file holds at most 20 deployments (team.schema.json).
           modelSlugs: Joi.array()
             .items(Joi.string().pattern(/^[a-z0-9-]+$/))
             .min(1)
-            .max(20)
+            .max(MAX_MODELS_PER_REQUEST)
             .unique()
             .required(),
           // Any registry-shaped name; which ones this instance may deploy to

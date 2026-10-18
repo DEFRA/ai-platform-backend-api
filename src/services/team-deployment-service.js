@@ -37,6 +37,12 @@ const REQUEST_ACTION = 'teamDeployment.request'
 const DESIRED_STATE_TOO_LARGE = 'desired-state-too-large'
 
 /**
+ * The most models one request can ask for: a team file holds 20 deployments
+ * (`team.schema.json`).
+ */
+export const MAX_MODELS_PER_REQUEST = 20
+
+/**
  * The environments this portal instance may deploy a team's models to
  * (`teamDeployment.environments`, D1): a schema-valid environment outside
  * the list is refused as `environment-not-available`, so adding one is a
@@ -145,7 +151,7 @@ async function requireEligibleModels(db, slugs, environment) {
   const models = await Promise.all(
     slugs.map((slug) => findModelBySlug(db, slug))
   )
-  const refused = slugs.filter((slug, index) => {
+  const refused = slugs.filter((_slug, index) => {
     const model = models[index]
 
     return (

@@ -3,6 +3,10 @@ import { statusCodes } from '#/common/constants/status-codes.js'
 import { canonicalJson } from '#/common/helpers/canonical-json.js'
 import { createGithubAppClient } from '#/adapters/github/github-app-client.js'
 import { createConditionalReader } from '#/adapters/github/github-conditional-reader.js'
+import {
+  deploymentsAtOrAfter,
+  remember
+} from '#/adapters/github/github-deployment-lookup.js'
 import { tenantResourceVerifier } from '#/adapters/tenant-resource-verifier-registry.js'
 
 // A dispatch input holds at most 65,535 characters, so the GitOps contract
@@ -10,7 +14,6 @@ import { tenantResourceVerifier } from '#/adapters/tenant-resource-verifier-regi
 const MAX_DOCUMENT_BYTES = 60 * 1024
 const PIN_PATH = /^environments\/[^/]+\/platform\.json$/
 const STATE_FILE_PATH = /^environments\/([^/]+)\/([a-z0-9-]+)\.json$/
-const RUN_URL = /^(https:\/\/\S+\/actions\/runs\/(\d+))/
 const FAILED_CONCLUSIONS = new Set([
   'action_required',
   'cancelled',
@@ -26,10 +29,7 @@ const VALIDATE_CHECK = 'validate-desired-state / validate'
 // for the same environment succeeds, so `inactive` was a success too.
 const SUCCEEDED_DEPLOYMENT_STATES = new Set(['success', 'inactive'])
 const FAILED_DEPLOYMENT_STATES = new Set(['error', 'failure'])
-const MAX_REMEMBERED = 500
 const CHECKS_FAILED = 'checks-failed'
-// GitHub's maximum page size for listing Deployments.
-const DEPLOYMENTS_PER_PAGE = 100
 
 // Down-scoped per use (D6): a dispatch token can only start workflows in one
 // repository; a status token can only read it.
@@ -57,14 +57,6 @@ function codedError(message, code) {
   return error
 }
 
-function remember(map, key, value) {
-  map.set(key, value)
-
-  if (map.size > MAX_REMEMBERED) {
-    map.delete(map.keys().next().value)
-  }
-}
-
 function parseRepo(fullName) {
   const [owner, repo] = fullName.split('/')
   return { owner, repo }
@@ -82,16 +74,6 @@ function linksOf(gitops) {
       applyRun: gitops.applyRunUrl
     }).filter(([, url]) => url)
   )
-}
-
-// The apply job's Deployment status links to its run; that run uploaded
-// the run report.
-function runOf(deploymentStatus) {
-  const match = RUN_URL.exec(
-    deploymentStatus?.log_url || deploymentStatus?.target_url || ''
-  )
-
-  return match ? { url: match[1], id: Number(match[2]) } : null
 }
 
 // The run report is uploaded unzipped (`archive: false`), so the download is
@@ -295,27 +277,6 @@ async function unmergedPullState(reads, pull, links) {
     : { ...opened, status: 'pr-raised', pullRequestOpen: true }
 }
 
-async function includesCommit(reads, mergeSha, sha) {
-  if (sha === mergeSha) {
-    return true
-  }
-
-  const { reader, client, repo, ancestry } = reads
-  const key = `${repo.repo}:${mergeSha}...${sha}`
-
-  if (!ancestry.has(key)) {
-    const { status } = await reader.read(
-      client,
-      'GET /repos/{owner}/{repo}/compare/{basehead}',
-      { ...repo, basehead: `${mergeSha}...${sha}`, per_page: 1 }
-    )
-
-    remember(ancestry, key, ['ahead', 'identical'].includes(status))
-  }
-
-  return ancestry.get(key)
-}
-
 async function runReport({ reader, client, repo, reports }, run, environment) {
   const key = `${repo.repo}:${run.id}`
 
@@ -346,63 +307,6 @@ async function runReport({ reader, client, repo, reports }, run, environment) {
   remember(reports, key, report)
 
   return report
-}
-
-function createdBeforeMerge(deployment, merge) {
-  return Date.parse(deployment.created_at) < Date.parse(merge.mergedAt)
-}
-
-// The Deployments on one page at the merge commit or a descendant of it,
-// with their latest status and the run behind it.
-async function observePage(reads, deployments, merge) {
-  const { reader, client, repo } = reads
-  const observed = []
-
-  for (const deployment of deployments) {
-    if (createdBeforeMerge(deployment, merge)) {
-      continue
-    }
-
-    if (await includesCommit(reads, merge.mergeSha, deployment.sha)) {
-      const [latest] = await reader.read(
-        client,
-        'GET /repos/{owner}/{repo}/deployments/{deployment_id}/statuses',
-        { ...repo, deployment_id: deployment.id, per_page: 1 }
-      )
-
-      observed.push({ latest, run: runOf(latest) })
-    }
-  }
-
-  return observed
-}
-
-// Newest first, as GitHub lists them, a page at a time until a page is the
-// last or reaches a Deployment created before the merge: that one, and every
-// older one, cannot be at the merge commit or a descendant of it. So an
-// operation polled late still finds its own apply behind later ones.
-async function deploymentsAtOrAfter(reads, environment, merge) {
-  const { reader, client, repo } = reads
-  const observed = []
-  let page = 0
-  let morePages = true
-
-  while (morePages) {
-    page += 1
-
-    const deployments = await reader.read(
-      client,
-      'GET /repos/{owner}/{repo}/deployments',
-      { ...repo, environment, per_page: DEPLOYMENTS_PER_PAGE, page }
-    )
-
-    observed.push(...(await observePage(reads, deployments, merge)))
-    morePages =
-      deployments.length === DEPLOYMENTS_PER_PAGE &&
-      !deployments.some((deployment) => createdBeforeMerge(deployment, merge))
-  }
-
-  return observed
 }
 
 // Deployed once any successful apply's run report lists the operation,
