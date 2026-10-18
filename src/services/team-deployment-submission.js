@@ -10,7 +10,7 @@ import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
  * fail with `501 desired-state-unavailable`; the mock needs no document.
  * The document's `updatedBy` is always the requester's principal, which the
  * submit workflow requires to equal `requested_by`.
- * @param {(db: import('mongodb').Db, params: {teamId: string, environment: string, modelSlug: string, operationId: string, requestedBy: string}) => Promise<{document: object, expectedRevision: number}|null>} [buildDesiredState]
+ * @param {(db: import('mongodb').Db, params: {teamId: string, environment: string, modelSlug: string, operationId: string, requestedBy: string, change?: 'add'|'remove'}) => Promise<{document: object, expectedRevision: number}|null>} [buildDesiredState]
  * @param {import('mongodb').Db} db
  * @param {object} params
  * @param {string} principal - `entra:{oid}` of the requester

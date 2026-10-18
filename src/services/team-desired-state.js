@@ -41,7 +41,7 @@ function teamFields(team) {
 // offered to the team tier with no team SKU is a catalogue error, and is
 // refused the same way an ineligible model is.
 function deploymentOf(model, environment) {
-  const sku = model.skus?.find((offer) => offer.tiers?.includes('team'))
+  const sku = model?.skus?.find((offer) => offer.tiers?.includes('team'))
 
   if (!sku) {
     throw boomWithCode(
@@ -78,9 +78,13 @@ function limitsOf(model) {
  * Creates the WS6 builder the GitHub orchestrator submits with. Returns the
  * whole next revision of the team's file and the revision it was built from,
  * which `submit` compares with `main` and refuses as `revision-conflict` if
- * another change has landed meanwhile. `updatedBy` is left out: the caller
- * sets it to the requester's principal, which the workflow requires to equal
- * `requested_by`.
+ * another change has landed meanwhile. `change` is `add` (the default) or
+ * `remove`: a removal is the file without the model's deployment and grant,
+ * which the next apply destroys (design C #deletion); it never touches the
+ * team's other models, limits or OAuth block, and needs no eligible model,
+ * so a deprecated or retired model can still be removed. `updatedBy` is left
+ * out: the caller sets it to the requester's principal, which the workflow
+ * requires to equal `requested_by`.
  * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry}} [deps]
  */
 export function createTeamDesiredStateBuilder({
@@ -88,7 +92,7 @@ export function createTeamDesiredStateBuilder({
 } = {}) {
   return async function buildTeamDesiredState(
     db,
-    { teamId, environment, modelSlug, operationId }
+    { teamId, environment, modelSlug, operationId, change = 'add' }
   ) {
     const team = ObjectId.isValid(teamId)
       ? await db.collection('teams').findOne({ _id: new ObjectId(teamId) })
@@ -98,13 +102,15 @@ export function createTeamDesiredStateBuilder({
       return null
     }
 
-    const model = await findModelBySlug(db, modelSlug)
     const path = teamFilePath(environment, team.slug)
     const { document: current } =
       await registry.orchestrator.getCurrentDocument({ path })
     const expectedRevision = current?.revision ?? 0
-    const deployment = deploymentOf(model, environment)
     const held = current?.deployments ?? []
+    const granted = current?.gateway?.allowedDeployments ?? []
+    const model = change === 'add' ? await findModelBySlug(db, modelSlug) : null
+    const deployment =
+      change === 'add' ? deploymentOf(model, environment) : null
 
     const document = {
       ...(current?.$schema ? { $schema: current.$schema } : {}),
@@ -114,19 +120,21 @@ export function createTeamDesiredStateBuilder({
       status: 'active',
       ...(current?.promotedFrom ? { promotedFrom: current.promotedFrom } : {}),
       team: teamFields(team),
-      deployments: held.some((entry) => entry.slug === deployment.slug)
-        ? held
-        : [...held, deployment],
+      deployments:
+        change === 'remove'
+          ? held.filter((entry) => entry.slug !== modelSlug)
+          : held.some((entry) => entry.slug === deployment.slug)
+            ? held
+            : [...held, deployment],
       gateway: {
         credentialType: 'oauth',
-        allowedDeployments: [
-          ...new Set([
-            ...(current?.gateway?.allowedDeployments ?? []),
-            model.slug
-          ])
-        ],
-        // A team's agreed limits are never overwritten by a later request.
-        limits: current?.gateway?.limits ?? limitsOf(model)
+        allowedDeployments:
+          change === 'remove'
+            ? granted.filter((slug) => slug !== modelSlug)
+            : [...new Set([...granted, modelSlug])],
+        // A team's agreed limits are never overwritten by a later request;
+        // a removal keeps them even when the catalogue has moved on.
+        limits: current?.gateway?.limits ?? limitsOf(model ?? {})
       },
       oauth: current?.oauth ?? {
         federations: [],

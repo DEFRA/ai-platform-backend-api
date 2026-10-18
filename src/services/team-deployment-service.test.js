@@ -784,6 +784,296 @@ describe('team-deployment-service (GitOps)', () => {
     })
   })
 
+  describe('removeDeployment', () => {
+    // An active deployment of alpha's gpt-4o on main, as the builder sees it.
+    async function activeDeployment(orchestrator) {
+      const submitted = await submitGithubDeployment(orchestrator)
+      await setEntry(submitted.deployment._id, {
+        status: 'active',
+        activatedAt: new Date().toISOString()
+      })
+      await db
+        .collection('teamDeployments')
+        .updateOne(
+          { teamId: submitted.teamId },
+          { $set: { 'gateway.allowedDeployments': ['gpt-4o'] } }
+        )
+
+      return submitted
+    }
+
+    // The builder a removal is built with: the file on main without the model
+    // (the real builder is tested in team-desired-state.test.js).
+    const buildRemoval = vi.fn(
+      async (db, { environment, operationId, change }) => ({
+        document: {
+          ...desiredAlpha,
+          environment,
+          operationId,
+          revision: 3,
+          ...(change === 'remove' && {
+            deployments: [],
+            gateway: { ...desiredAlpha.gateway, allowedDeployments: [] }
+          })
+        },
+        expectedRevision: 2
+      })
+    )
+
+    function remove(orchestrator, { deployment, teamId, userId }, actor) {
+      return service.removeDeployment(
+        db,
+        server.locker,
+        {
+          teamId,
+          id: deployment._id,
+          requestedBy: actor ?? userId,
+          traceParent: VALID_TRACEPARENT
+        },
+        {
+          registry: githubRegistry(orchestrator),
+          buildDesiredState: buildRemoval
+        }
+      )
+    }
+
+    test('submits the team file without the model as the requester and tracks the removal', async () => {
+      const orchestrator = fakeOrchestrator()
+      const submitted = await activeDeployment(orchestrator)
+      orchestrator.requestDeployment.mockClear()
+
+      const view = await remove(orchestrator, submitted)
+
+      expect(view).toMatchObject({
+        status: 'removing',
+        progressSteps: null,
+        links: { submitRun: SUBMIT_RUN_URL }
+      })
+      expect(buildRemoval).toHaveBeenCalledWith(
+        db,
+        expect.objectContaining({ modelSlug: 'gpt-4o', change: 'remove' })
+      )
+      expect(orchestrator.requestDeployment).toHaveBeenCalledTimes(1)
+      const request = orchestrator.requestDeployment.mock.calls[0][0]
+      expect(request).toMatchObject({
+        action: 'write',
+        environment: 'sandbox',
+        path: 'environments/sandbox/alpha.json',
+        requestedBy: submitted.principal,
+        expectedRevision: 2,
+        traceParent: VALID_TRACEPARENT
+      })
+      expect(request.operationId).not.toBe(submitted.deployment.operationId)
+      expect(request.document.deployments).toEqual([])
+      expect(request.document.gateway.allowedDeployments).toEqual([])
+      expect(request.document.updatedBy).toBe(submitted.principal)
+
+      const stored = await storedEntry(submitted.deployment._id)
+      expect(stored.status).toBe('removing')
+      expect(stored.gitops.remove).toMatchObject({
+        operationId: request.operationId,
+        requestedBy: submitted.principal,
+        action: 'write',
+        revision: 3,
+        expectedRevision: 2,
+        submitRunId: 1001,
+        status: 'requested',
+        dispatchedAt: expect.any(String)
+      })
+      expect(await auditActions(submitted.deployment._id)).toContainEqual([
+        'teamDeployment.remove',
+        null,
+        `remove operation ${request.operationId}`
+      ])
+    })
+
+    test('ends removed, with the grant withdrawn, once the removal has applied', async () => {
+      const orchestrator = fakeOrchestrator()
+      const submitted = await activeDeployment(orchestrator)
+      await remove(orchestrator, submitted)
+
+      orchestrator.getDeploymentStatus.mockResolvedValueOnce({
+        status: 'merged',
+        pullRequestNumber: 8,
+        mergeSha: 'remove-merge-sha',
+        links: { pullRequest: PULL_REQUEST_URL }
+      })
+      let view = await poll(orchestrator, submitted)
+      expect(view.status).toBe('removing')
+      expect(view.links.pullRequest).toBe(PULL_REQUEST_URL)
+
+      orchestrator.getDeploymentStatus.mockResolvedValueOnce({
+        status: 'active',
+        links: { applyRun: APPLY_RUN_URL }
+      })
+      view = await poll(orchestrator, submitted)
+
+      expect(view).toMatchObject({
+        status: 'removed',
+        removedAt: expect.any(String),
+        failureReason: null
+      })
+      const doc = await db
+        .collection('teamDeployments')
+        .findOne({ teamId: submitted.teamId })
+      expect(doc.gateway.allowedDeployments).toEqual([])
+      expect(doc.deployments[0].gitops.remove.status).toBe('active')
+      expect(await auditActions(submitted.deployment._id)).toContainEqual([
+        'teamDeployment.transition',
+        'removed',
+        'removing -> removed'
+      ])
+      // Terminal: nothing polls it again.
+      orchestrator.getDeploymentStatus.mockClear()
+      await poll(orchestrator, submitted)
+      expect(orchestrator.getDeploymentStatus).not.toHaveBeenCalled()
+    })
+
+    test('puts the model back as active when the removal fails, and says so', async () => {
+      const orchestrator = fakeOrchestrator()
+      const logger = fakeLogger()
+      const submitted = await activeDeployment(orchestrator)
+      await remove(orchestrator, submitted)
+
+      orchestrator.getDeploymentStatus.mockResolvedValueOnce({
+        status: 'deploy-failed',
+        failureReason: 'apply failed',
+        links: {}
+      })
+      const view = await poll(orchestrator, submitted, logger)
+
+      expect(view).toMatchObject({
+        status: 'active',
+        failureReason: expect.stringContaining('could not be removed')
+      })
+      const doc = await db
+        .collection('teamDeployments')
+        .findOne({ teamId: submitted.teamId })
+      expect(doc.gateway.allowedDeployments).toEqual(['gpt-4o'])
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({ status: 'deploy-failed' }),
+        'The remove ended deploy-failed and needs a platform engineer'
+      )
+    })
+
+    test('returns the entry as it is while a removal is in progress, or once removed', async () => {
+      const orchestrator = fakeOrchestrator()
+      const submitted = await activeDeployment(orchestrator)
+      const first = await remove(orchestrator, submitted)
+      orchestrator.requestDeployment.mockClear()
+
+      const again = await remove(orchestrator, submitted)
+
+      expect(again.status).toBe('removing')
+      expect(orchestrator.requestDeployment).not.toHaveBeenCalled()
+      expect(first.operationId).toBe(again.operationId)
+    })
+
+    test('marks removed at once a model that never reached main', async () => {
+      const orchestrator = fakeOrchestrator()
+      const submitted = await submitGithubDeployment(orchestrator)
+      await setEntry(submitted.deployment._id, {
+        status: 'checks-failed',
+        failureReason: 'validate failed'
+      })
+      orchestrator.requestDeployment.mockClear()
+
+      const view = await remove(orchestrator, submitted)
+
+      expect(view).toMatchObject({
+        status: 'removed',
+        removedAt: expect.any(String)
+      })
+      expect(orchestrator.requestDeployment).not.toHaveBeenCalled()
+      expect(await auditActions(submitted.deployment._id)).toContainEqual([
+        'teamDeployment.remove',
+        'record-only',
+        null
+      ])
+    })
+
+    test('refuses a deployment still being set up', async () => {
+      const orchestrator = fakeOrchestrator()
+      const submitted = await submitGithubDeployment(orchestrator)
+
+      await expect(remove(orchestrator, submitted)).rejects.toMatchObject({
+        output: { statusCode: 409 },
+        data: { code: 'deployment-in-progress' }
+      })
+    })
+
+    test('refuses while another operation holds the team file', async () => {
+      const orchestrator = fakeOrchestrator()
+      const submitted = await activeDeployment(orchestrator)
+      // A second model requested for the same team, its operation in flight.
+      await service.requestDeployment(
+        db,
+        server.locker,
+        {
+          teamId: submitted.teamId,
+          modelSlug: 'gpt-4-1-nano',
+          environment: 'sandbox',
+          requestedBy: submitted.userId,
+          idempotencyKey: randomUUID()
+        },
+        { registry: githubRegistry(orchestrator), buildDesiredState }
+      )
+
+      await expect(remove(orchestrator, submitted)).rejects.toMatchObject({
+        output: { statusCode: 409 },
+        data: { code: 'team-file-busy' }
+      })
+      expect((await storedEntry(submitted.deployment._id)).status).toBe(
+        'active'
+      )
+    })
+
+    test('is for team admins only, and hides the entry from non-members', async () => {
+      const orchestrator = fakeOrchestrator()
+      const submitted = await activeDeployment(orchestrator)
+      const { insertedId } = await db.collection('users').insertOne({
+        oid: randomUUID(),
+        email: 'gitops-member@defra.gov.uk',
+        displayName: 'Member'
+      })
+      const memberId = insertedId.toString()
+      await db.collection('teamMembers').insertOne({
+        teamId: submitted.teamId,
+        userId: memberId,
+        role: 'user',
+        status: 'active'
+      })
+
+      await expect(
+        remove(orchestrator, submitted, memberId)
+      ).rejects.toMatchObject({
+        output: { statusCode: 403 },
+        data: { code: 'admin-required' }
+      })
+      expect(await remove(orchestrator, submitted, 'nobody')).toBeNull()
+    })
+
+    test('leaves the deployment active when the removal cannot be submitted', async () => {
+      const orchestrator = fakeOrchestrator({
+        requestDeployment: vi.fn(async () => {
+          throw Object.assign(new Error('GitHub is down'), {
+            code: 'upstream-unavailable'
+          })
+        })
+      })
+      const submitted = await submitGithubDeployment(fakeOrchestrator())
+      await setEntry(submitted.deployment._id, { status: 'active' })
+
+      await expect(remove(orchestrator, submitted)).rejects.toMatchObject({
+        output: { statusCode: 502 },
+        data: { code: 'upstream-unavailable' }
+      })
+      const stored = await storedEntry(submitted.deployment._id)
+      expect(stored.status).toBe('active')
+      expect(stored.gitops.remove).toBeUndefined()
+    })
+  })
+
   describe('redispatchApply', () => {
     let adminId
 

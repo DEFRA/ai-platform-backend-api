@@ -10,6 +10,8 @@ import {
   DEPLOY_FAILED,
   NON_TERMINAL_STATUSES,
   QUEUED,
+  REMOVED,
+  REMOVING,
   TERMINAL_FAILURE_STATUSES,
   auditDeployment,
   entryFilter,
@@ -25,11 +27,14 @@ import { releaseQueue } from '#/services/team-deployment-queue.js'
 import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
 
 // The operations the backend submits after an entry's own - a D14 revert,
-// an abandon - each followed to its end through the same GitOps states.
-const FOLLOW_UPS = ['revert', 'abandon']
+// an abandon, a team's removal of the model - each followed to its end
+// through the same GitOps states.
+const FOLLOW_UPS = ['revert', 'abandon', 'remove']
 
 const REVERT_FAILED_REASON =
   'The apply failed again after a fresh retry and reverting the change failed too, so platform engineers have been alerted'
+const REMOVE_FAILED_REASON =
+  'The model could not be removed, so it is still deployed; platform engineers have been alerted'
 
 function settingsOf({
   registry = tenantOrchestratorRegistry,
@@ -249,9 +254,28 @@ async function reportFollowUpEnd(db, doc, entry, step, logger) {
   }
 }
 
+// What a follow-up's end does to the entry itself: a failed revert leaves
+// this team's failed change live, so the entry's failure reason says so; a
+// removal that applied ends the entry as removed, one that failed puts the
+// model back as active, still deployed.
+function followUpEntryChanges(step, status) {
+  if (step === 'revert' && TERMINAL_FAILURE_STATUSES.has(status)) {
+    return { failureReason: REVERT_FAILED_REASON }
+  }
+
+  if (step === 'remove' && status === 'active') {
+    return { status: REMOVED, removedAt: new Date().toISOString() }
+  }
+
+  if (step === 'remove' && TERMINAL_FAILURE_STATUSES.has(status)) {
+    return { status: 'active', failureReason: REMOVE_FAILED_REASON }
+  }
+
+  return {}
+}
+
 // Persists a follow-up's status and trail with compare-and-set on the
-// status read. A failed revert leaves this team's failed change live, so the
-// entry's failure reason says so.
+// status read, then whatever its end means for the entry.
 async function persistFollowUp(db, doc, entry, step, result, logger) {
   const followUp = entry.gitops[step]
   const changes = gitopsChangesOf(result, followUp)
@@ -260,13 +284,21 @@ async function persistFollowUp(db, doc, entry, step, result, logger) {
     changes.status = result.status
   }
 
-  const entryChanges =
-    step === 'revert' && TERMINAL_FAILURE_STATUSES.has(changes.status)
-      ? { failureReason: REVERT_FAILED_REASON }
-      : {}
+  const entryChanges = followUpEntryChanges(step, changes.status)
 
   if (Object.keys(changes).length === 0) {
     return entry
+  }
+
+  const update = {
+    $set: {
+      ...setFields(`gitops.${step}.`, changes),
+      ...setFields('', entryChanges)
+    }
+  }
+
+  if (entryChanges.status === REMOVED) {
+    update.$pull = { 'gateway.allowedDeployments': entry.modelSlug }
   }
 
   const { matchedCount } = await db.collection('teamDeployments').updateOne(
@@ -276,12 +308,7 @@ async function persistFollowUp(db, doc, entry, step, result, logger) {
         $elemMatch: { id: entry.id, [`gitops.${step}.status`]: followUp.status }
       }
     },
-    {
-      $set: {
-        ...setFields(`gitops.${step}.`, changes),
-        ...setFields('', entryChanges)
-      }
-    }
+    update
   )
 
   if (matchedCount === 0) {
@@ -296,6 +323,10 @@ async function persistFollowUp(db, doc, entry, step, result, logger) {
 
   if (changes.status && !isTracked(updated.gitops[step])) {
     await reportFollowUpEnd(db, doc, updated, step, logger)
+  }
+
+  if (entryChanges.status) {
+    await auditTransition(db, entry, entryChanges.status)
   }
 
   return updated
@@ -395,11 +426,16 @@ function isInProgress(entry) {
 async function refreshOwnStatus(db, doc, entry, settings) {
   if (
     entry.status === 'active' ||
+    entry.status === REMOVING ||
     TERMINAL_FAILURE_STATUSES.has(entry.status)
   ) {
     const step = trackedFollowUp(entry)
 
     return step ? refreshFollowUp(db, doc, entry, step, settings) : entry
+  }
+
+  if (entry.status === REMOVED) {
+    return entry
   }
 
   return refreshOperation(db, doc, entry, settings)

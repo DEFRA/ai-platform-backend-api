@@ -1,6 +1,7 @@
 import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
+import { config } from '#/config.js'
 import { findModelBySlug } from '#/services/models-service.js'
 import {
   tenantOrchestratorRegistry,
@@ -14,6 +15,8 @@ import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import {
   DEPLOY_FAILED,
   QUEUED,
+  REMOVED,
+  REMOVING,
   TERMINAL_FAILURE_STATUSES,
   auditDeployment,
   entryFilter,
@@ -22,6 +25,7 @@ import {
 import { refreshEntryStatus } from '#/services/team-deployment-gitops.js'
 import { mustQueue } from '#/services/team-deployment-queue.js'
 import {
+  buildSubmission,
   githubTrailOf,
   prepareSubmission,
   submissionRequest
@@ -35,10 +39,26 @@ const DESIRED_STATE_TOO_LARGE = 'desired-state-too-large'
 
 const W3C_TRACEPARENT = /^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/
 
-// Phase 1 (confirmed 24 Sept 2026): the one live team-facing environment is
-// the Sandbox (SND4) - Infradev (SND1) is platform-internal/synthetic, not
-// team-facing, so it is a valid schema value but never policy-allowed here.
-const TEAM_FACING_ENVIRONMENT = 'infradev'
+/**
+ * The environments this portal instance may deploy a team's models to
+ * (`teamDeployment.environments`, D1): a schema-valid environment outside
+ * the list is refused as `environment-not-available`, so adding one is a
+ * configuration change, never a code change.
+ * @returns {string[]}
+ */
+export function teamEnvironments() {
+  return config.get('teamDeployment.environments')
+}
+
+function requireTeamEnvironment(environment) {
+  if (!teamEnvironments().includes(environment)) {
+    throw boomWithCode(
+      Boom.forbidden,
+      'This environment is not available yet',
+      'environment-not-available'
+    )
+  }
+}
 
 // User-facing progress steps for the team's "being set up" wait page - the
 // mapping from design C's real GitOps states (never shown to the user
@@ -70,7 +90,11 @@ const PROGRESS_STEP_INDEX_BY_STATUS = {
  * @param {string} status
  */
 function buildProgressSteps(status) {
-  if (TERMINAL_FAILURE_STATUSES.has(status)) {
+  if (
+    TERMINAL_FAILURE_STATUSES.has(status) ||
+    status === REMOVING ||
+    status === REMOVED
+  ) {
     return null
   }
 
@@ -88,13 +112,16 @@ function buildProgressSteps(status) {
 }
 
 // Links to the GitHub runs and pull request behind a GitOps operation, for
-// support; only those that exist yet.
+// support; only those that exist yet. While a removal is in progress they
+// are the removal's.
 function linksOf(gitops) {
+  const trail = gitops?.remove?.dispatchedAt ? gitops.remove : gitops
+
   return Object.fromEntries(
     Object.entries({
-      submitRun: gitops?.submitRunUrl,
-      pullRequest: gitops?.pullRequestUrl,
-      applyRun: gitops?.applyRunUrl
+      submitRun: trail?.submitRunUrl,
+      pullRequest: trail?.pullRequestUrl,
+      applyRun: trail?.applyRunUrl
     }).filter(([, url]) => url)
   )
 }
@@ -119,6 +146,7 @@ function toDeploymentView(doc, entry) {
     idempotencyKey: entry.idempotencyKey,
     createdAt: entry.createdAt,
     activatedAt: entry.activatedAt,
+    removedAt: entry.removedAt ?? null,
     failureReason: entry.failureReason,
     links: linksOf(entry.gitops)
   }
@@ -130,9 +158,10 @@ function toDeploymentView(doc, entry) {
  * requested there, mirroring design C's `environments/{env}/{team}.json`
  * shape (`gateway.allowedDeployments` etc.) - requesting a second model for
  * a team that already has a document for this environment extends it,
- * rather than creating a sibling document. Only `sandbox` is policy-allowed
- * today, even though the schema accepts every design C environment - future
- * environments are a policy change, not a schema change. Each entry records
+ * rather than creating a sibling document. Only the environments in
+ * `teamDeployment.environments` are allowed from this portal instance, even
+ * though the schema accepts every design C environment - a new environment
+ * is a configuration change, not a code change. Each entry records
  * the orchestrator that submitted it and, for GitHub, its GitOps trail
  * (`gitops`: path, branch, runs, pull request, SHAs, resources). The change
  * is submitted as the requester's `entra:{oid}`; a user with no Entra object
@@ -151,13 +180,7 @@ export async function requestDeployment(
     buildDesiredState = teamDesiredStateBuilder
   } = {}
 ) {
-  if (environment !== TEAM_FACING_ENVIRONMENT) {
-    throw boomWithCode(
-      Boom.forbidden,
-      'This environment is not available yet',
-      'environment-not-available'
-    )
-  }
+  requireTeamEnvironment(environment)
 
   const membership = await db
     .collection('teamMembers')
@@ -511,6 +534,224 @@ function entryFields(fields) {
       value
     ])
   )
+}
+
+const REMOVE_ACTION = 'teamDeployment.remove'
+
+// Entries whose model never reached the team file on main: a removal is a
+// record change only, with nothing to submit.
+const NEVER_APPLIED = new Set([QUEUED, 'checks-failed'])
+
+/**
+ * Removes one of a team's model deployments, for a team admin (design C
+ * #actions: remove a dedicated deployment is GitOps). The team file is
+ * submitted whole without the model as a `remove` follow-up on the entry,
+ * followed through the GitOps states like a revert; the entry is `removing`
+ * until the apply has destroyed the deployment, then `removed` with its
+ * grant withdrawn, or `active` again with a reason if the removal failed.
+ * A model that never reached `main` is marked removed at once. Idempotent:
+ * an entry already removing or removed is returned as it is. Refuses an
+ * entry whose own operation is still in progress
+ * (`409 deployment-in-progress`) and a team file another operation holds
+ * (`409 team-file-busy`), so no two operations race on one file.
+ * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
+ * @param {{teamId: string, id: string, requestedBy: string, traceParent?: string}} params
+ * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, buildDesiredState?: Function}} [deps]
+ * @returns {Promise<object|null>} The deployment view, or null for a non-member or unknown entry.
+ */
+export async function removeDeployment(
+  db,
+  locker,
+  { teamId, id, requestedBy, traceParent },
+  {
+    registry = tenantOrchestratorRegistry,
+    buildDesiredState = teamDesiredStateBuilder
+  } = {}
+) {
+  const membership = await db
+    .collection('teamMembers')
+    .findOne({ teamId, userId: requestedBy, status: 'active' })
+
+  if (!membership) {
+    return null
+  }
+
+  if (membership.role !== 'admin') {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Only a team admin can remove a model',
+      'admin-required'
+    )
+  }
+
+  const located = await db
+    .collection('teamDeployments')
+    .findOne({ teamId, 'deployments.id': id })
+
+  if (!located || !findEntry(located, id)) {
+    return null
+  }
+
+  const principal = await requireUserPrincipal(db, requestedBy)
+  const lock = await acquireLockWithRetry(
+    locker,
+    `team-deployment:${teamId}:${located.environment}`
+  )
+
+  try {
+    const doc = await db
+      .collection('teamDeployments')
+      .findOne({ _id: located._id })
+    const entry = findEntry(doc, id)
+
+    return await removeEntry(
+      db,
+      doc,
+      entry,
+      { requestedBy, principal, traceParent },
+      { registry, buildDesiredState }
+    )
+  } finally {
+    await lock.free()
+  }
+}
+
+// The locked part of `removeDeployment`.
+async function removeEntry(db, doc, entry, actor, deps) {
+  if (entry.status === REMOVING || entry.status === REMOVED) {
+    return toDeploymentView(doc, entry)
+  }
+
+  if (NEVER_APPLIED.has(entry.status)) {
+    return markRemoved(db, doc, entry, actor)
+  }
+
+  if (entry.status !== 'active' && entry.status !== DEPLOY_FAILED) {
+    throw boomWithCode(
+      Boom.conflict,
+      'The deployment is still being set up; try again once it is active',
+      'deployment-in-progress'
+    )
+  }
+
+  if (await mustQueue(db, doc)) {
+    throw boomWithCode(
+      Boom.conflict,
+      'Another change to this team is in progress; try again shortly',
+      'team-file-busy'
+    )
+  }
+
+  if (deps.registry.key !== GITHUB_ORCHESTRATOR || !entry.gitops) {
+    return markRemoved(db, doc, entry, actor)
+  }
+
+  return submitRemoval(db, doc, entry, actor, deps)
+}
+
+// A removal with nothing to apply: the record changes, audited.
+async function markRemoved(db, doc, entry, { requestedBy }) {
+  const removedAt = new Date().toISOString()
+
+  await db.collection('teamDeployments').updateOne(entryFilter(doc, entry), {
+    $set: entryFields({ status: REMOVED, removedAt }),
+    $pull: { 'gateway.allowedDeployments': entry.modelSlug }
+  })
+  await auditDeployment(db, entry, {
+    action: REMOVE_ACTION,
+    actorUserId: requestedBy,
+    code: 'record-only'
+  })
+
+  return toDeploymentView(doc, { ...entry, status: REMOVED, removedAt })
+}
+
+// Builds the team file without the model and submits it as the requester,
+// as a new operation tracked under the entry's `gitops.remove`. The entry
+// is `removing` only once the submit run exists; a submit that fails leaves
+// it active with nothing to unwind.
+async function submitRemoval(db, doc, entry, actor, deps) {
+  const { requestedBy, principal, traceParent } = actor
+  const operationId = new ObjectId().toString()
+  const requestedAt = new Date().toISOString()
+  const submission = await buildSubmission(
+    deps.buildDesiredState,
+    db,
+    {
+      teamId: doc.teamId,
+      environment: doc.environment,
+      modelSlug: entry.modelSlug,
+      operationId,
+      requestedBy,
+      change: 'remove'
+    },
+    principal
+  )
+
+  let submitted
+
+  try {
+    submitted = await deps.registry.orchestrator.requestDeployment(
+      submissionRequest(
+        {
+          environment: doc.environment,
+          operationId,
+          principal,
+          traceParent: W3C_TRACEPARENT.test(traceParent ?? '')
+            ? traceParent
+            : undefined
+        },
+        submission
+      )
+    )
+  } catch (error) {
+    await auditDeployment(db, entry, {
+      action: REMOVE_ACTION,
+      actorUserId: requestedBy,
+      outcome: 'failure',
+      code: error.code ?? UPSTREAM_UNAVAILABLE
+    })
+
+    throw boomWithCode(
+      Boom.badGateway,
+      'Failed to request the removal',
+      UPSTREAM_UNAVAILABLE
+    )
+  }
+
+  const remove = {
+    operationId,
+    requestedAt,
+    requestedBy: principal,
+    action: 'write',
+    revision: submission.document.revision,
+    expectedRevision: submission.expectedRevision,
+    submitRunId: submitted.submitRunId,
+    submitRunUrl: submitted.submitRunUrl,
+    dispatchedAt: requestedAt,
+    status: 'requested'
+  }
+
+  await db.collection('teamDeployments').updateOne(entryFilter(doc, entry), {
+    $set: entryFields({
+      status: REMOVING,
+      failureReason: null,
+      'gitops.remove': remove
+    })
+  })
+  await auditDeployment(db, entry, {
+    action: REMOVE_ACTION,
+    actorUserId: requestedBy,
+    reason: `remove operation ${operationId}`
+  })
+
+  return toDeploymentView(doc, {
+    ...entry,
+    status: REMOVING,
+    failureReason: null,
+    gitops: { ...entry.gitops, remove }
+  })
 }
 
 // What a retry or reconcile claims before it dispatches: a failed

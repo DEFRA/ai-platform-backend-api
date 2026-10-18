@@ -36,12 +36,14 @@ function unfinished(field) {
 }
 
 // An entry holds its team file while its own operation is in progress,
-// while a revert of it is still to dispatch or in progress, and while a
-// failed pull request of its is still to abandon or being abandoned.
+// while a revert of it is still to dispatch or in progress, while its
+// removal is in progress, and while a failed pull request of its is still
+// to abandon or being abandoned.
 function holdingClauses() {
   return [
     { status: { $in: NON_TERMINAL_STATUSES } },
     { 'gitops.revert': { $ne: null }, ...unfinished('gitops.revert') },
+    { 'gitops.remove': { $ne: null }, ...unfinished('gitops.remove') },
     {
       status: CHECKS_FAILED,
       'gitops.pullRequestNumber': { $ne: null },

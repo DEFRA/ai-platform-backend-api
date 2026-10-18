@@ -30,6 +30,18 @@ export const CHECKS_FAILED = 'checks-failed'
 export const DEPLOY_FAILED = 'deploy-failed'
 
 /**
+ * An active deployment whose removal operation (`gitops.remove`) is in
+ * progress; it ends `removed`, or back at `active` if the removal failed.
+ */
+export const REMOVING = 'removing'
+
+/**
+ * A deployment the team removed: its resources are gone and its grant with
+ * them. Terminal, never polled.
+ */
+export const REMOVED = 'removed'
+
+/**
  * GitOps states that end an operation as failed.
  */
 export const TERMINAL_FAILURE_STATUSES = new Set([CHECKS_FAILED, DEPLOY_FAILED])

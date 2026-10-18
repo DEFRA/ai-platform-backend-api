@@ -131,11 +131,11 @@ describe('#team-deployments routes', () => {
     })
   })
 
-  test('POST /v1/teams/{teamId}/deployments rejects a non-sandbox environment', async () => {
+  test('POST /v1/teams/{teamId}/deployments refuses an environment this instance does not deploy to', async () => {
     const teamId = await createTeam('deploy-user-2')
 
-    // 'infradev' is a schema-valid design C environment (platform-internal,
-    // not team-facing) - only 'sandbox' is policy-allowed for teams in Phase 1.
+    // 'infradev' is a schema-valid registry name; only the environments in
+    // TEAM_ENVIRONMENTS (sandbox, in these tests) are allowed from here.
     const { result, statusCode } = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
@@ -145,6 +145,19 @@ describe('#team-deployments routes', () => {
 
     expect(statusCode).toBe(403)
     expect(result.code).toBe('environment-not-available')
+  })
+
+  test('POST /v1/teams/{teamId}/deployments rejects an environment that is not a registry name', async () => {
+    const teamId = await createTeam('deploy-user-2b')
+
+    const { statusCode } = await server.inject({
+      method: 'POST',
+      url: `/v1/teams/${teamId}/deployments`,
+      headers: postHeaders('deploy-user-2b'),
+      payload: { modelSlug: 'gpt-4o', environment: 'Infra Dev' }
+    })
+
+    expect(statusCode).toBe(400)
   })
 
   test('POST /v1/teams/{teamId}/deployments rejects a model without the team tier', async () => {
@@ -540,5 +553,111 @@ describe('#team-deployments routes', () => {
     const after = await server.inject({ method: 'GET', url, headers })
 
     expect(after.result.deployment.status).toBe('active')
+  })
+
+  describe('DELETE /v1/teams/{teamId}/deployments/{id}', () => {
+    async function activeDeployment(label) {
+      const teamId = await createTeam(label)
+      const created = await server.inject({
+        method: 'POST',
+        url: `/v1/teams/${teamId}/deployments`,
+        headers: postHeaders(label),
+        payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+      })
+      const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
+
+      await wait(300)
+      await server.inject({ method: 'GET', url, headers: userHeaders(label) })
+
+      return { teamId, url }
+    }
+
+    test('removes an active model for a team admin and withdraws its grant', async () => {
+      const { teamId, url } = await activeDeployment('remove-user-1')
+
+      const { result, statusCode } = await server.inject({
+        method: 'DELETE',
+        url,
+        headers: userHeaders('remove-user-1')
+      })
+
+      expect(statusCode).toBe(200)
+      expect(result.deployment).toMatchObject({
+        status: 'removed',
+        removedAt: expect.any(String),
+        progressSteps: null
+      })
+      const stored = await server.db
+        .collection('teamDeployments')
+        .findOne({ teamId: teamId.toString() })
+      expect(stored.gateway.allowedDeployments).toEqual([])
+
+      const listed = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${teamId}/deployments`,
+        headers: userHeaders('remove-user-1')
+      })
+      expect(listed.result.items.map((item) => item.status)).toEqual([
+        'removed'
+      ])
+    })
+
+    test('refuses a model still being set up', async () => {
+      const teamId = await createTeam('remove-user-2')
+      const created = await server.inject({
+        method: 'POST',
+        url: `/v1/teams/${teamId}/deployments`,
+        headers: postHeaders('remove-user-2'),
+        payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+      })
+
+      const { result, statusCode } = await server.inject({
+        method: 'DELETE',
+        url: `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`,
+        headers: userHeaders('remove-user-2')
+      })
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('deployment-in-progress')
+    })
+
+    test('is for team admins only', async () => {
+      const { teamId, url } = await activeDeployment('remove-user-3')
+      await signIn('remove-member-3')
+      // An active member without the admin role.
+      await server.db.collection('teamMembers').insertOne({
+        teamId: teamId.toString(),
+        userId: userHeaders('remove-member-3')['x-user-id'],
+        role: 'user',
+        status: 'active'
+      })
+
+      const { result, statusCode } = await server.inject({
+        method: 'DELETE',
+        url,
+        headers: userHeaders('remove-member-3')
+      })
+
+      expect(statusCode).toBe(403)
+      expect(result.code).toBe('admin-required')
+    })
+
+    test('returns 404 for a non-member and for an unknown deployment', async () => {
+      const { teamId, url } = await activeDeployment('remove-user-4')
+
+      const stranger = await server.inject({
+        method: 'DELETE',
+        url,
+        headers: userHeaders('remove-stranger-4')
+      })
+      const unknown = await server.inject({
+        method: 'DELETE',
+        url: `/v1/teams/${teamId}/deployments/${randomUUID()}`,
+        headers: userHeaders('remove-user-4')
+      })
+
+      expect(stranger.statusCode).toBe(404)
+      expect(unknown.statusCode).toBe(404)
+    })
   })
 })
