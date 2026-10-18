@@ -340,6 +340,11 @@ if the removal failed; a model that never reached `main` is marked `removed` at 
 deployment still being set up is refused with `409 deployment-in-progress`, and one whose team file
 another operation holds with `409 team-file-busy`.
 
+A team's credential (one per team per environment) covers whatever the team's gateway grants there:
+its `allowedDeployments` is read from the team's deployments on every response, never stored, so a
+removed model leaves the credential at once. A revoked credential keeps what it covered when it was
+revoked.
+
 | Variable                           | Default                         | Purpose                                                                                                                                                                                |
 | :--------------------------------- | :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`)                                    |

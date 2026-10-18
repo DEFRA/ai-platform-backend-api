@@ -749,6 +749,139 @@ describe('#credentials routes', () => {
     ])
   })
 
+  describe('a team credential covers what the team is granted', () => {
+    async function issueTeamCredential(userId, teamId) {
+      const { result } = await server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+        payload: {
+          modelSlug: 'gpt-4o',
+          tier: 'team',
+          teamId,
+          environment: 'sandbox'
+        }
+      })
+
+      return result.credential
+    }
+
+    async function listedCredential(userId, id) {
+      const { result } = await server.inject({
+        method: 'GET',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId }
+      })
+
+      return result.items.find((item) => item._id.toString() === id)
+    }
+
+    // A removal is attributed to the person, so a signed-in admin makes it.
+    async function signedInAdmin(teamId, creatorId, label) {
+      const userId = await inviteAndSignIn(
+        teamId,
+        creatorId,
+        `${label}@defra.gov.uk`,
+        label
+      )
+
+      await server.db
+        .collection('teamMembers')
+        .updateOne({ teamId, userId }, { $set: { role: 'admin' } })
+
+      return userId
+    }
+
+    async function removeActiveModel(teamId, creatorId, modelSlug) {
+      const adminId = await signedInAdmin(
+        teamId,
+        creatorId,
+        `remover-${randomUUID().slice(-8)}`
+      )
+      const { result } = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${teamId}/deployments`,
+        headers: { 'x-user-id': adminId }
+      })
+      const deployment = result.items.find(
+        (item) => item.modelSlug === modelSlug
+      )
+
+      return server.inject({
+        method: 'DELETE',
+        url: `/v1/teams/${teamId}/deployments/${deployment._id}`,
+        headers: { 'x-user-id': adminId }
+      })
+    }
+
+    test('lists a second model once its deployment is active, with no issue call', async () => {
+      const userId = 'team-grants-user-1'
+      const teamId = await createTeamWithActiveDeployment(userId)
+      const credential = await issueTeamCredential(userId, teamId)
+      const requesterId = await inviteAndSignIn(
+        teamId,
+        userId,
+        'grants-requester-1@defra.gov.uk',
+        'Grants Requester'
+      )
+
+      await requestActiveDeployment(teamId, requesterId, 'gpt-4-1-nano')
+
+      const listed = await listedCredential(userId, credential._id.toString())
+
+      expect(listed.allowedDeployments.sort()).toEqual([
+        'gpt-4-1-nano',
+        'gpt-4o'
+      ])
+    })
+
+    test('no longer lists a model the team removed', async () => {
+      const userId = 'team-grants-user-2'
+      const teamId = await createTeamWithActiveDeployment(userId)
+      const credential = await issueTeamCredential(userId, teamId)
+
+      const removed = await removeActiveModel(teamId, userId, 'gpt-4o')
+
+      expect(removed.statusCode).toBe(200)
+      expect(
+        (await listedCredential(userId, credential._id.toString()))
+          .allowedDeployments
+      ).toEqual([])
+    })
+
+    test('keeps what a revoked credential covered when it was revoked', async () => {
+      const userId = 'team-grants-user-3'
+      const teamId = await createTeamWithActiveDeployment(userId)
+      const credential = await issueTeamCredential(userId, teamId)
+      const id = credential._id.toString()
+
+      await server.inject({
+        method: 'DELETE',
+        url: `/v1/credentials/${id}`,
+        headers: { 'x-user-id': userId }
+      })
+      const removed = await removeActiveModel(teamId, userId, 'gpt-4o')
+
+      const revoked = await listedCredential(userId, id)
+
+      expect(removed.statusCode).toBe(200)
+      expect(revoked.status).toBe('revoked')
+      expect(revoked.allowedDeployments).toEqual(['gpt-4o'])
+    })
+
+    test('stores no copy of the coverage while the credential is active', async () => {
+      const userId = 'team-grants-user-4'
+      const teamId = await createTeamWithActiveDeployment(userId)
+      const credential = await issueTeamCredential(userId, teamId)
+
+      const stored = await server.db
+        .collection('credentials')
+        .findOne({ _id: new ObjectId(credential._id) })
+
+      expect(stored.allowedDeployments).toBeUndefined()
+    })
+  })
+
   test('POST /v1/credentials refuses a team subscription key, since the team tier is OAuth only', async () => {
     const teamId = await createTeamWithActiveDeployment('team-cred-user-7')
 
