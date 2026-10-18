@@ -439,6 +439,7 @@ describe('team-deployment-service (GitOps)', () => {
         getDeploymentStatus: vi.fn(async () => {
           const error = new Error('rate limited')
           error.code = 'github-rate-limited'
+          error.status = 403
           throw error
         })
       })
@@ -449,7 +450,12 @@ describe('team-deployment-service (GitOps)', () => {
 
       expect(view.status).toBe('requested')
       expect(logger.warn).toHaveBeenCalledWith(
-        { code: 'github-rate-limited', operationId: view.operationId },
+        {
+          code: 'github-rate-limited',
+          status: 403,
+          message: 'rate limited',
+          operationId: view.operationId
+        },
         expect.stringContaining('keeping the last known status')
       )
     })

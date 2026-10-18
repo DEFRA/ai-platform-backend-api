@@ -49,11 +49,23 @@ export function pullRequest(overrides = {}) {
     number: 7,
     state: 'open',
     merged_at: null,
-    merge_commit_sha: 'test-merge-preview-sha',
     html_url: `${REPOSITORY_URL}/pull/7`,
     head: { sha: 'head-sha' },
     ...overrides
   }
+}
+
+/**
+ * Body of `GET .../issues/{number}/events`; the `merged` event carries the
+ * merge commit now that API version 2026-03-10 omits `merge_commit_sha`.
+ * @param {string} [mergeSha]
+ */
+export function pullRequestEvents(mergeSha) {
+  return [
+    { event: 'labeled', commit_id: null },
+    ...(mergeSha ? [{ event: 'merged', commit_id: mergeSha }] : []),
+    { event: 'closed', commit_id: null }
+  ]
 }
 
 /**

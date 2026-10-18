@@ -469,6 +469,19 @@ async function deploymentState(reads, entry, merge, links) {
   )
 }
 
+// API version 2026-03-10 no longer returns `merge_commit_sha` on a pull
+// request, so the merge commit comes from the `merged` issue event.
+async function readMergeSha(reads, pullRequestNumber) {
+  const { reader, client, repo } = reads
+  const events = await reader.read(
+    client,
+    'GET /repos/{owner}/{repo}/issues/{issue_number}/events',
+    { ...repo, issue_number: pullRequestNumber, per_page: 100 }
+  )
+
+  return events.find((event) => event.event === 'merged')?.commit_id
+}
+
 async function observe(reads, entry) {
   const { operationId, gitops } = entry
   const { reader, client, repo } = reads
@@ -501,9 +514,17 @@ async function observe(reads, entry) {
       return unmergedPullState(reads, pull, links)
     }
 
+    const mergeSha = await readMergeSha(reads, pull.number)
+
+    if (!mergeSha) {
+      throw new Error(
+        `Pull request ${pull.number} is merged but has no merged event with a commit`
+      )
+    }
+
     merge = {
       pullRequestNumber: pull.number,
-      mergeSha: pull.merge_commit_sha,
+      mergeSha,
       mergedAt: pull.merged_at
     }
   }

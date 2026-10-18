@@ -548,7 +548,12 @@ describe('team-deployment-gitops', () => {
 
       expect(refreshed.gitops.revert.status).toBe('requested')
       expect(logger.warn).toHaveBeenCalledWith(
-        { code: null, operationId: entry.operationId },
+        {
+          code: null,
+          status: null,
+          message: 'GitHub unavailable',
+          operationId: entry.operationId
+        },
         'The revert status poll failed, keeping its last known status'
       )
     })

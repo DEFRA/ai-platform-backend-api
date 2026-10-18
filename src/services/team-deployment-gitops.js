@@ -368,7 +368,12 @@ async function refreshFollowUp(db, doc, entry, step, settings) {
     result = await registry.forEntry(entry).getDeploymentStatus(operation)
   } catch (error) {
     logger?.warn(
-      { code: error.code ?? null, operationId: entry.operationId },
+      {
+        code: error.code ?? null,
+        status: error.status ?? null,
+        message: error.message,
+        operationId: entry.operationId
+      },
       `The ${step} status poll failed, keeping its last known status`
     )
 
@@ -405,7 +410,12 @@ async function refreshOperation(db, doc, entry, settings) {
     })
   } catch (error) {
     logger?.warn(
-      { code: error.code ?? null, operationId: entry.operationId },
+      {
+        code: error.code ?? null,
+        status: error.status ?? null,
+        message: error.message,
+        operationId: entry.operationId
+      },
       'Team deployment status poll failed, keeping the last known status'
     )
 

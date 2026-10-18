@@ -108,6 +108,13 @@ function replyWithPulls(pulls) {
     .reply(200, pulls)
 }
 
+function replyWithMergedEvent(mergeSha) {
+  return nock(GITHUB_API)
+    .get(`${TENANTS}/issues/7/events`)
+    .query({ per_page: 100 })
+    .reply(200, github.pullRequestEvents(mergeSha))
+}
+
 function replyWithDeployments(deployments) {
   return nock(GITHUB_API)
     .get(`${TENANTS}/deployments`)
@@ -539,10 +546,10 @@ describe('#createGithubTenantOrchestrator', () => {
       replyWithPulls([
         github.pullRequest({
           state: 'closed',
-          merged_at: '2026-10-13T10:04:00Z',
-          merge_commit_sha: 'merge-sha'
+          merged_at: '2026-10-13T10:04:00Z'
         })
       ])
+      replyWithMergedEvent('merge-sha')
       replyWithDeployments([
         github.deployment({ id: 400, created_at: '2026-10-13T09:00:00Z' })
       ])
@@ -555,6 +562,45 @@ describe('#createGithubTenantOrchestrator', () => {
         mergedAt: '2026-10-13T10:04:00Z',
         pullRequestNumber: 7
       })
+    })
+
+    test('reads the merge commit from the merged event, as the pull request omits it', async () => {
+      replyWithPulls([
+        github.pullRequest({
+          state: 'closed',
+          merged_at: '2026-10-13T10:04:00Z'
+        })
+      ])
+      replyWithMergedEvent('merge-sha')
+      replyWithDeployments([github.deployment({ sha: 'later-sha' })])
+      nock(GITHUB_API)
+        .get(`${TENANTS}/compare/merge-sha...later-sha`)
+        .query({ per_page: 1 })
+        .reply(200, github.comparison('ahead'))
+      replyWithStatus(501, github.deploymentStatus({ state: 'success' }))
+      replyWithRunReport(2002, github.runReport())
+
+      const status = await createOrchestrator().getDeploymentStatus(entry())
+
+      expect(status).toMatchObject({
+        status: 'deployed',
+        mergeSha: 'merge-sha',
+        applyRunId: 2002
+      })
+    })
+
+    test('fails clearly, not with a malformed compare, when a merged pull request has no merged event', async () => {
+      replyWithPulls([
+        github.pullRequest({
+          state: 'closed',
+          merged_at: '2026-10-13T10:04:00Z'
+        })
+      ])
+      replyWithMergedEvent(undefined)
+
+      await expect(
+        createOrchestrator().getDeploymentStatus(entry())
+      ).rejects.toThrow('no merged event')
     })
 
     test('is deploying while a Deployment at a descendant of the merge commit is in progress', async () => {
