@@ -10,6 +10,7 @@
   "scripts": {
     "dev": "cross-env AWS_EMF_ENVIRONMENT=Local NODE_ENV=development npm run server:watch | pino-pretty",
     "dev:debug": "cross-env AWS_EMF_ENVIRONMENT=Local NODE_ENV=development npm run server:debug | pino-pretty",
+    "dev:nowatch": "cross-env AWS_EMF_ENVIRONMENT=Local NODE_ENV=development node --env-file-if-exists=.env ./src | pino-pretty",
     "docker:dev": "npm run dev",
     "format": "prettier --write \"**/*.{cjs,js,json,md}\"",
     "format:check": "prettier --check \"**/*.{cjs,js,json,md}\"",

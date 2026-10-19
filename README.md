@@ -76,6 +76,9 @@ To run the application in `development` mode run:
 npm run dev
 ```
 
+`npm run dev` restarts on any change under `src/`, which loses the in-memory mock
+vault. Use `npm run dev:nowatch` to run without the watcher.
+
 ### Testing
 
 To test the application run:
