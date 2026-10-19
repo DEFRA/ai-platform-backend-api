@@ -15,7 +15,7 @@ const PROGRESS_STEP_LABELS = [
   'Request recorded',
   'Team checked',
   'Setting up access in Azure',
-  'Preparing your client secret'
+  'Checking and preparing your client secret'
 ]
 
 const PROGRESS_STEP_INDEX_BY_STATUS = {
@@ -23,7 +23,9 @@ const PROGRESS_STEP_INDEX_BY_STATUS = {
   'pr-raised': 1,
   merged: 2,
   deploying: 2,
-  deployed: 2,
+  // The apply has finished, so the Azure step is done: what remains is the
+  // ARM check and activation, which can wait a whole poll interval.
+  deployed: 3,
   verified: 3,
   // Past the last step: every step reads done.
   active: PROGRESS_STEP_LABELS.length

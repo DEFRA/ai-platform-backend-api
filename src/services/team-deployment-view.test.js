@@ -29,7 +29,7 @@ describe('buildProgressSteps', () => {
     'Request recorded',
     'Team checked',
     'Setting up access in Azure',
-    'Preparing your client secret'
+    'Checking and preparing your client secret'
   ]
 
   test.each([
@@ -37,7 +37,7 @@ describe('buildProgressSteps', () => {
     ['pr-raised', ['done', 'current', 'pending', 'pending']],
     ['merged', ['done', 'done', 'current', 'pending']],
     ['deploying', ['done', 'done', 'current', 'pending']],
-    ['deployed', ['done', 'done', 'current', 'pending']],
+    ['deployed', ['done', 'done', 'done', 'current']],
     ['verified', ['done', 'done', 'done', 'current']],
     ['active', ['done', 'done', 'done', 'done']]
   ])('marks the steps for %s', (status, states) => {
