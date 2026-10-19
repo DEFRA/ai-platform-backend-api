@@ -1,6 +1,9 @@
 import {
   DEPLOY_FAILED,
-  auditDeployment
+  auditDeployment,
+  entryFields,
+  entryFilter,
+  findEntry
 } from '#/services/team-deployment-entries.js'
 
 const REASON_TEXT = {
@@ -23,19 +26,64 @@ function failureReasonOf(reason) {
 /**
  * Counts a failed ARM verification against the entry and, once it has failed
  * `maxAttempts` times, ends the deployment as failed with the verifier's
- * reason rather than re-verifying for ever. An earlier attempt's count lives
- * on `gitops.verification`.
- * @param {{gitops: {verification?: {attempts: number}}}} entry
+ * reason rather than re-verifying for ever. The count lives on
+ * `gitops.verification` and is incremented atomically while the entry still
+ * has the status read, so overlapping polls each count once and a late one
+ * never lowers it. This is the only writer of `gitops.verification`.
+ * @param {import('mongodb').Db} db
+ * @param {{_id: import('mongodb').ObjectId}} doc
+ * @param {{id: string, status: string}} entry
  * @param {{status: string, verificationFailure: {reason: string}, polledAt?: string}} result
  * @param {number} maxAttempts
- * @returns {object} The result with `verification` set, and failed once the bound is reached.
+ * @returns {Promise<object|null>} The result with `verification` set, and failed once the bound is reached; null when the entry has moved on.
  */
-export function applyVerificationPolicy(entry, result, maxAttempts) {
+export async function applyVerificationPolicy(
+  db,
+  doc,
+  entry,
+  result,
+  maxAttempts
+) {
   const { reason } = result.verificationFailure
+  const lastAttemptAt = result.polledAt ?? new Date().toISOString()
+  const collection = db.collection('teamDeployments')
+
+  // $inc cannot create a field inside a null parent, which a retry leaves.
+  await collection.updateOne(
+    {
+      _id: doc._id,
+      deployments: {
+        $elemMatch: {
+          id: entry.id,
+          status: entry.status,
+          'gitops.verification': null
+        }
+      }
+    },
+    { $set: entryFields({ 'gitops.verification': { attempts: 0 } }) }
+  )
+
+  const updated = await collection.findOneAndUpdate(
+    entryFilter(doc, entry),
+    {
+      $inc: entryFields({ 'gitops.verification.attempts': 1 }),
+      $set: entryFields({
+        'gitops.verification.reason': reason,
+        'gitops.verification.lastAttemptAt': lastAttemptAt
+      })
+    },
+    { returnDocument: 'after' }
+  )
+  const stored = findEntry(updated, entry.id)?.gitops?.verification
+
+  if (!stored) {
+    return null
+  }
+
   const verification = {
     reason,
-    attempts: (entry.gitops.verification?.attempts ?? 0) + 1,
-    lastAttemptAt: result.polledAt ?? new Date().toISOString()
+    attempts: stored.attempts,
+    lastAttemptAt
   }
 
   return verification.attempts >= maxAttempts

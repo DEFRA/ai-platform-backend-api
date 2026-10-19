@@ -400,6 +400,65 @@ describe('team-deployment-gitops', () => {
       )
     })
 
+    test('counts every overlapping failed verification once, whichever finishes last', async () => {
+      const { applyVerificationPolicy } =
+        await import('#/services/team-deployment-verification.js')
+      const entry = githubEntry({ status: 'deployed', gitops: { resources } })
+      const doc = await insertDocument(entry)
+      const failed = stillDeployed(entry, 'resource-unavailable')
+
+      // Both read the entry before either wrote, as two slow polls would.
+      const results = await Promise.all([
+        applyVerificationPolicy(db, doc, entry, failed, 2),
+        applyVerificationPolicy(db, doc, entry, failed, 2)
+      ])
+
+      expect((await storedEntry(entry.id)).gitops.verification.attempts).toBe(2)
+      expect(results.map(({ status }) => status).sort()).toEqual([
+        'deploy-failed',
+        'deployed'
+      ])
+    })
+
+    test('starts counting from one after a retry cleared the earlier count', async () => {
+      const { applyVerificationPolicy } =
+        await import('#/services/team-deployment-verification.js')
+      const entry = githubEntry({
+        status: 'deployed',
+        gitops: { resources, verification: null }
+      })
+      const doc = await insertDocument(entry)
+
+      const result = await applyVerificationPolicy(
+        db,
+        doc,
+        entry,
+        stillDeployed(entry, 'no-resources'),
+        3
+      )
+
+      expect(result.verification.attempts).toBe(1)
+      expect((await storedEntry(entry.id)).gitops.verification.attempts).toBe(1)
+    })
+
+    test('does not count a failed verification for an entry that has moved on', async () => {
+      const { applyVerificationPolicy } =
+        await import('#/services/team-deployment-verification.js')
+      const entry = githubEntry({ status: 'deployed', gitops: { resources } })
+      const doc = await insertDocument({ ...entry, status: 'active' })
+
+      const result = await applyVerificationPolicy(
+        db,
+        doc,
+        entry,
+        stillDeployed(entry, 'no-resources'),
+        3
+      )
+
+      expect(result).toBeNull()
+      expect((await storedEntry(entry.id)).gitops.verification).toBeUndefined()
+    })
+
     test('fails for good with the reason once the attempts run out', async () => {
       const orchestrator = fakeOrchestrator()
       const log = logger()

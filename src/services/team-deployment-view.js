@@ -77,8 +77,9 @@ function linksOf(gitops) {
   )
 }
 
-// The statuses at which ARM has confirmed the team's resources exist.
-const VERIFIED_STATUSES = new Set(['verified', 'active', REMOVING])
+// The statuses at which ARM has confirmed the team's resources exist. Not
+// `removing`: a failed-verification deployment can be removed unverified.
+const VERIFIED_STATUSES = new Set(['verified', 'active'])
 
 function named(resource, kind, verified) {
   return typeof resource?.name === 'string'

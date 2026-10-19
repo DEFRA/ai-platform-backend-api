@@ -105,7 +105,6 @@ function gitopsChangesOf(result, gitops) {
       applyRunUrl: result.links?.applyRun,
       appliedSha: result.appliedSha,
       resources: result.resources,
-      verification: result.verification,
       lastPolledAt: result.polledAt
     }).filter(
       ([key, value]) =>
@@ -432,7 +431,13 @@ async function applyPolicies(db, doc, entry, polled, settings, deps) {
   }
 
   if (result?.verificationFailure && entry.gitops) {
-    result = applyVerificationPolicy(entry, result, settings.verifyMaxAttempts)
+    result = await applyVerificationPolicy(
+      db,
+      doc,
+      entry,
+      result,
+      settings.verifyMaxAttempts
+    )
   }
 
   return result

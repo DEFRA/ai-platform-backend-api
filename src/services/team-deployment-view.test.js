@@ -79,6 +79,20 @@ describe('toDeploymentView', () => {
       )
     })
 
+    test.each(['deployed', 'deploy-failed', 'removing'])(
+      'does not call a resource verified while %s, since removal can follow a failed verification',
+      (status) => {
+        const view = toDeploymentView(
+          doc,
+          entry({ status, gitops: { resources } })
+        )
+
+        expect(view.resources.every(({ verified }) => verified === false)).toBe(
+          true
+        )
+      }
+    )
+
     test('is empty before the apply has reported any', () => {
       expect(toDeploymentView(doc, entry({ gitops: null })).resources).toEqual(
         []
