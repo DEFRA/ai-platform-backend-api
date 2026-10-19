@@ -12,10 +12,13 @@ import {
 } from '#/common/helpers/mongo-lock.js'
 import {
   findActiveDeployment,
-  reserveCredentialType,
-  releaseCredentialTypeReservation
-} from '#/services/team-deployment-service.js'
+  grantedModelSlugs
+} from '#/services/team-deployment-gateway.js'
 import { getMemberRole } from '#/services/team-service.js'
+
+// The team tier is OAuth only - a client secret or a federated credential,
+// local development included. Research credentials are subscription keys.
+const TEAM_CREDENTIAL_TYPE = 'oauth'
 
 /**
  * Best-effort lookup of a user's team, tolerant of the day-1 interim trust
@@ -131,10 +134,11 @@ export async function writeSecretToVault(db, vault, credential, secret) {
  * single-team field incompatible with the many-to-many `teamMembers`
  * model) and only proceeds once that team's model deployment is `active`;
  * the credential is shared across the whole team per environment (one doc
- * per team+environment, covering every model in `allowedDeployments`, not
- * per member and not per model) - a team already holding an active
- * credential for this environment gets that same credential back, extended
- * to cover the new model, rather than a fresh one.
+ * per team+environment, not per member and not per model) and covers
+ * whatever the team's gateway grants there, read from the team's
+ * deployments rather than copied - a team already holding an active
+ * credential for this environment gets that same credential back rather
+ * than a fresh one.
  *
  * Note: the secret is never persisted, so a replayed idempotent request
  * returns the credential without a secret — this matches "the key is shown
@@ -142,7 +146,7 @@ export async function writeSecretToVault(db, vault, credential, secret) {
  * itself on retry.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string, credentialType?: 'oauth'|'subscription-key'}} params
+ * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string, credentialType?: 'oauth'}} params
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  */
 export async function issueCredential(
@@ -196,8 +200,7 @@ async function issueCredentialForParams(
     idempotencyKey,
     tier = 'research',
     teamId,
-    environment,
-    credentialType = 'subscription-key'
+    environment
   },
   registry = credentialIssuerRegistry,
   vault = credentialVault
@@ -207,7 +210,11 @@ async function issueCredentialForParams(
     .findOne({ userId, idempotencyKey })
 
   if (existing) {
-    return { credential: existing, secret: undefined, replay: true }
+    return {
+      credential: await withTeamGrants(db, existing),
+      secret: undefined,
+      replay: true
+    }
   }
 
   const model = await findModelBySlug(db, modelSlug)
@@ -239,8 +246,6 @@ async function issueCredentialForParams(
   const { issuerKey, issuer } = resolvedIssuer
 
   let resolvedTeamId = null
-  let resolvedCredentialType = null
-  let credentialTypeReservation = null
 
   if (tier === 'team') {
     const membership = await db
@@ -265,39 +270,22 @@ async function issueCredentialForParams(
       )
     }
 
-    // Design C: one credential type per team per environment, fixed on
-    // first use - throws 409 credential-type-fixed on a later mismatch.
-    credentialTypeReservation = await reserveCredentialType(db, {
+    // Only an OAuth credential is the team's; the tier has issued nothing
+    // else since it became OAuth only (14 October 2026). The team's one
+    // credential covers whatever its gateway grants, so a second model
+    // needs nothing added to it: the deployment reaching `active` already
+    // granted the model.
+    const activeTeamCredential = await db.collection('credentials').findOne({
       teamId,
       environment,
-      credentialType
+      tier: 'team',
+      credentialType: TEAM_CREDENTIAL_TYPE,
+      status: 'active'
     })
-    resolvedCredentialType = credentialTypeReservation.credentialType
-
-    const activeTeamCredential = await db
-      .collection('credentials')
-      .findOne({ teamId, environment, tier: 'team', status: 'active' })
 
     if (activeTeamCredential) {
-      const allowedDeployments = new Set(
-        activeTeamCredential.allowedDeployments ?? []
-      )
-
-      if (!allowedDeployments.has(modelSlug)) {
-        allowedDeployments.add(modelSlug)
-        await db
-          .collection('credentials')
-          .updateOne(
-            { _id: activeTeamCredential._id },
-            { $addToSet: { allowedDeployments: modelSlug } }
-          )
-      }
-
       return {
-        credential: {
-          ...activeTeamCredential,
-          allowedDeployments: [...allowedDeployments]
-        },
+        credential: await withTeamGrants(db, activeTeamCredential),
         secret: undefined,
         replay: true
       }
@@ -338,10 +326,7 @@ async function issueCredentialForParams(
     userId,
     teamId: resolvedTeamId,
     modelSlug: tier === 'team' ? null : modelSlug,
-    ...(tier === 'team' && {
-      allowedDeployments: [modelSlug],
-      credentialType: resolvedCredentialType
-    }),
+    ...(tier === 'team' && { credentialType: TEAM_CREDENTIAL_TYPE }),
     tier,
     environment: environment || null,
     purpose: purpose || null,
@@ -398,8 +383,7 @@ async function issueCredentialForParams(
       modelSlug,
       tier,
       teamId: resolvedTeamId,
-      environment: environment || null,
-      credentialType: resolvedCredentialType ?? undefined
+      environment: environment || null
     })
   } catch {
     await db
@@ -416,18 +400,6 @@ async function issueCredentialForParams(
       outcome: 'failure',
       code: 'upstream-unavailable'
     })
-
-    // Don't leave the team permanently locked into a credential type that
-    // was never actually issued - only undo the reservation if this call
-    // was the one that made it (a concurrent caller may have since made a
-    // real reservation of their own).
-    if (tier === 'team' && credentialTypeReservation?.wasNewlyReserved) {
-      await releaseCredentialTypeReservation(db, {
-        teamId,
-        environment,
-        credentialType: resolvedCredentialType
-      })
-    }
 
     throw boomWithCode(
       Boom.badGateway,
@@ -464,7 +436,7 @@ async function issueCredentialForParams(
   })
 
   return {
-    credential: activeCredential,
+    credential: await withTeamGrants(db, activeCredential),
     secret: issued.secret
   }
 }
@@ -513,6 +485,37 @@ function withRenewalsRemaining(credential) {
 }
 
 /**
+ * Gives a team credential its coverage. While it is active that is the
+ * team's live gateway grants for its environment, read from the team's
+ * deployments rather than kept as a copy, so a model removed from the team
+ * leaves the credential at once; once revoked, it is what was frozen on the
+ * record at that moment (`revokeCredential`). A research credential has
+ * its one `modelSlug` and is returned as is.
+ * @param {import('mongodb').Db} db
+ * @param {object} credential
+ * @returns {Promise<object>}
+ */
+async function withTeamGrants(db, credential) {
+  if (credential.tier !== 'team' || credential.status !== 'active') {
+    return credential
+  }
+
+  return {
+    ...credential,
+    allowedDeployments: await grantedModelSlugs(db, credential)
+  }
+}
+
+// How every credential leaves the service: lazily expired, with its
+// allowance and, for a team's, its coverage.
+async function presentCredential(db, credential) {
+  return withTeamGrants(
+    db,
+    withRenewalsRemaining(await applyLazyExpiry(db, credential))
+  )
+}
+
+/**
  * Lists a user's own credentials plus any shared team credentials for teams
  * they're an active member of (never includes secrets), applying lazy expiry.
  * @param {import('mongodb').Db} db
@@ -535,11 +538,8 @@ export async function listCredentials(db, { userId }) {
       : { userId }
 
   const items = await db.collection('credentials').find(query).toArray()
-  const expired = await Promise.all(
-    items.map((item) => applyLazyExpiry(db, item))
-  )
 
-  return expired.map(withRenewalsRemaining)
+  return Promise.all(items.map((item) => presentCredential(db, item)))
 }
 
 /**
@@ -561,7 +561,7 @@ export async function findCredentialForUser(db, { id, userId }) {
     return null
   }
 
-  return withRenewalsRemaining(await applyLazyExpiry(db, credential))
+  return presentCredential(db, credential)
 }
 
 /**
@@ -602,7 +602,7 @@ export async function findCredentialForViewing(db, { id, userId }) {
     return null
   }
 
-  return withRenewalsRemaining(await applyLazyExpiry(db, credential))
+  return presentCredential(db, credential)
 }
 
 /**
@@ -806,8 +806,7 @@ export async function rotateCredential(
 
     const { issuer } = registry.forCredential(credential)
     const rotated = await issuer.rotate({
-      externalId: externalGatewaySubscriptionIdOf(credential),
-      credentialType: credential.credentialType
+      externalId: externalGatewaySubscriptionIdOf(credential)
     })
 
     const now = new Date().toISOString()
@@ -832,7 +831,7 @@ export async function rotateCredential(
     })
 
     return {
-      credential: withRenewalsRemaining(updated),
+      credential: await withTeamGrants(db, withRenewalsRemaining(updated)),
       secret: rotated.secret
     }
   } finally {
@@ -890,13 +889,20 @@ export async function revokeCredential(
     }
 
     const now = new Date().toISOString()
+    // The record keeps what the credential covered when it was revoked,
+    // since a revoked credential no longer follows the team's grants.
+    const covered =
+      credential.tier === 'team'
+        ? { allowedDeployments: await grantedModelSlugs(db, credential) }
+        : {}
     const updated = await db.collection('credentials').findOneAndUpdate(
       { _id: credential._id },
       {
         $set: {
           status: 'revoked',
           revokedAt: now,
-          revokedReason: 'user-requested'
+          revokedReason: 'user-requested',
+          ...covered
         }
       },
       { returnDocument: 'after' }

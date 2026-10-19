@@ -16,13 +16,19 @@ describe('#credentialExpiryScheduler', () => {
         .mockResolvedValue({ expired: 1, suspended: 1 }),
       reconcilePendingCredentials: vi
         .fn()
-        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 })
+        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
+      pollTeamDeployments: vi
+        .fn()
+        .mockResolvedValue({ polled: 2, transitioned: 1, abandoned: 0 })
     }))
 
     const { credentialExpiryScheduler } =
       await import('#/plugins/credential-expiry-scheduler.js')
-    const { expireCredentials, reconcilePendingCredentials } =
-      await import('#/services/maintenance-service.js')
+    const {
+      expireCredentials,
+      reconcilePendingCredentials,
+      pollTeamDeployments
+    } = await import('#/services/maintenance-service.js')
 
     const server = {
       db: {},
@@ -40,6 +46,16 @@ describe('#credentialExpiryScheduler', () => {
 
     await vi.advanceTimersByTimeAsync(1000)
 
+    const result = {
+      expired: 1,
+      suspended: 1,
+      reconciled: 0,
+      vaultReconciled: 0,
+      polled: 2,
+      transitioned: 1,
+      abandoned: 0
+    }
+
     expect(expireCredentials).toHaveBeenCalledWith(
       server.db,
       server.locker,
@@ -47,12 +63,53 @@ describe('#credentialExpiryScheduler', () => {
       server.logger
     )
     expect(reconcilePendingCredentials).toHaveBeenCalledWith(server.db)
+    expect(pollTeamDeployments).toHaveBeenCalledWith(server.db, server.logger)
     expect(server.logger.debug).toHaveBeenCalledWith(
-      { expired: 1, suspended: 1, reconciled: 0, vaultReconciled: 0 },
+      result,
       'Credential expiry sweep ran'
     )
     expect(server.logger.info).toHaveBeenCalledWith(
-      { expired: 1, suspended: 1, reconciled: 0, vaultReconciled: 0 },
+      result,
+      'Credential expiry sweep completed'
+    )
+  })
+
+  test('logs only at debug when a sweep changed nothing', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('MAINTENANCE_SCHEDULER_ENABLED', 'true')
+    vi.stubEnv('MAINTENANCE_SCHEDULER_INTERVAL_MS', '1000')
+
+    vi.doMock('#/services/maintenance-service.js', () => ({
+      expireCredentials: vi
+        .fn()
+        .mockResolvedValue({ expired: 0, suspended: 0 }),
+      reconcilePendingCredentials: vi
+        .fn()
+        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
+      pollTeamDeployments: vi
+        .fn()
+        .mockResolvedValue({ polled: 3, transitioned: 0, abandoned: 0 })
+    }))
+
+    const { credentialExpiryScheduler } =
+      await import('#/plugins/credential-expiry-scheduler.js')
+
+    const server = {
+      db: {},
+      locker: {},
+      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
+      events: { on: vi.fn() }
+    }
+
+    credentialExpiryScheduler.plugin.register(server)
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(server.logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ polled: 3, transitioned: 0 }),
+      'Credential expiry sweep ran'
+    )
+    expect(server.logger.info).not.toHaveBeenCalledWith(
+      expect.anything(),
       'Credential expiry sweep completed'
     )
   })
@@ -62,7 +119,8 @@ describe('#credentialExpiryScheduler', () => {
 
     vi.doMock('#/services/maintenance-service.js', () => ({
       expireCredentials: vi.fn(),
-      reconcilePendingCredentials: vi.fn()
+      reconcilePendingCredentials: vi.fn(),
+      pollTeamDeployments: vi.fn()
     }))
 
     const { credentialExpiryScheduler } =
@@ -93,7 +151,8 @@ describe('#credentialExpiryScheduler', () => {
 
     vi.doMock('#/services/maintenance-service.js', () => ({
       expireCredentials: vi.fn().mockRejectedValue(new Error('mongo down')),
-      reconcilePendingCredentials: vi.fn()
+      reconcilePendingCredentials: vi.fn(),
+      pollTeamDeployments: vi.fn()
     }))
 
     const { credentialExpiryScheduler } =
@@ -127,7 +186,8 @@ describe('#credentialExpiryScheduler', () => {
         .mockResolvedValue({ expired: 0, suspended: 0 }),
       reconcilePendingCredentials: vi
         .fn()
-        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 })
+        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
+      pollTeamDeployments: vi.fn()
     }))
 
     const { credentialExpiryScheduler } =

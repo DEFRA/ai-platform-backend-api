@@ -1,11 +1,15 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
+import { statusCodes } from '#/common/constants/status-codes.js'
+import { REMOVING } from '#/services/team-deployment-entries.js'
 import {
-  requestDeployment,
+  MAX_MODELS_PER_REQUEST,
   getDeployment,
-  listDeploymentsForTeam
+  listDeploymentsForTeam,
+  requestDeployments
 } from '#/services/team-deployment-service.js'
+import { removeDeployment } from '#/services/team-deployment-removal.js'
 
 const userIdHeader = Joi.object({
   'x-user-id': Joi.string().required()
@@ -28,10 +32,17 @@ export const teamDeployments = [
         }).unknown(true),
         params: Joi.object({ teamId: Joi.string().required() }).unknown(false),
         payload: Joi.object({
-          modelSlug: Joi.string()
-            .pattern(/^[a-z0-9-]+$/)
+          modelSlugs: Joi.array()
+            .items(Joi.string().pattern(/^[a-z0-9-]+$/))
+            .min(1)
+            .max(MAX_MODELS_PER_REQUEST)
+            .unique()
             .required(),
-          environment: Joi.string().valid('infradev', 'sandbox').required()
+          // Any registry-shaped name; which ones this instance may deploy to
+          // is configuration, refused as environment-not-available.
+          environment: Joi.string()
+            .pattern(/^[a-z][a-z0-9]{1,15}$/)
+            .required()
         }).unknown(false)
       }
     },
@@ -39,19 +50,20 @@ export const teamDeployments = [
       const requestedBy = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
       const { teamId } = request.params
-      const { modelSlug, environment } = request.payload
+      const { modelSlugs, environment } = request.payload
 
-      const deployment = await requestDeployment(request.db, request.locker, {
+      const deployments = await requestDeployments(request.db, request.locker, {
         teamId,
-        modelSlug,
+        modelSlugs,
         environment,
         requestedBy,
-        idempotencyKey
+        idempotencyKey,
+        traceParent: request.headers.traceparent
       })
 
       return h
-        .response({ deployment })
-        .header('Location', `/v1/teams/${teamId}/deployments/${deployment._id}`)
+        .response({ deployments })
+        .header('Location', `/v1/teams/${teamId}/deployments`)
         .code(201)
     }
   },
@@ -65,10 +77,14 @@ export const teamDeployments = [
       }
     },
     handler: async (request, h) => {
-      const items = await listDeploymentsForTeam(request.db, {
-        teamId: request.params.teamId,
-        userId: request.headers['x-user-id']
-      })
+      const items = await listDeploymentsForTeam(
+        request.db,
+        {
+          teamId: request.params.teamId,
+          userId: request.headers['x-user-id']
+        },
+        { logger: request.logger }
+      )
 
       return h.response({ items })
     }
@@ -80,17 +96,49 @@ export const teamDeployments = [
       validate: { headers: userIdHeader, params: idsParam }
     },
     handler: async (request, h) => {
-      const deployment = await getDeployment(request.db, {
-        id: request.params.id,
-        teamId: request.params.teamId,
-        userId: request.headers['x-user-id']
-      })
+      const deployment = await getDeployment(
+        request.db,
+        {
+          id: request.params.id,
+          teamId: request.params.teamId,
+          userId: request.headers['x-user-id']
+        },
+        { logger: request.logger }
+      )
 
       if (!deployment) {
         return Boom.notFound()
       }
 
       return h.response({ deployment })
+    }
+  },
+  {
+    method: 'DELETE',
+    path: '/v1/teams/{teamId}/deployments/{id}',
+    options: {
+      description:
+        'Removes a model deployment (team admin): the team file is submitted without it and the next apply destroys it. 202 while the removal is in progress, 200 once removed.',
+      validate: { headers: userIdHeader, params: idsParam }
+    },
+    handler: async (request, h) => {
+      const deployment = await removeDeployment(request.db, request.locker, {
+        teamId: request.params.teamId,
+        id: request.params.id,
+        requestedBy: request.headers['x-user-id'],
+        traceParent: request.headers.traceparent
+      })
+
+      if (!deployment) {
+        return Boom.notFound()
+      }
+
+      // A removal in flight is accepted; one already done is simply done.
+      return h
+        .response({ deployment })
+        .code(
+          deployment.status === REMOVING ? statusCodes.accepted : statusCodes.ok
+        )
     }
   }
 ]

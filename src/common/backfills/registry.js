@@ -1,3 +1,5 @@
+import { deriveTeamSlug, firstFreeSlug } from '#/common/helpers/team-slug.js'
+
 /**
  * Ordered registry of one-off data backfills applied by `runBackfills` on
  * every server start. Each entry is applied at most once per environment
@@ -373,8 +375,8 @@ export const backfillRegistry = [
     }
   },
   // Models now carry a nested `hosting` object and `gateway` derived from the
-  // catalogue offering, replacing the flat `cloud`/`adapter`. Must stay last:
-  // the two 2026-10-07 entries above read or write the flat model fields.
+  // catalogue offering, replacing the flat `cloud`/`adapter`. Must stay after
+  // the two 2026-10-07 entries above, which read or write the flat model fields.
   {
     id: '2026-10-08-models-hosting-gateway',
     description:
@@ -395,6 +397,66 @@ export const backfillRegistry = [
           },
           { $unset: ['cloud', 'adapter'] }
         ])
+
+      return { modifiedCount }
+    }
+  },
+  // Team deployment entries now record the TenantOrchestrator that
+  // submitted them, and the GitOps sweep selects `orchestrator: 'github'`.
+  // Everything submitted before WS5 went through the mock.
+  {
+    id: '2026-10-13-team-deployments-orchestrator',
+    description:
+      'Sets orchestrator: "mock" on teamDeployments entries missing it',
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('teamDeployments')
+        .updateMany(
+          { deployments: { $elemMatch: { orchestrator: { $exists: false } } } },
+          { $set: { 'deployments.$[entry].orchestrator': 'mock' } },
+          { arrayFilters: [{ 'entry.orchestrator': { $exists: false } }] }
+        )
+
+      return { modifiedCount }
+    }
+  },
+  // Every team now carries the immutable `slug` that names its GitOps file,
+  // its gateway API path and its model deployments. Teams created before it
+  // existed get one derived from their name here, document by document
+  // because each has to be checked against the slugs already taken - and
+  // before `createIndexes` adds the unique index on it.
+  {
+    id: '2026-10-14-add-team-slug',
+    description: 'Derives slug from name on teams docs missing it',
+    async run(db) {
+      const teams = await db
+        .collection('teams')
+        .find({ slug: { $exists: false } })
+        .toArray()
+
+      const taken = new Set(
+        (
+          await db
+            .collection('teams')
+            .find({ slug: { $type: 'string' } }, { projection: { slug: 1 } })
+            .toArray()
+        ).map((team) => team.slug)
+      )
+
+      let modifiedCount = 0
+
+      for (const team of teams) {
+        const slug = firstFreeSlug(deriveTeamSlug(team.name), (candidate) =>
+          taken.has(candidate)
+        )
+
+        await db
+          .collection('teams')
+          .updateOne({ _id: team._id }, { $set: { slug } })
+
+        taken.add(slug)
+        modifiedCount += 1
+      }
 
       return { modifiedCount }
     }

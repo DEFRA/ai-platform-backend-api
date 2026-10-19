@@ -1,9 +1,9 @@
 import { config } from '#/config.js'
 
-// Design C's real GitOps operation states, in order - see design-c-orchestration
-// extract in repo memory for the source. The mock advances through these purely
-// as a function of elapsed time since the request, so status can be polled with
-// no background timer or interval to manage.
+// Design C's real GitOps operation states, in order (see the GitOps
+// contract's operation-state table). The mock advances through these purely
+// as a function of elapsed time since the request, so status can be polled
+// with no background timer or interval to manage.
 const HAPPY_PATH_STAGES = [
   'requested',
   'pr-raised',
@@ -15,18 +15,24 @@ const HAPPY_PATH_STAGES = [
 ]
 
 // Reserved-test-pattern failure simulation, same approach as the mock credential
-// issuer's `test-fail-` userId prefix: a requester id with one of these prefixes
-// makes the mock orchestrator land on a terminal failure state instead of `active`.
-const FORCED_CHECKS_FAILED_PREFIX = 'test-checks-fail-'
-const FORCED_DEPLOY_FAILED_PREFIX = 'test-deploy-fail-'
+// issuer's `test-fail-` userId prefix: a requester principal in one of these
+// Entra object ID ranges makes the mock orchestrator land on a terminal failure
+// state instead of `active`. Entra object IDs are random version 4 GUIDs, which
+// never start `00000000-0000-0000-`, so no real person falls in these ranges.
+const FORCED_CHECKS_FAILED_PREFIX = 'entra:00000000-0000-0000-0001-'
+const FORCED_DEPLOY_FAILED_PREFIX = 'entra:00000000-0000-0000-0002-'
 
 // Keyed by operationId so a later getDeploymentStatus poll (a separate call,
 // possibly on a different request) still knows about the forced outcome.
 const forcedOutcomes = new Map()
 
 /**
- * Mock TenantOrchestrator used until the real GitOps adapter (GitHub App +
- * `tenant.bicep` deploy workflow) is wired up.
+ * Mock TenantOrchestrator for local development and tests, standing in for
+ * the GitHub adapter (submit workflow, Terraform apply via GitOps, ARM
+ * verification). It has no workflow runs, pull requests or run reports, so
+ * it returns no links, no run IDs and no `failure` attribution - a forced
+ * `deploy-failed` is therefore final at once, with nothing to retry or
+ * revert.
  * @type {import('./tenant-orchestrator.js').TenantOrchestrator}
  */
 export const mockTenantOrchestrator = {
@@ -37,12 +43,17 @@ export const mockTenantOrchestrator = {
       forcedOutcomes.set(operationId, 'deploy-failed')
     }
 
-    return { operationId, status: 'requested' }
+    return {
+      operationId,
+      status: 'requested',
+      submitRunId: null,
+      submitRunUrl: null
+    }
   },
 
-  async getDeploymentStatus({ operationId, requestedAt }) {
+  async getDeploymentStatus({ operationId, createdAt }) {
     const stageDurationMs = config.get('teamDeployment.mockStageDurationMs')
-    const elapsedMs = Date.now() - new Date(requestedAt).getTime()
+    const elapsedMs = Date.now() - new Date(createdAt).getTime()
     const stageIndex = Math.min(
       Math.floor(elapsedMs / stageDurationMs),
       HAPPY_PATH_STAGES.length - 1
@@ -53,7 +64,8 @@ export const mockTenantOrchestrator = {
       return {
         operationId,
         status: 'checks-failed',
-        failureReason: 'Automated checks failed on the desired-state PR (mock)'
+        failureReason: 'Automated checks failed on the desired-state PR (mock)',
+        links: {}
       }
     }
 
@@ -61,10 +73,25 @@ export const mockTenantOrchestrator = {
       return {
         operationId,
         status: 'deploy-failed',
-        failureReason: 'Deploy workflow failed to reconcile the stack (mock)'
+        failureReason: 'Deploy workflow failed to reconcile the stack (mock)',
+        links: {}
       }
     }
 
-    return { operationId, status: HAPPY_PATH_STAGES[stageIndex] }
+    return { operationId, status: HAPPY_PATH_STAGES[stageIndex], links: {} }
+  },
+
+  async requestApply() {
+    return { runId: null, runUrl: null }
+  },
+
+  async getPreviousDocument() {
+    return { document: null }
+  },
+
+  // The mock keeps no files, so every team starts from nothing: a document
+  // built against it is always revision 1.
+  async getCurrentDocument() {
+    return { document: null }
   }
 }

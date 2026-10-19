@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 
 import { ObjectId } from 'mongodb'
 
+const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
@@ -318,6 +320,8 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'viewer-teammate@defra.gov.uk',
         displayName: 'Viewer Teammate'
       }
@@ -363,6 +367,8 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'leak-teammate@defra.gov.uk',
         displayName: 'Leak Teammate'
       }
@@ -509,27 +515,39 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: '/v1/teams',
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { name: `Team ${userId}` }
+      payload: { name: `Team ${userId}`, serviceCode: 'ABC' }
     })
     const teamId = team.result.team._id.toString()
+    // A deployment request is attributed to the requester's Entra object ID,
+    // so a signed-in member requests it; `userId` stays the team admin.
+    const requesterId = await inviteAndSignIn(
+      teamId,
+      userId,
+      `${userId}-requester@defra.gov.uk`,
+      'Deployment Requester'
+    )
 
+    await requestActiveDeployment(teamId, requesterId, modelSlug)
+
+    return teamId
+  }
+
+  async function requestActiveDeployment(teamId, requesterId, modelSlug) {
     const deployment = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { modelSlug, environment: 'sandbox' }
+      headers: { 'x-user-id': requesterId, 'idempotency-key': randomUUID() },
+      payload: { modelSlugs: [modelSlug], environment: 'sandbox' }
     })
 
-    const pollUrl = `/v1/teams/${teamId}/deployments/${deployment.result.deployment._id}`
+    const pollUrl = `/v1/teams/${teamId}/deployments/${deployment.result.deployments[0]._id}`
 
     await wait(300)
     await server.inject({
       method: 'GET',
       url: pollUrl,
-      headers: { 'x-user-id': userId }
+      headers: { 'x-user-id': requesterId }
     })
-
-    return teamId
   }
 
   test('POST /v1/credentials issues a team tier credential once the deployment is active', async () => {
@@ -558,7 +576,8 @@ describe('#credentials routes', () => {
       `team-${teamId}-sandbox`
     )
     expect(result.credential.allowedDeployments).toEqual(['gpt-4o'])
-    expect(result.credential.credentialType).toBe('subscription-key')
+    // The team tier is OAuth only, so the type defaults to it.
+    expect(result.credential.credentialType).toBe('oauth')
     // A team credential spans models, so it keeps cloud/gateway but no single provider/offering.
     expect(result.credential).toMatchObject({
       provider: null,
@@ -566,7 +585,15 @@ describe('#credentials routes', () => {
       cloud: 'azure',
       gateway: 'azure-apim'
     })
-    expect(result.secret).toEqual(expect.stringContaining('mock-key-'))
+    expect(result.secret).toEqual(expect.stringContaining('mock-oauth-'))
+    expect(
+      await server.db
+        .collection('teamDeployments')
+        .findOne({ teamId, environment: 'sandbox' })
+    ).toMatchObject({
+      gateway: expect.objectContaining({ credentialType: 'oauth' }),
+      oauthClient: { enabled: true, appRoles: [] }
+    })
   })
 
   test('POST /v1/credentials creates only one active credential when a team requests concurrently', async () => {
@@ -639,6 +666,41 @@ describe('#credentials routes', () => {
     )
   })
 
+  test('POST /v1/credentials never reuses a team subscription key from before the tier became OAuth only', async () => {
+    const userId = 'team-cred-user-key'
+    const teamId = await createTeamWithActiveDeployment(userId)
+    const { insertedId } = await server.db.collection('credentials').insertOne({
+      userId,
+      teamId,
+      tier: 'team',
+      credentialType: 'key',
+      allowedDeployments: ['gpt-4o'],
+      environment: 'sandbox',
+      status: 'active',
+      type: 'apim-subscription',
+      issuerKey: 'mock',
+      createdAt: '2026-10-01T00:00:00.000Z'
+    })
+
+    const response = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+      payload: {
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'sandbox'
+      }
+    })
+
+    expect(response.statusCode).toBe(201)
+    expect(response.result.credential._id.toString()).not.toBe(
+      insertedId.toString()
+    )
+    expect(response.result.credential.credentialType).toBe('oauth')
+  })
+
   test('POST /v1/credentials extends the same team credential when a second model becomes active', async () => {
     const userId = 'team-cred-user-6'
     const teamId = await createTeamWithActiveDeployment(userId, 'gpt-4o')
@@ -655,18 +717,14 @@ describe('#credentials routes', () => {
       }
     })
 
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { modelSlug: 'gpt-4-1-nano', environment: 'sandbox' }
-    })
-    await wait(300)
-    await server.inject({
-      method: 'GET',
-      url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': userId }
-    })
+    const requesterId = await inviteAndSignIn(
+      teamId,
+      userId,
+      'second-model-requester@defra.gov.uk',
+      'Second Model Requester'
+    )
+
+    await requestActiveDeployment(teamId, requesterId, 'gpt-4-1-nano')
 
     const second = await server.inject({
       method: 'POST',
@@ -691,10 +749,143 @@ describe('#credentials routes', () => {
     ])
   })
 
-  test('POST /v1/credentials rejects a different credentialType for a team that already has one fixed', async () => {
+  describe('a team credential covers what the team is granted', () => {
+    async function issueTeamCredential(userId, teamId) {
+      const { result } = await server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+        payload: {
+          modelSlug: 'gpt-4o',
+          tier: 'team',
+          teamId,
+          environment: 'sandbox'
+        }
+      })
+
+      return result.credential
+    }
+
+    async function listedCredential(userId, id) {
+      const { result } = await server.inject({
+        method: 'GET',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId }
+      })
+
+      return result.items.find((item) => item._id.toString() === id)
+    }
+
+    // A removal is attributed to the person, so a signed-in admin makes it.
+    async function signedInAdmin(teamId, creatorId, label) {
+      const userId = await inviteAndSignIn(
+        teamId,
+        creatorId,
+        `${label}@defra.gov.uk`,
+        label
+      )
+
+      await server.db
+        .collection('teamMembers')
+        .updateOne({ teamId, userId }, { $set: { role: 'admin' } })
+
+      return userId
+    }
+
+    async function removeActiveModel(teamId, creatorId, modelSlug) {
+      const adminId = await signedInAdmin(
+        teamId,
+        creatorId,
+        `remover-${randomUUID().slice(-8)}`
+      )
+      const { result } = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${teamId}/deployments`,
+        headers: { 'x-user-id': adminId }
+      })
+      const deployment = result.items.find(
+        (item) => item.modelSlug === modelSlug
+      )
+
+      return server.inject({
+        method: 'DELETE',
+        url: `/v1/teams/${teamId}/deployments/${deployment._id}`,
+        headers: { 'x-user-id': adminId }
+      })
+    }
+
+    test('lists a second model once its deployment is active, with no issue call', async () => {
+      const userId = 'team-grants-user-1'
+      const teamId = await createTeamWithActiveDeployment(userId)
+      const credential = await issueTeamCredential(userId, teamId)
+      const requesterId = await inviteAndSignIn(
+        teamId,
+        userId,
+        'grants-requester-1@defra.gov.uk',
+        'Grants Requester'
+      )
+
+      await requestActiveDeployment(teamId, requesterId, 'gpt-4-1-nano')
+
+      const listed = await listedCredential(userId, credential._id.toString())
+
+      expect(listed.allowedDeployments.sort()).toEqual([
+        'gpt-4-1-nano',
+        'gpt-4o'
+      ])
+    })
+
+    test('no longer lists a model the team removed', async () => {
+      const userId = 'team-grants-user-2'
+      const teamId = await createTeamWithActiveDeployment(userId)
+      const credential = await issueTeamCredential(userId, teamId)
+
+      const removed = await removeActiveModel(teamId, userId, 'gpt-4o')
+
+      expect(removed.statusCode).toBe(200)
+      expect(
+        (await listedCredential(userId, credential._id.toString()))
+          .allowedDeployments
+      ).toEqual([])
+    })
+
+    test('keeps what a revoked credential covered when it was revoked', async () => {
+      const userId = 'team-grants-user-3'
+      const teamId = await createTeamWithActiveDeployment(userId)
+      const credential = await issueTeamCredential(userId, teamId)
+      const id = credential._id.toString()
+
+      await server.inject({
+        method: 'DELETE',
+        url: `/v1/credentials/${id}`,
+        headers: { 'x-user-id': userId }
+      })
+      const removed = await removeActiveModel(teamId, userId, 'gpt-4o')
+
+      const revoked = await listedCredential(userId, id)
+
+      expect(removed.statusCode).toBe(200)
+      expect(revoked.status).toBe('revoked')
+      expect(revoked.allowedDeployments).toEqual(['gpt-4o'])
+    })
+
+    test('stores no copy of the coverage while the credential is active', async () => {
+      const userId = 'team-grants-user-4'
+      const teamId = await createTeamWithActiveDeployment(userId)
+      const credential = await issueTeamCredential(userId, teamId)
+
+      const stored = await server.db
+        .collection('credentials')
+        .findOne({ _id: new ObjectId(credential._id) })
+
+      expect(stored.allowedDeployments).toBeUndefined()
+    })
+  })
+
+  test('POST /v1/credentials refuses a team subscription key, since the team tier is OAuth only', async () => {
     const teamId = await createTeamWithActiveDeployment('team-cred-user-7')
 
-    await server.inject({
+    const { statusCode } = await server.inject({
       method: 'POST',
       url: '/v1/credentials',
       headers: {
@@ -710,27 +901,15 @@ describe('#credentials routes', () => {
       }
     })
 
-    const { result, statusCode } = await server.inject({
-      method: 'POST',
-      url: '/v1/credentials',
-      headers: {
-        'x-user-id': 'team-cred-user-7',
-        'idempotency-key': randomUUID()
-      },
-      payload: {
-        modelSlug: 'gpt-4o',
-        tier: 'team',
-        teamId,
-        environment: 'sandbox',
-        credentialType: 'oauth'
-      }
-    })
-
-    expect(statusCode).toBe(409)
-    expect(result.code).toBe('credential-type-fixed')
+    expect(statusCode).toBe(400)
+    expect(
+      await server.db
+        .collection('credentials')
+        .countDocuments({ teamId, tier: 'team' })
+    ).toBe(0)
   })
 
-  test('POST /v1/credentials releases the credentialType reservation when the issuer fails, so a retry is not locked to a type that was never issued', async () => {
+  test('POST /v1/credentials still issues the team credential to a teammate after another member’s attempt failed', async () => {
     const teamId = await createTeamWithActiveDeployment('test-fail-rollback-1')
 
     await server.inject({
@@ -746,6 +925,8 @@ describe('#credentials routes', () => {
       method: 'POST',
       url: '/v1/users',
       payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
         email: 'rollback-teammate@defra.gov.uk',
         displayName: 'Rollback Teammate'
       }
@@ -781,13 +962,12 @@ describe('#credentials routes', () => {
         modelSlug: 'gpt-4o',
         tier: 'team',
         teamId,
-        environment: 'sandbox',
-        credentialType: 'subscription-key'
+        environment: 'sandbox'
       }
     })
 
     expect(statusCode).toBe(201)
-    expect(result.credential.credentialType).toBe('subscription-key')
+    expect(result.credential.credentialType).toBe('oauth')
   })
 
   test('POST /v1/credentials returns 409 deployment-not-ready before the deployment is active', async () => {
@@ -798,19 +978,27 @@ describe('#credentials routes', () => {
         'x-user-id': 'team-cred-user-3',
         'idempotency-key': randomUUID()
       },
-      payload: { name: 'Team team-cred-user-3' }
+      payload: { name: 'Team team-cred-user-3', serviceCode: 'ABC' }
     })
     const teamId = team.result.team._id.toString()
+    const requesterId = await inviteAndSignIn(
+      teamId,
+      'team-cred-user-3',
+      'not-ready-requester@defra.gov.uk',
+      'Not Ready Requester'
+    )
 
-    await server.inject({
+    const requested = await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: {
-        'x-user-id': 'team-cred-user-3',
+        'x-user-id': requesterId,
         'idempotency-key': randomUUID()
       },
-      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+      payload: { modelSlugs: ['gpt-4o'], environment: 'sandbox' }
     })
+
+    expect(requested.statusCode).toBe(201)
 
     const { result, statusCode } = await server.inject({
       method: 'POST',
@@ -883,7 +1071,12 @@ describe('#credentials routes', () => {
     const signIn = await server.inject({
       method: 'POST',
       url: '/v1/users',
-      payload: { email: 'teammate@defra.gov.uk', displayName: 'Teammate' }
+      payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
+        email: 'teammate@defra.gov.uk',
+        displayName: 'Teammate'
+      }
     })
 
     const { result, statusCode } = await server.inject({
@@ -909,7 +1102,7 @@ describe('#credentials routes', () => {
     const signIn = await server.inject({
       method: 'POST',
       url: '/v1/users',
-      payload: { email, displayName }
+      payload: { oid: randomUUID(), tid: ENTRA_TENANT_ID, email, displayName }
     })
 
     return signIn.result.user._id.toString()
@@ -938,7 +1131,7 @@ describe('#credentials routes', () => {
     })
 
     expect(statusCode).toBe(200)
-    expect(result.secret).toEqual(expect.stringContaining('mock-key-'))
+    expect(result.secret).toEqual(expect.stringContaining('mock-oauth-'))
     expect(result.secret).not.toBe(issued.result.secret)
     expect(result.credential.keyHint).toBe(result.secret.slice(-4))
     expect(result.credential.keyHint).not.toBe(issued.result.credential.keyHint)
@@ -1050,7 +1243,7 @@ describe('#credentials routes', () => {
         'x-user-id': 'team-cred-revoke-3-other',
         'idempotency-key': randomUUID()
       },
-      payload: { name: 'A Different Team' }
+      payload: { name: 'A Different Team', serviceCode: 'ABC' }
     })
 
     const { statusCode } = await server.inject({

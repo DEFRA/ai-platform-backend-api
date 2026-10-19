@@ -18,20 +18,20 @@ function subscriptionPath(sid, suffix = '') {
   return `${buildServiceBasePath()}/subscriptions/${sid}${suffix}?api-version=${API_VERSION}`
 }
 
-// Deterministic per tier so a retry after a timeout updates the same APIM
-// subscription instead of minting a second one.
-function sidFor({ userId, modelSlug, tier, teamId, environment }) {
-  return tier === 'team'
-    ? `team-${teamId}-${environment}`
-    : `research-${userId}-${modelSlug}`
+// Deterministic so a retry after a timeout updates the same APIM
+// subscription instead of minting a second one. Only research credentials
+// are subscription keys; the team tier is OAuth only.
+function sidFor({ userId, modelSlug }) {
+  return `research-${userId}-${modelSlug}`
 }
 
 /**
  * Creates the real Azure APIM-backed `CredentialIssuer`, talking to the ARM
  * management plane (never APIM's own APIs - see the integration plan's
- * "Critical correction" section). The research subscription is scoped to
- * the API itself (`/apis/{id}`), never a product - APIM products are not
- * used by this design.
+ * "Critical correction" section). It issues research subscription keys only,
+ * scoped to the API itself (`/apis/{id}`), never a product - APIM products
+ * are not used by this design. The team tier is OAuth only and never reaches
+ * it (see `credential-issuer-registry.js`).
  * @param {{armClient?: ReturnType<typeof createArmClient>}} [deps]
  * @returns {import('#/adapters/credential-issuer.js').CredentialIssuer}
  */
@@ -39,8 +39,8 @@ export function createApimCredentialIssuer({
   armClient = createArmClient()
 } = {}) {
   return {
-    async issue({ userId, modelSlug, tier = 'research', teamId, environment }) {
-      const sid = sidFor({ userId, modelSlug, tier, teamId, environment })
+    async issue({ userId, modelSlug }) {
+      const sid = sidFor({ userId, modelSlug })
       const researchApiId = config.get('apim.researchApiId')
       const ttlDays = config.get('research.credentialTtlDays')
       const expiresAt = new Date(

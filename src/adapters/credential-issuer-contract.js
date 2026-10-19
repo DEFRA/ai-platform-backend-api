@@ -20,7 +20,6 @@ export function describeCredentialIssuerContract(
     tier: 'research',
     teamId: null,
     environment: null,
-    credentialType: 'subscription-key',
     ...options.issueParams
   }
 
@@ -37,10 +36,7 @@ export function describeCredentialIssuerContract(
     test('rotate returns a new secret for the same externalId, with a matching keyHint', async () => {
       const issuer = createIssuer()
       const issued = await issuer.issue(issueParams)
-      const rotated = await issuer.rotate({
-        externalId: issued.externalId,
-        credentialType: issueParams.credentialType
-      })
+      const rotated = await issuer.rotate({ externalId: issued.externalId })
 
       expect(rotated.externalId).toBe(issued.externalId)
       expect(rotated.keyHint).toBe(rotated.secret.slice(-4))

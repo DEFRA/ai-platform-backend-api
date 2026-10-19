@@ -96,6 +96,38 @@ describe('#mongoDb', () => {
       await migratedServer.stop({ timeout: 1000 })
       await client.close()
     })
+
+    test('keys users on oid and tid and rebuilds the unique email index as display only', async () => {
+      // Dynamic import needed due to config being updated by vitest-mongodb
+      const { config } = await import('#/config.js')
+      const client = await MongoClient.connect(config.get('mongo.mongoUrl'))
+      const db = client.db(config.get('mongo.databaseName'))
+
+      // An older deploy's unique email index; it cannot build over the
+      // repeated emails other suites now create, so start with no users.
+      await db.collection('users').deleteMany({})
+      await db.collection('users').dropIndex('email_1')
+      await db.collection('users').createIndex({ email: 1 }, { unique: true })
+
+      const { createServer } = await import('#/server.js')
+      const migratedServer = await createServer()
+      await migratedServer.initialize()
+
+      const indexes = await db.collection('users').indexes()
+
+      expect(
+        indexes.find((index) => index.name === 'email_1').unique
+      ).toBeUndefined()
+      expect(
+        indexes.find((index) => index.name === 'oid_1_tid_1')
+      ).toMatchObject({
+        unique: true,
+        partialFilterExpression: { oid: { $type: 'string' } }
+      })
+
+      await migratedServer.stop({ timeout: 1000 })
+      await client.close()
+    })
   })
 
   describe('Catalogue sync resilience', () => {

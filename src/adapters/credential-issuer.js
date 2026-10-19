@@ -9,10 +9,12 @@
  * `externalGatewaySubscriptionId` (renamed 2 Oct 2026 from `apimSubscriptionId`,
  * which is still read as a fallback on documents predating the rename - see
  * `src/common/backfills/registry.js`).
+ * The research tier issues subscription keys; the team tier is OAuth only, so
+ * an issuer that serves it issues an OAuth client secret.
  * @typedef {object} CredentialIssuer
- * @property {(params: {userId: string, modelSlug: string, tier: 'research'|'team', teamId?: string|null, environment?: string|null, credentialType?: 'oauth'|'subscription-key'}) => Promise<{externalId: string, secret: string, keyHint: string, expiresAt: string}>} issue
+ * @property {(params: {userId: string, modelSlug: string, tier: 'research'|'team', teamId?: string|null, environment?: string|null}) => Promise<{externalId: string, secret: string, keyHint: string, expiresAt: string}>} issue
  * @property {(params: {externalId: string, expiresAt: string}) => Promise<{externalId: string}>} renew
- * @property {(params: {externalId: string, credentialType?: 'oauth'|'subscription-key'}) => Promise<{externalId: string, secret: string, keyHint: string}>} rotate
+ * @property {(params: {externalId: string}) => Promise<{externalId: string, secret: string, keyHint: string}>} rotate
  * @property {(params: {externalId: string}) => Promise<{externalId: string}>} revoke
  * @property {(params: {externalId: string}) => Promise<{externalId: string}>} suspend
  */

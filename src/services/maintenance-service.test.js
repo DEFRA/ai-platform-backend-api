@@ -78,3 +78,32 @@ describe('#expireCredentials', () => {
     ).resolves.toEqual({ expired: 0, suspended: 0 })
   })
 })
+
+describe('#pollTeamDeployments', () => {
+  afterEach(() => {
+    vi.resetModules()
+    vi.doUnmock('#/services/team-deployment-gitops.js')
+  })
+
+  test('sweeps GitHub-mode team deployments with the scheduler logger', async () => {
+    const sweepGitopsDeployments = vi
+      .fn()
+      .mockResolvedValue({ polled: 2, transitioned: 1, abandoned: 0 })
+
+    vi.doMock('#/services/team-deployment-gitops.js', () => ({
+      sweepGitopsDeployments
+    }))
+
+    const { pollTeamDeployments } =
+      await import('#/services/maintenance-service.js')
+    const db = {}
+    const logger = { error: vi.fn() }
+
+    await expect(pollTeamDeployments(db, logger)).resolves.toEqual({
+      polled: 2,
+      transitioned: 1,
+      abandoned: 0
+    })
+    expect(sweepGitopsDeployments).toHaveBeenCalledWith(db, { logger })
+  })
+})
