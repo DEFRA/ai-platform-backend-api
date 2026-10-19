@@ -13,6 +13,7 @@ import {
   REMOVED,
   REMOVING,
   TERMINAL_FAILURE_STATUSES,
+  appRegistrationOf,
   auditDeployment,
   entryFilter,
   findEntry
@@ -25,6 +26,10 @@ import {
 } from '#/services/team-deployment-gitops-steps.js'
 import { releaseQueue } from '#/services/team-deployment-queue.js'
 import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
+import {
+  applyVerificationPolicy,
+  reportVerificationFailure
+} from '#/services/team-deployment-verification.js'
 
 // The operations the backend submits after an entry's own - a D14 revert,
 // an abandon, a team's removal of the model - each followed to its end
@@ -41,6 +46,7 @@ function settingsOf({
   logger,
   pollMinIntervalMs = config.get('gitops.pollMinIntervalMs'),
   claimLeaseMs = config.get('gitops.claimLeaseMs'),
+  verifyMaxAttempts = config.get('gitops.verifyMaxAttempts'),
   buildDesiredState = teamDesiredStateBuilder
 }) {
   return {
@@ -48,6 +54,7 @@ function settingsOf({
     logger,
     pollMinIntervalMs,
     claimLeaseMs,
+    verifyMaxAttempts,
     buildDesiredState
   }
 }
@@ -98,6 +105,7 @@ function gitopsChangesOf(result, gitops) {
       applyRunUrl: result.links?.applyRun,
       appliedSha: result.appliedSha,
       resources: result.resources,
+      verification: result.verification,
       lastPolledAt: result.polledAt
     }).filter(
       ([key, value]) =>
@@ -205,6 +213,15 @@ async function persistStatus(db, doc, entry, result) {
 
   if (update.status === 'active') {
     updateOps.$addToSet = { 'gateway.allowedDeployments': entry.modelSlug }
+  }
+
+  // The run report is where the team's Entra registration legitimately
+  // comes from; the Graph issuer needs its object ID.
+  const registration =
+    update.status === 'verified' && appRegistrationOf(entry.gitops?.resources)
+
+  if (registration) {
+    updateOps.$set['oauthClient.registration'] = registration
   }
 
   const { matchedCount } = await db
@@ -391,7 +408,13 @@ async function refreshFollowUp(db, doc, entry, step, settings) {
 // Polls the entry's own operation, applying the D14 policy to a failed
 // apply and abandoning a pull request that failed its checks.
 async function refreshOperation(db, doc, entry, settings) {
-  const { registry, logger, pollMinIntervalMs, claimLeaseMs } = settings
+  const {
+    registry,
+    logger,
+    pollMinIntervalMs,
+    claimLeaseMs,
+    verifyMaxAttempts
+  } = settings
   const reserved =
     !entry.gitops ||
     (await reservePoll(db, doc, entry, {
@@ -430,7 +453,18 @@ async function refreshOperation(db, doc, entry, settings) {
     }
   }
 
+  if (result.verificationFailure && entry.gitops) {
+    result = applyVerificationPolicy(entry, result, verifyMaxAttempts)
+  }
+
   const persisted = await persistStatus(db, doc, entry, result)
+
+  if (result.verification) {
+    await reportVerificationFailure(db, doc, entry, result, {
+      maxAttempts: verifyMaxAttempts,
+      logger
+    })
+  }
 
   if (persisted.transitioned && needsAbandon(persisted.entry, claimLeaseMs)) {
     await abandonOperation(db, doc, persisted.entry, deps)
@@ -491,7 +525,7 @@ async function refreshQueued(db, doc, entry, settings) {
  * @param {import('mongodb').Db} db
  * @param {object} doc
  * @param {object} entry
- * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number, buildDesiredState?: Function}} [deps] - `buildDesiredState` is the WS6 builder a queued GitHub-mode request is built with when dispatched
+ * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function}} [deps] - `buildDesiredState` is the WS6 builder a queued GitHub-mode request is built with when dispatched
  */
 export async function refreshEntryStatus(db, doc, entry, deps = {}) {
   const settings = settingsOf(deps)
@@ -553,7 +587,7 @@ async function sweepEntry(db, doc, entry, settings) {
  * request once nothing holds its team file. Operations nobody is watching still
  * progress and reach `active`.
  * @param {import('mongodb').Db} db
- * @param {{registry?: object, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number, buildDesiredState?: Function}} [deps]
+ * @param {{registry?: object, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function}} [deps]
  * @returns {Promise<{polled: number, transitioned: number, abandoned: number}>}
  */
 export async function sweepGitopsDeployments(db, deps = {}) {

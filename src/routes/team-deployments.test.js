@@ -487,7 +487,7 @@ describe('#team-deployments routes', () => {
       'Request recorded',
       'Team checked',
       'Setting up access in Azure',
-      'Creating your client secret'
+      'Preparing your client secret'
     ])
     expect(created.result.deployment.progressSteps[0].state).toBe('current')
     expect(created.result.deployment.progressSteps[1].state).toBe('pending')
@@ -502,7 +502,7 @@ describe('#team-deployments routes', () => {
     expect(afterActive.result.deployment.status).toBe('active')
     expect(
       afterActive.result.deployment.progressSteps.map((step) => step.state)
-    ).toEqual(['done', 'done', 'done', 'current'])
+    ).toEqual(['done', 'done', 'done', 'done'])
   })
 
   test('GET /v1/teams/{teamId}/deployments/{id} has no progress steps for a failed deployment', async () => {

@@ -851,11 +851,11 @@ describe('#createGithubTenantOrchestrator', () => {
         expect(status.status).toBe('verified')
       })
 
-      test('stays deployed while ARM cannot confirm them', async () => {
+      test('stays deployed and keeps the reason while ARM cannot confirm them', async () => {
         const verifier = {
           verify: vi.fn(async () => ({
             verified: false,
-            reason: 'resource-not-succeeded'
+            reason: 'environment-not-configured'
           }))
         }
 
@@ -864,6 +864,19 @@ describe('#createGithubTenantOrchestrator', () => {
         }).getDeploymentStatus(mergedEntry({ status: 'deployed', resources }))
 
         expect(status.status).toBe('deployed')
+        expect(status.verificationFailure).toEqual({
+          reason: 'environment-not-configured'
+        })
+      })
+
+      test('has no verification failure once ARM confirms them', async () => {
+        const verifier = { verify: vi.fn(async () => ({ verified: true })) }
+
+        const status = await createOrchestrator({
+          verifier
+        }).getDeploymentStatus(mergedEntry({ status: 'deployed', resources }))
+
+        expect(status).not.toHaveProperty('verificationFailure')
       })
 
       test('has nothing to verify for a removal', async () => {

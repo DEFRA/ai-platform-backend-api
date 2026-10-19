@@ -42,6 +42,7 @@
  * @property {number} [applyRunId]
  * @property {string} [polledAt] - set when the adapter read GitHub or ARM on this call
  * @property {DeploymentFailure} [failure] - on `deploy-failed` when a run report says why; drives the D14 policy
+ * @property {{reason: string}} [verificationFailure] - on `deployed` when ARM could not confirm the team's resources; `reason` is the verifier's stable code
  *
  * @typedef {object} TenantOrchestrator
  * @property {(request: DeploymentRequest) => Promise<{operationId: string, status: 'requested', submitRunId: number|null, submitRunUrl: string|null}>} requestDeployment

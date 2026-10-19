@@ -12,6 +12,7 @@ let revokeCredential
 let revealCredential
 let credentialIssuerRegistry
 let createCredentialIssuerRegistry
+let createCredentialVaultRegistry
 
 async function loadCredentialService() {
   ;({
@@ -23,6 +24,8 @@ async function loadCredentialService() {
   } = await import('#/services/credential-service.js'))
   ;({ credentialIssuerRegistry, createCredentialIssuerRegistry } =
     await import('#/adapters/credential-issuer-registry.js'))
+  ;({ createCredentialVaultRegistry } =
+    await import('#/adapters/credential-vault-registry.js'))
 }
 
 function stubVault(overrides = {}) {
@@ -333,6 +336,77 @@ describe('#credential-service vault wiring', () => {
       .findOne({ _id: issued.credential._id })
 
     expect(stored.vaultState).toBe('unwritten')
+  })
+
+  test('a mocked team secret goes to the mock vault while a research secret still reaches the real vault', async () => {
+    const mockVault = stubVault()
+    const realVault = stubVault()
+    const liveIssuer = {
+      issue: vi.fn(async () => ({
+        externalId: 'sub-1',
+        secret: 'live-research-secret',
+        keyHint: 'cret',
+        expiresAt: new Date(Date.now() + 86400000).toISOString()
+      }))
+    }
+    const registry = createCredentialIssuerRegistry(
+      {
+        mock: credentialIssuerRegistry.forCredential({}).issuer,
+        'azure-apim': liveIssuer
+      },
+      'live',
+      ['team']
+    )
+    const vault = createCredentialVaultRegistry({
+      mock: mockVault,
+      'azure-apim': realVault
+    })
+    const userId = `placeholder-user-${randomUUID()}`
+    const teamId = `placeholder-team-${randomUUID()}`
+
+    await db.collection('teamMembers').insertOne({
+      teamId,
+      userId,
+      status: 'active'
+    })
+    await db.collection('teamDeployments').insertOne({
+      teamId,
+      environment: 'sandbox',
+      deployments: [{ id: randomUUID(), modelSlug: 'gpt-4o', status: 'active' }]
+    })
+
+    const team = await issueCredential(
+      db,
+      locker,
+      {
+        userId,
+        modelSlug: 'gpt-4o',
+        tier: 'team',
+        teamId,
+        environment: 'sandbox',
+        idempotencyKey: randomUUID()
+      },
+      registry,
+      vault
+    )
+    const research = await issueCredential(
+      db,
+      locker,
+      { userId, modelSlug: 'gpt-4o', idempotencyKey: randomUUID() },
+      registry,
+      vault
+    )
+
+    expect(team.credential.issuerKey).toBe('mock')
+    expect(mockVault.put).toHaveBeenCalledTimes(1)
+    expect(mockVault.put).toHaveBeenCalledWith(
+      expect.objectContaining({ secret: team.secret })
+    )
+    expect(research.credential.issuerKey).toBe('azure-apim')
+    expect(realVault.put).toHaveBeenCalledTimes(1)
+    expect(realVault.put).toHaveBeenCalledWith(
+      expect.objectContaining({ secret: 'live-research-secret' })
+    )
   })
 })
 

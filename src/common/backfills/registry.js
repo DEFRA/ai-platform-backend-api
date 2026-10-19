@@ -460,5 +460,62 @@ export const backfillRegistry = [
 
       return { modifiedCount }
     }
+  },
+  // A team's Entra app registration identifiers now come off its run report
+  // onto `oauthClient.registration` when a deployment verifies, for the Graph
+  // issuer (B18). Teams that verified earlier already hold the report's
+  // resources on a deployment entry, so take them from there; null where
+  // Entra skipped the registration or nothing has verified yet.
+  {
+    id: '2026-10-19-team-deployments-oauth-registration',
+    description:
+      'Sets oauthClient.registration on teamDeployments docs missing it, from a deployment entry’s run report resources, else null',
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('teamDeployments')
+        .updateMany({ 'oauthClient.registration': { $exists: false } }, [
+          {
+            $set: {
+              'oauthClient.registration': {
+                $let: {
+                  vars: {
+                    found: {
+                      $first: {
+                        $filter: {
+                          input: {
+                            $map: {
+                              input: { $ifNull: ['$deployments', []] },
+                              as: 'entry',
+                              in: '$$entry.gitops.resources.registration'
+                            }
+                          },
+                          as: 'candidate',
+                          cond: {
+                            $ne: [{ $type: '$$candidate.object_id' }, 'missing']
+                          }
+                        }
+                      }
+                    }
+                  },
+                  in: {
+                    $cond: [
+                      { $ne: [{ $type: '$$found.object_id' }, 'missing'] },
+                      {
+                        clientId: '$$found.client_id',
+                        objectId: '$$found.object_id',
+                        servicePrincipalObjectId:
+                          '$$found.service_principal_object_id'
+                      },
+                      null
+                    ]
+                  }
+                }
+              }
+            }
+          }
+        ])
+
+      return { modifiedCount }
+    }
   }
 ]
