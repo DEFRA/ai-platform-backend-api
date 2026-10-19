@@ -405,6 +405,39 @@ async function refreshFollowUp(db, doc, entry, step, settings) {
   return persistFollowUp(db, doc, entry, step, result, logger)
 }
 
+// The entry's own operation status, or null when GitHub could not be read.
+async function pollOperation(doc, entry, { orchestrator, logger }) {
+  try {
+    return await orchestrator.getDeploymentStatus({
+      ...entry,
+      environment: doc.environment
+    })
+  } catch (error) {
+    logger?.warn(
+      pollFailure(error, entry),
+      'Team deployment status poll failed, keeping the last known status'
+    )
+
+    return null
+  }
+}
+
+// The D14 policy for a failed apply, then the bound on failed verification.
+// Null where the entry is to be left as it was.
+async function applyPolicies(db, doc, entry, polled, settings, deps) {
+  let result = polled
+
+  if (result.status === DEPLOY_FAILED && result.failure && entry.gitops) {
+    result = await applyFailurePolicy(db, doc, entry, result, deps)
+  }
+
+  if (result?.verificationFailure && entry.gitops) {
+    result = applyVerificationPolicy(entry, result, settings.verifyMaxAttempts)
+  }
+
+  return result
+}
+
 // Polls the entry's own operation, applying the D14 policy to a failed
 // apply and abandoning a pull request that failed its checks.
 async function refreshOperation(db, doc, entry, settings) {
@@ -429,32 +462,13 @@ async function refreshOperation(db, doc, entry, settings) {
 
   const orchestrator = registry.forEntry(entry)
   const deps = { orchestrator, logger, claimLeaseMs }
-  let result
+  const polled = await pollOperation(doc, entry, deps)
+  const result = polled
+    ? await applyPolicies(db, doc, entry, polled, settings, deps)
+    : null
 
-  try {
-    result = await orchestrator.getDeploymentStatus({
-      ...entry,
-      environment: doc.environment
-    })
-  } catch (error) {
-    logger?.warn(
-      pollFailure(error, entry),
-      'Team deployment status poll failed, keeping the last known status'
-    )
-
+  if (!result) {
     return entry
-  }
-
-  if (result.status === DEPLOY_FAILED && result.failure && entry.gitops) {
-    result = await applyFailurePolicy(db, doc, entry, result, deps)
-
-    if (!result) {
-      return entry
-    }
-  }
-
-  if (result.verificationFailure && entry.gitops) {
-    result = applyVerificationPolicy(entry, result, verifyMaxAttempts)
   }
 
   const persisted = await persistStatus(db, doc, entry, result)
