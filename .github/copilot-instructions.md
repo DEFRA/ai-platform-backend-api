@@ -125,6 +125,7 @@ This repo already complies with Defra's dependency guidance — keep it that way
 - Keep solutions DRY: before adding new utilities, search `src/common/` and existing services for similar code.
 - Any bug fix — from a code review comment, a deployed defect, or a failing test — must ship with a regression test (unit, integration, or journey, whichever fits) that fails without the fix and passes with it; a fix with no new/updated test is incomplete, not just unpolished.
 - After implementing any plan or feature, update `ai-platform-frontend/docs/implemented-features.md` and then check `ai-platform-discovery-docs` `build-stories.md#status` for built state that is missing or stale, adding it in a separate pull request there. Follow [implemented-features.instructions.md](instructions/implemented-features.instructions.md); do not wait to be asked.
+- After opening a pull request, request Copilot review (`gh pr edit <n> --add-reviewer "@copilot"`), answer every comment, then request a human reviewer; Copilot never replaces the required approval. Follow [pull-requests.instructions.md](instructions/pull-requests.instructions.md); do not wait to be asked.
 - If a request conflicts with these instructions, or would use a discouraged library, skip tests, hardcode a secret, or break a quality gate — flag it explicitly and do not proceed silently.
 
 ## Licence
