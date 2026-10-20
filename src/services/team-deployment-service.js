@@ -332,7 +332,7 @@ async function insertEntry(db, { teamId, environment }, entry) {
           allowedDeployments: [],
           limits: {}
         },
-        oauthClient: { enabled: true, appRoles: [] },
+        oauthClient: { enabled: true, appRoles: [], registration: null },
         createdAt: entry.createdAt
       },
       $set: { updatedAt: entry.createdAt }
@@ -498,7 +498,8 @@ function redispatchClaim(entry, kind) {
 async function claimRedispatch(db, doc, entry, claim) {
   const update = {
     ...claim.changes,
-    ...(claim.applyRetry ? { 'gitops.applyRetry': claim.applyRetry } : {})
+    ...(claim.applyRetry ? { 'gitops.applyRetry': claim.applyRetry } : {}),
+    ...(claim.resumes && entry.gitops ? { 'gitops.verification': null } : {})
   }
 
   if (Object.keys(update).length === 0) {
@@ -523,6 +524,9 @@ async function releaseRedispatch(db, doc, entry, claim) {
   const restore = {
     ...(claim.resumes
       ? { status: entry.status, failureReason: entry.failureReason }
+      : {}),
+    ...(claim.resumes && entry.gitops
+      ? { 'gitops.verification': entry.gitops.verification ?? null }
       : {}),
     ...(claim.applyRetry
       ? { 'gitops.applyRetry': entry.gitops.applyRetry ?? null }

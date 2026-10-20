@@ -577,4 +577,96 @@ describe('#backfillRegistry', () => {
       expect(held.slug).toBe('rainfall')
     })
   })
+
+  describe('2026-10-19-team-deployments-oauth-registration', () => {
+    const backfillId = '2026-10-19-team-deployments-oauth-registration'
+
+    test('takes the registration from a deployment entry that holds the run report resources', async () => {
+      const { insertedId } = await db.collection('teamDeployments').insertOne({
+        teamId: 'registered-team',
+        environment: 'infradev',
+        oauthClient: { enabled: true, appRoles: [] },
+        deployments: [
+          { id: 'queued-entry', status: 'queued', gitops: null },
+          {
+            id: 'active-entry',
+            status: 'active',
+            gitops: {
+              resources: {
+                registration: {
+                  client_id: 'client-1',
+                  object_id: 'object-1',
+                  service_principal_object_id: 'sp-1',
+                  federations: {}
+                }
+              }
+            }
+          }
+        ]
+      })
+
+      await findBackfill(backfillId).run(db)
+
+      const updated = await db
+        .collection('teamDeployments')
+        .findOne({ _id: insertedId })
+      expect(updated.oauthClient).toEqual({
+        enabled: true,
+        appRoles: [],
+        registration: {
+          clientId: 'client-1',
+          objectId: 'object-1',
+          servicePrincipalObjectId: 'sp-1'
+        }
+      })
+    })
+
+    test('sets null where Entra skipped the registration or nothing has verified', async () => {
+      const skipped = await db.collection('teamDeployments').insertOne({
+        teamId: 'skipped-team',
+        environment: 'infradev',
+        oauthClient: { enabled: true, appRoles: [] },
+        deployments: [
+          {
+            id: 'skipped',
+            status: 'active',
+            gitops: { resources: { registration: null } }
+          }
+        ]
+      })
+      const bare = await db
+        .collection('teamDeployments')
+        .insertOne({ teamId: 'bare-team', environment: 'infradev' })
+
+      await findBackfill(backfillId).run(db)
+
+      const [skippedDoc, bareDoc] = await Promise.all([
+        db.collection('teamDeployments').findOne({ _id: skipped.insertedId }),
+        db.collection('teamDeployments').findOne({ _id: bare.insertedId })
+      ])
+      expect(skippedDoc.oauthClient.registration).toBeNull()
+      expect(bareDoc.oauthClient.registration).toBeNull()
+    })
+
+    test('leaves a registration already carried alone', async () => {
+      const registration = {
+        clientId: 'kept',
+        objectId: 'kept',
+        servicePrincipalObjectId: 'kept'
+      }
+      const { insertedId } = await db.collection('teamDeployments').insertOne({
+        teamId: 'carried-team',
+        environment: 'infradev',
+        oauthClient: { enabled: true, appRoles: [], registration },
+        deployments: []
+      })
+
+      await findBackfill(backfillId).run(db)
+
+      const updated = await db
+        .collection('teamDeployments')
+        .findOne({ _id: insertedId })
+      expect(updated.oauthClient.registration).toEqual(registration)
+    })
+  })
 })

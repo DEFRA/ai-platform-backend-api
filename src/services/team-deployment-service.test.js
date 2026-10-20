@@ -1314,6 +1314,36 @@ describe('team-deployment-service (GitOps)', () => {
       ).toMatchObject({ actorUserId: adminId, outcome: 'success' })
     })
 
+    test('starts the verification count again when it retries a deployment that failed verification', async () => {
+      const orchestrator = fakeOrchestrator()
+      const { deployment } = await submitGithubDeployment(orchestrator)
+      const verification = {
+        reason: 'environment-not-configured',
+        attempts: 5,
+        lastAttemptAt: '2026-10-19T10:00:00.000Z'
+      }
+
+      await db.collection('teamDeployments').updateOne(
+        { 'deployments.id': deployment._id },
+        {
+          $set: {
+            'deployments.$.status': 'deploy-failed',
+            'deployments.$.failureReason': 'Not confirmed',
+            'deployments.$.gitops.verification': verification
+          }
+        }
+      )
+
+      const view = await service.redispatchApply(
+        db,
+        { id: deployment._id, actorUserId: adminId, kind: 'retry' },
+        { registry: githubRegistry(orchestrator) }
+      )
+
+      expect((await storedEntry(deployment._id)).gitops.verification).toBeNull()
+      expect(view.verificationFailure).toBeNull()
+    })
+
     test('dispatches one apply when two retries race, and audits only that one', async () => {
       const orchestrator = fakeOrchestrator()
       const { deployment } = await submitGithubDeployment(orchestrator)

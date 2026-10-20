@@ -337,6 +337,225 @@ describe('team-deployment-gitops', () => {
     })
   })
 
+  describe('verification', () => {
+    const resources = {
+      project: { name: 'aip-alpha' },
+      registration: {
+        client_id: 'client-1',
+        object_id: 'object-1',
+        service_principal_object_id: 'sp-1',
+        federations: {}
+      }
+    }
+
+    function stillDeployed(entry, reason) {
+      return {
+        operationId: entry.operationId,
+        status: 'deployed',
+        links: {},
+        polledAt: justNow(),
+        verificationFailure: { reason }
+      }
+    }
+
+    function logger() {
+      return { warn: vi.fn(), error: vi.fn() }
+    }
+
+    test('records the reason, counts the attempt, audits and logs it, and keeps verifying', async () => {
+      const orchestrator = fakeOrchestrator()
+      const log = logger()
+      const entry = githubEntry({ status: 'deployed', gitops: { resources } })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(
+        stillDeployed(entry, 'environment-not-configured')
+      )
+
+      const refreshed = await refresh(orchestrator, doc, entry, {
+        logger: log,
+        verifyMaxAttempts: 3
+      })
+
+      expect(refreshed.status).toBe('deployed')
+      expect((await storedEntry(entry.id)).gitops.verification).toEqual({
+        reason: 'environment-not-configured',
+        attempts: 1,
+        lastAttemptAt: expect.any(String)
+      })
+      expect(await auditEvents(entry)).toEqual([
+        expect.objectContaining({
+          action: 'teamDeployment.verificationFailed',
+          outcome: 'failure',
+          code: 'environment-not-configured',
+          reason: 'attempt 1 of 3'
+        })
+      ])
+      expect(log.warn).toHaveBeenCalledWith(
+        expect.objectContaining({
+          reason: 'environment-not-configured',
+          attempts: 1
+        }),
+        expect.any(String)
+      )
+    })
+
+    test('counts every overlapping failed verification once, whichever finishes last', async () => {
+      const { applyVerificationPolicy } =
+        await import('#/services/team-deployment-verification.js')
+      const entry = githubEntry({ status: 'deployed', gitops: { resources } })
+      const doc = await insertDocument(entry)
+      const failed = stillDeployed(entry, 'resource-unavailable')
+
+      // Both read the entry before either wrote, as two slow polls would.
+      const results = await Promise.all([
+        applyVerificationPolicy(db, doc, entry, failed, 2),
+        applyVerificationPolicy(db, doc, entry, failed, 2)
+      ])
+
+      expect((await storedEntry(entry.id)).gitops.verification.attempts).toBe(2)
+      expect(results.map(({ status }) => status).sort()).toEqual([
+        'deploy-failed',
+        'deployed'
+      ])
+    })
+
+    test('starts counting from one after a retry cleared the earlier count', async () => {
+      const { applyVerificationPolicy } =
+        await import('#/services/team-deployment-verification.js')
+      const entry = githubEntry({
+        status: 'deployed',
+        gitops: { resources, verification: null }
+      })
+      const doc = await insertDocument(entry)
+
+      const result = await applyVerificationPolicy(
+        db,
+        doc,
+        entry,
+        stillDeployed(entry, 'no-resources'),
+        3
+      )
+
+      expect(result.verification.attempts).toBe(1)
+      expect((await storedEntry(entry.id)).gitops.verification.attempts).toBe(1)
+    })
+
+    test('does not count a failed verification for an entry that has moved on', async () => {
+      const { applyVerificationPolicy } =
+        await import('#/services/team-deployment-verification.js')
+      const entry = githubEntry({ status: 'deployed', gitops: { resources } })
+      const doc = await insertDocument({ ...entry, status: 'active' })
+
+      const result = await applyVerificationPolicy(
+        db,
+        doc,
+        entry,
+        stillDeployed(entry, 'no-resources'),
+        3
+      )
+
+      expect(result).toBeNull()
+      expect((await storedEntry(entry.id)).gitops.verification).toBeUndefined()
+    })
+
+    test('fails for good with the reason once the attempts run out', async () => {
+      const orchestrator = fakeOrchestrator()
+      const log = logger()
+      const entry = githubEntry({
+        status: 'deployed',
+        gitops: {
+          resources,
+          verification: {
+            reason: 'environment-not-configured',
+            attempts: 2,
+            lastAttemptAt: anHourAgo()
+          }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(
+        stillDeployed(entry, 'environment-not-configured')
+      )
+
+      const refreshed = await refresh(orchestrator, doc, entry, {
+        logger: log,
+        verifyMaxAttempts: 3
+      })
+
+      expect(refreshed.status).toBe('deploy-failed')
+      expect(refreshed.failureReason).toContain('environment-not-configured')
+      expect((await storedEntry(entry.id)).gitops.verification.attempts).toBe(3)
+      expect(
+        (await auditEvents(entry)).map(({ action }) => action).sort()
+      ).toEqual([
+        'teamDeployment.transition',
+        'teamDeployment.verificationFailed'
+      ])
+      expect(log.error).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'environment-not-configured' }),
+        expect.any(String)
+      )
+
+      // Terminal: never polled again.
+      orchestrator.getDeploymentStatus.mockClear()
+      await refresh(orchestrator, doc, await storedEntry(entry.id), {
+        logger: log
+      })
+
+      expect(orchestrator.getDeploymentStatus).not.toHaveBeenCalled()
+    })
+
+    test('carries the team app registration identifiers onto the team record when it verifies', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({ status: 'deployed', gitops: { resources } })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue({
+        operationId: entry.operationId,
+        status: 'verified',
+        links: {}
+      })
+
+      await refresh(orchestrator, doc, entry)
+
+      const stored = await db
+        .collection('teamDeployments')
+        .findOne({ _id: doc._id })
+      expect(stored.oauthClient.registration).toEqual({
+        clientId: 'client-1',
+        objectId: 'object-1',
+        servicePrincipalObjectId: 'sp-1'
+      })
+    })
+
+    test('has no registration to carry where Entra skipped it', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({
+        status: 'deployed',
+        gitops: {
+          resources: { project: { name: 'aip-alpha' }, registration: null }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue({
+        operationId: entry.operationId,
+        status: 'verified',
+        links: {}
+      })
+
+      const refreshed = await refresh(orchestrator, doc, entry)
+
+      expect(refreshed.status).toBe('verified')
+      expect(
+        (await db.collection('teamDeployments').findOne({ _id: doc._id }))
+          .oauthClient
+      ).toBeUndefined()
+    })
+  })
+
   describe('reverts', () => {
     function revertingEntry() {
       return githubEntry({

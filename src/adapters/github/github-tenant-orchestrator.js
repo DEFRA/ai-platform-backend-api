@@ -446,12 +446,17 @@ async function verifyDeployed(verifier, { environment, gitops }) {
     return { status: 'verified' }
   }
 
-  const { verified } = await verifier.verify({
+  const { verified, reason } = await verifier.verify({
     environment,
     resources: gitops.resources ?? null
   })
 
-  return { status: verified ? 'verified' : 'deployed' }
+  return verified
+    ? { status: 'verified' }
+    : {
+        status: 'deployed',
+        verificationFailure: { reason: reason ?? 'unknown' }
+      }
 }
 
 // Builds each client lazily, once per repository and permission set.

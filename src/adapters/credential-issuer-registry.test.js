@@ -56,6 +56,22 @@ describe('#createCredentialIssuerRegistry', () => {
     })
   })
 
+  test('isMockedFor is true for every tier in mock mode', () => {
+    const registry = createCredentialIssuerRegistry(issuersByKey, 'mock')
+
+    expect(registry.isMockedFor('team')).toBe(true)
+    expect(registry.isMockedFor('research')).toBe(true)
+  })
+
+  test('isMockedFor is true only for a tier listed in mockTiers in live mode', () => {
+    const registry = createCredentialIssuerRegistry(issuersByKey, 'live', [
+      'team'
+    ])
+
+    expect(registry.isMockedFor('team')).toBe(true)
+    expect(registry.isMockedFor('research')).toBe(false)
+  })
+
   test('forModel never sends the OAuth-only team tier to a gateway that issues subscription keys', () => {
     const registry = createCredentialIssuerRegistry(issuersByKey, 'live')
 

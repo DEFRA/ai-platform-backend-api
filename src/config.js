@@ -209,6 +209,12 @@ export const config = convict({
       format: 'nat',
       default: 600000,
       env: 'GITOPS_CLAIM_LEASE_MS'
+    },
+    verifyMaxAttempts: {
+      doc: 'How many times ARM may fail to confirm a deployed team before the deployment fails for good with the verifier reason; a Platform Admin retry starts the count again',
+      format: 'nat',
+      default: 5,
+      env: 'GITOPS_VERIFY_MAX_ATTEMPTS'
     }
   },
   aipEnvironments: {

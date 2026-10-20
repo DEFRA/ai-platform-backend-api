@@ -53,6 +53,27 @@ export const TERMINAL_FAILURE_STATUSES = new Set([CHECKS_FAILED, DEPLOY_FAILED])
 export const SYSTEM_ACTOR = 'app:ai-platform-backend'
 
 /**
+ * The team's Entra app registration identifiers from its run report
+ * resources, or null when Entra skipped it (`entra.enabled` off, or
+ * `entra.teamRegistrations` false). Identifiers only, never a secret.
+ * @param {{registration?: {client_id?: string, object_id?: string, service_principal_object_id?: string}|null}|null} [resources]
+ * @returns {{clientId: string, objectId: string, servicePrincipalObjectId: string}|null}
+ */
+export function appRegistrationOf(resources) {
+  const registration = resources?.registration
+
+  if (!registration?.object_id) {
+    return null
+  }
+
+  return {
+    clientId: registration.client_id,
+    objectId: registration.object_id,
+    servicePrincipalObjectId: registration.service_principal_object_id
+  }
+}
+
+/**
  * Finds one entry of a `teamDeployments` document's `deployments[]` by id.
  * @param {{deployments?: object[]}|null} doc
  * @param {string} id

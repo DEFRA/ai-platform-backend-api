@@ -7,6 +7,7 @@ import { AZURE_APIM } from '#/adapters/gateway-keys.js'
  * @typedef {object} CredentialIssuerRegistry
  * @property {(model: object, tier?: string) => {issuerKey: string, issuer: import('#/adapters/credential-issuer.js').CredentialIssuer}} forModel
  * @property {(credential: object) => {issuerKey: string, issuer: import('#/adapters/credential-issuer.js').CredentialIssuer}} forCredential
+ * @property {(tier: string) => boolean} isMockedFor - whether credentials for the tier are minted by the mock issuer
  */
 
 function notEnabled(message) {
@@ -43,14 +44,19 @@ export function createCredentialIssuerRegistry(
     return { issuerKey, issuer }
   }
 
+  function isMockedFor(tier) {
+    return mode === 'mock' || mockTiers.includes(tier)
+  }
+
   return {
+    isMockedFor,
     // `mock` mode (local dev) never reaches a real gateway whatever the
     // model's gateway says, and neither does a tier listed in `mockTiers`;
     // otherwise the catalogue's gateway picks it. The team tier is OAuth
     // only and no gateway issues OAuth client secrets yet, so in `live`
     // mode only `mockTiers` can serve it - never a subscription key.
     forModel(model, tier) {
-      if (mode === 'mock' || mockTiers.includes(tier)) {
+      if (isMockedFor(tier)) {
         return resolve('mock')
       }
 
