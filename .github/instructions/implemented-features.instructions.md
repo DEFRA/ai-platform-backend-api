@@ -5,7 +5,7 @@ applyTo: 'src/**'
 
 # Keep the implemented-features list current
 
-[ai-platform-frontend/docs/implemented-features.md](../../../ai-platform-frontend/docs/implemented-features.md)
+[ai-platform-frontend/docs/plans/implemented/implemented-features.md](../../../ai-platform-frontend/docs/plans/implemented/implemented-features.md)
 is the one cross-repo list of what has been built so far in the AI Platform Portal, written for new
 joiners — a short bullet-point index, not a duplicate of the detailed plan docs and READMEs it
 links to. It lives in the frontend repo (the existing cross-repo docs hub), but covers both repos.
@@ -45,7 +45,7 @@ without being asked and add what is missing:
    `npm run check`. Never change application code from that repo.
 3. Keep it minimal, concise and factual: a short clause per row or note, not a paragraph. Record
    built state only, never a new design direction. Read it from
-   the released tags and `ai-platform-frontend/docs/implemented-features.md`, cite the version and
+   the released tags and `ai-platform-frontend/docs/plans/implemented/implemented-features.md`, cite the version and
    date, and say "in an open pull request" for anything not yet merged or released. Built is not
    accepted and nothing is claimed as deployed unless it is.
 4. If nothing needs changing, say "build status checked, no change" in your summary rather than

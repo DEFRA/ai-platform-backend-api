@@ -10,7 +10,7 @@ applyTo: '**'
 - Branch `<type>/<description>` from current `main`; conventional commits.
 - Run `npm run format`, then `npm run format:check`, `npm run lint` and `npm test`; all pass. Never `--no-verify`.
 - Behaviour change means a test change; a bug fix means a regression test that fails without the fix.
-- Update `ai-platform-frontend/docs/implemented-features.md` and the plan when a plan phase lands (see `route-plans.instructions.md`).
+- Update `ai-platform-frontend/docs/plans/implemented/implemented-features.md` and the plan when a plan phase lands (see `route-plans.instructions.md`).
 - A new persisted field needs a dated backfill (see `schema-changes.instructions.md`).
 - Build to the current design only: no legacy paths or backwards-compatible fallbacks.
 
