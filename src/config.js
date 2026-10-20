@@ -440,9 +440,11 @@ if (config.get('cdpEnvironment') === 'prod' && provisioningMode === 'mock') {
   )
 }
 
-const unknownMockTiers = config
-  .get('provisioning.mockTiers')
-  .filter((tier) => !['research', 'team'].includes(tier))
+const mockTiers = config.get('provisioning.mockTiers')
+
+const unknownMockTiers = mockTiers.filter(
+  (tier) => !['research', 'team'].includes(tier)
+)
 
 if (unknownMockTiers.length > 0) {
   throw new Error(
@@ -450,10 +452,7 @@ if (unknownMockTiers.length > 0) {
   )
 }
 
-if (
-  config.get('cdpEnvironment') === 'prod' &&
-  config.get('provisioning.mockTiers').length > 0
-) {
+if (config.get('cdpEnvironment') === 'prod' && mockTiers.length > 0) {
   throw new Error('MOCK_TIERS must be empty in the prod environment')
 }
 
@@ -489,7 +488,7 @@ if (!/^[a-z][a-z0-9]{1,15}$/.test(config.get('research.environment'))) {
 if (
   provisioningMode === 'live' &&
   config.get('provisioning.gateways').includes(AZURE_APIM) &&
-  !config.get('provisioning.mockTiers').includes('research')
+  !mockTiers.includes('research')
 ) {
   const researchEnvironment = config.get('research.environment')
   const environment = config.get('aipEnvironments')[researchEnvironment]
