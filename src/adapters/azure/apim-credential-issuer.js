@@ -30,6 +30,41 @@ function sidFor({ userId, modelSlug }) {
 }
 
 /**
+ * Why a subscription is not a research key on the research API (none for the
+ * built-in one, or when it is one).
+ * @param {{name: string, properties?: {scope?: string}}} subscription
+ * @param {string} researchScope
+ * @returns {string[]}
+ */
+function strayReasons(subscription, researchScope) {
+  if (subscription.name === BUILT_IN_SUBSCRIPTION) {
+    return []
+  }
+
+  const reasons = []
+
+  if (!subscription.name.startsWith(RESEARCH_SUBSCRIPTION_PREFIX)) {
+    reasons.push('unexpected-name')
+  }
+
+  if (
+    subscription.properties?.scope?.toLowerCase() !==
+    researchScope.toLowerCase()
+  ) {
+    reasons.push('unexpected-scope')
+  }
+
+  return reasons
+}
+
+// Only follows a next link that stays on the ARM host.
+function nextArmPath(page) {
+  return page?.nextLink?.startsWith(ARM_ORIGIN)
+    ? page.nextLink.slice(ARM_ORIGIN.length)
+    : null
+}
+
+/**
  * Creates the real Azure APIM-backed `CredentialIssuer`, talking to the ARM
  * management plane (never APIM's own APIs - see the integration plan's
  * "Critical correction" section). It issues research subscription keys only,
@@ -172,31 +207,14 @@ export function createApimCredentialIssuer({
         const page = await armClient.request('GET', path)
 
         for (const subscription of page?.value ?? []) {
-          if (subscription.name === BUILT_IN_SUBSCRIPTION) {
-            continue
-          }
-
-          const reasons = []
-
-          if (!subscription.name.startsWith(RESEARCH_SUBSCRIPTION_PREFIX)) {
-            reasons.push('unexpected-name')
-          }
-
-          if (
-            subscription.properties?.scope?.toLowerCase() !==
-            researchScope.toLowerCase()
-          ) {
-            reasons.push('unexpected-scope')
-          }
+          const reasons = strayReasons(subscription, researchScope)
 
           if (reasons.length > 0) {
             strays.push({ name: subscription.name, reasons })
           }
         }
 
-        path = page?.nextLink?.startsWith(ARM_ORIGIN)
-          ? page.nextLink.slice(ARM_ORIGIN.length)
-          : null
+        path = nextArmPath(page)
       }
 
       return strays

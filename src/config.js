@@ -428,14 +428,13 @@ if (config.get('provisioning.mode') === 'azure') {
   config.set('provisioning.mode', 'live')
 }
 
+const provisioningMode = config.get('provisioning.mode')
+
 // Production refuses to start with a mock gateway selected for any of the
 // direct paths (design fact). Fail fast here rather than at the first issued
 // credential, and fail fast again if a live gateway is enabled without the
 // config it needs rather than surfacing a 401 from its gateway.
-if (
-  config.get('cdpEnvironment') === 'prod' &&
-  config.get('provisioning.mode') === 'mock'
-) {
+if (config.get('cdpEnvironment') === 'prod' && provisioningMode === 'mock') {
   throw new Error(
     'PROVISIONING_MODE must not be "mock" in the prod environment'
   )
@@ -458,7 +457,7 @@ if (
   throw new Error('MOCK_TIERS must be empty in the prod environment')
 }
 
-if (config.get('provisioning.mode') === 'live') {
+if (provisioningMode === 'live') {
   for (const gateway of config.get('provisioning.gateways')) {
     const requiredKeys = REQUIRED_CONFIG_BY_GATEWAY[gateway]
 
@@ -488,7 +487,7 @@ if (!/^[a-z][a-z0-9]{1,15}$/.test(config.get('research.environment'))) {
 // research tier issues into all come from the one AIP_ENVIRONMENTS entry, so a
 // missing one must stop the boot rather than fail the first issued key.
 if (
-  config.get('provisioning.mode') === 'live' &&
+  provisioningMode === 'live' &&
   config.get('provisioning.gateways').includes(AZURE_APIM) &&
   !config.get('provisioning.mockTiers').includes('research')
 ) {
