@@ -29,6 +29,6 @@ applyTo: '**'
 
 1. Open the PR (draft while checks fail) and describe what changed, why, and how it was verified; call out breaking changes.
 2. **Request Copilot review**: `gh pr edit <n> --add-reviewer "@copilot"`.
-3. Read every comment. Fix it, or reply with the reason it does not apply, then resolve the thread. Re-request Copilot after a substantial push.
+3. When Copilot's review lands, fix every comment or reply with the reason it does not apply, push, then resolve each thread (GraphQL `resolveReviewThread`). Re-request Copilot after a substantial push and repeat until nothing is unresolved.
 4. Then request a human reviewer. Copilot is advisory and never replaces the required approval; the ruleset needs one approving review, resolved threads and approval of the last push.
 5. Do not merge your own PR.
