@@ -37,11 +37,16 @@ export const credentials = [
             then: Joi.required(),
             otherwise: Joi.forbidden()
           }),
-          environment: Joi.string().valid('infradev', 'sandbox').when('tier', {
-            is: 'team',
-            then: Joi.required(),
-            otherwise: Joi.forbidden()
-          }),
+          // Any registry-shaped name; a team's is the one its deployment is
+          // in, and a research key defaults to the configured research
+          // environment (the service refuses any other).
+          environment: Joi.string()
+            .pattern(/^[a-z][a-z0-9]{1,15}$/)
+            .when('tier', {
+              is: 'team',
+              then: Joi.required(),
+              otherwise: Joi.optional()
+            }),
           // The team tier is OAuth only (a client secret or a federated
           // credential); research credentials are subscription keys.
           credentialType: Joi.string().when('tier', {

@@ -1,7 +1,7 @@
 import { SecretClient } from '@azure/keyvault-secrets'
 
-import { config } from '#/config.js'
 import { getArmCredential } from '#/adapters/azure/azure-credential.js'
+import { resolveAipEnvironment } from '#/common/helpers/aip-environment.js'
 
 // Opaque, and valid against Key Vault's `^[0-9a-zA-Z-]+$` secret name rule -
 // `credentialId` is this platform's own Mongo `_id`, never derived from a
@@ -19,36 +19,51 @@ function isNotFound(error) {
  * from `@azure/keyvault-secrets` and the shared credential from
  * `azure-credential.js` - deliberately not `arm-client.js`, because Key Vault
  * secrets are a data-plane concern on a different host and token audience
- * than ARM. The client is built lazily on first use (not at construction),
- * same as `arm-client.js`'s credential resolution, so this adapter is safe
- * to construct even when `PROVISIONING_MODE` is "mock" and `keyVault.vaultName`
- * is unset.
- * @param {{client?: import('@azure/keyvault-secrets').SecretClient}} [deps]
+ * than ARM. Each call names the credential's environment, which is resolved
+ * to that environment's tenants vault, so credentials issued into different
+ * environments land in (and are read back from) different vaults. A client is
+ * built lazily on first use of each vault, same as `arm-client.js`'s credential
+ * resolution, so this adapter is safe to construct even when
+ * `PROVISIONING_MODE` is "mock" and no environment is configured.
+ * @param {{createClient?: (vaultUrl: string) => import('@azure/keyvault-secrets').SecretClient, resolveEnvironment?: typeof resolveAipEnvironment}} [deps]
  * @returns {import('#/adapters/credential-vault.js').CredentialVault}
  */
-export function createKeyVaultCredentialVault({ client } = {}) {
-  let resolvedClient = client ?? null
+export function createKeyVaultCredentialVault({
+  createClient = (vaultUrl) => new SecretClient(vaultUrl, getArmCredential()),
+  resolveEnvironment = resolveAipEnvironment
+} = {}) {
+  const clientsByVault = new Map()
 
-  function getClient() {
-    if (!resolvedClient) {
-      const vaultUrl = `https://${config.get('keyVault.vaultName')}.vault.azure.net`
-      resolvedClient = new SecretClient(vaultUrl, getArmCredential())
+  function getClient(environment) {
+    const { tenantsVault } = resolveEnvironment(environment)
+
+    if (!clientsByVault.has(tenantsVault)) {
+      clientsByVault.set(
+        tenantsVault,
+        createClient(`https://${tenantsVault}.vault.azure.net`)
+      )
     }
 
-    return resolvedClient
+    return clientsByVault.get(tenantsVault)
   }
 
   return {
-    async put({ credentialId, secret, tags, expiresOn }) {
-      await getClient().setSecret(secretNameFor(credentialId), secret, {
-        tags,
-        expiresOn
-      })
+    async put({ credentialId, environment, secret, tags, expiresOn }) {
+      await getClient(environment).setSecret(
+        secretNameFor(credentialId),
+        secret,
+        {
+          tags,
+          expiresOn
+        }
+      )
     },
 
-    async get({ credentialId }) {
+    async get({ credentialId, environment }) {
       try {
-        const found = await getClient().getSecret(secretNameFor(credentialId))
+        const found = await getClient(environment).getSecret(
+          secretNameFor(credentialId)
+        )
         return found.value
       } catch (error) {
         if (isNotFound(error)) {
@@ -59,9 +74,11 @@ export function createKeyVaultCredentialVault({ client } = {}) {
       }
     },
 
-    async remove({ credentialId }) {
+    async remove({ credentialId, environment }) {
+      const client = getClient(environment)
+
       try {
-        const poller = await getClient().beginDeleteSecret(
+        const poller = await client.beginDeleteSecret(
           secretNameFor(credentialId)
         )
         await poller.pollUntilDone()
@@ -76,16 +93,13 @@ export function createKeyVaultCredentialVault({ client } = {}) {
     // `put`, this does NOT create a new secret version, since the value
     // (and so the APIM/Foundry key it represents) hasn't changed, only how
     // long Key Vault considers it valid (a renew, not a rotate).
-    async updateExpiry({ credentialId, expiresOn }) {
+    async updateExpiry({ credentialId, environment, expiresOn }) {
+      const client = getClient(environment)
       const name = secretNameFor(credentialId)
-      const current = await getClient().getSecret(name)
-      await getClient().updateSecretProperties(
-        name,
-        current.properties.version,
-        {
-          expiresOn
-        }
-      )
+      const current = await client.getSecret(name)
+      await client.updateSecretProperties(name, current.properties.version, {
+        expiresOn
+      })
     }
   }
 }

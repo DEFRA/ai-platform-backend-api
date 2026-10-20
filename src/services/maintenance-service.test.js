@@ -107,3 +107,77 @@ describe('#pollTeamDeployments', () => {
     expect(sweepGitopsDeployments).toHaveBeenCalledWith(db, { logger })
   })
 })
+
+describe('#flagStraySubscriptions', () => {
+  afterEach(() => {
+    vi.resetModules()
+  })
+
+  function liveRegistry(findStraySubscriptions) {
+    return {
+      isMockedFor: () => false,
+      forCredential: vi.fn(() => ({ issuer: { findStraySubscriptions } }))
+    }
+  }
+
+  test('warns about each stray subscription in the research environment and returns the count', async () => {
+    const { flagStraySubscriptions } =
+      await import('#/services/maintenance-service.js')
+    const find = vi.fn().mockResolvedValue([
+      { name: 'manual-key', reasons: ['unexpected-name'] },
+      { name: 'research-u-m', reasons: ['unexpected-scope'] }
+    ])
+    const logger = { warn: vi.fn(), error: vi.fn() }
+
+    await expect(
+      flagStraySubscriptions(logger, liveRegistry(find))
+    ).resolves.toBe(2)
+
+    expect(find).toHaveBeenCalledWith({ environment: 'infradev' })
+    expect(logger.warn).toHaveBeenCalledTimes(2)
+    expect(logger.warn).toHaveBeenCalledWith(
+      {
+        environment: 'infradev',
+        subscription: 'manual-key',
+        reasons: ['unexpected-name']
+      },
+      expect.stringContaining('not a research key')
+    )
+  })
+
+  test('does not look when research is mocked', async () => {
+    const { flagStraySubscriptions } =
+      await import('#/services/maintenance-service.js')
+    const registry = { isMockedFor: () => true, forCredential: vi.fn() }
+
+    await expect(flagStraySubscriptions(undefined, registry)).resolves.toBe(0)
+    expect(registry.forCredential).not.toHaveBeenCalled()
+  })
+
+  test('logs and reports none when the check itself fails, without throwing', async () => {
+    const { flagStraySubscriptions } =
+      await import('#/services/maintenance-service.js')
+    const find = vi.fn().mockRejectedValue(new Error('ARM request failed'))
+    const logger = { warn: vi.fn(), error: vi.fn() }
+
+    await expect(
+      flagStraySubscriptions(logger, liveRegistry(find))
+    ).resolves.toBe(0)
+    expect(logger.error).toHaveBeenCalledWith(
+      expect.any(Error),
+      expect.stringContaining('stray')
+    )
+  })
+
+  test('works without a logger', async () => {
+    const { flagStraySubscriptions } =
+      await import('#/services/maintenance-service.js')
+    const find = vi
+      .fn()
+      .mockResolvedValue([{ name: 'manual-key', reasons: ['unexpected-name'] }])
+
+    await expect(
+      flagStraySubscriptions(undefined, liveRegistry(find))
+    ).resolves.toBe(1)
+  })
+})

@@ -1,3 +1,5 @@
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
 /**
  * Shared `CredentialIssuer` contract suite, run against every adapter (mock
  * and the nocked Azure APIM adapter) so a new provider's Liskov substitution
@@ -19,9 +21,10 @@ export function describeCredentialIssuerContract(
     modelSlug: 'gpt-4o',
     tier: 'research',
     teamId: null,
-    environment: null,
+    environment: 'infradev',
     ...options.issueParams
   }
+  const { environment } = issueParams
 
   describe(`CredentialIssuer contract: ${gatewayName}`, () => {
     test('issue returns an externalId, a secret, a matching keyHint and an expiresAt', async () => {
@@ -36,7 +39,10 @@ export function describeCredentialIssuerContract(
     test('rotate returns a new secret for the same externalId, with a matching keyHint', async () => {
       const issuer = createIssuer()
       const issued = await issuer.issue(issueParams)
-      const rotated = await issuer.rotate({ externalId: issued.externalId })
+      const rotated = await issuer.rotate({
+        externalId: issued.externalId,
+        environment
+      })
 
       expect(rotated.externalId).toBe(issued.externalId)
       expect(rotated.keyHint).toBe(rotated.secret.slice(-4))
@@ -49,11 +55,12 @@ export function describeCredentialIssuerContract(
       await expect(
         issuer.renew({
           externalId: issued.externalId,
-          expiresAt: new Date(Date.now() + 86400000).toISOString()
+          expiresAt: new Date(Date.now() + MS_PER_DAY).toISOString(),
+          environment
         })
       ).resolves.toMatchObject({ externalId: issued.externalId })
       await expect(
-        issuer.suspend({ externalId: issued.externalId })
+        issuer.suspend({ externalId: issued.externalId, environment })
       ).resolves.toMatchObject({ externalId: issued.externalId })
     })
 
@@ -62,11 +69,17 @@ export function describeCredentialIssuerContract(
       const issued = await issuer.issue(issueParams)
 
       await expect(
-        issuer.revoke({ externalId: issued.externalId })
+        issuer.revoke({ externalId: issued.externalId, environment })
       ).resolves.toMatchObject({ externalId: issued.externalId })
       await expect(
-        issuer.revoke({ externalId: issued.externalId })
+        issuer.revoke({ externalId: issued.externalId, environment })
       ).resolves.toMatchObject({ externalId: issued.externalId })
+    })
+
+    test('findStraySubscriptions resolves to a list', async () => {
+      await expect(
+        createIssuer().findStraySubscriptions({ environment })
+      ).resolves.toEqual(expect.any(Array))
     })
   })
 }

@@ -70,10 +70,18 @@ describe('#tenantOrchestratorRegistry', () => {
     vi.stubEnv('AZURE_ARM_TENANT_ID', 'tenant')
     vi.stubEnv('AZURE_ARM_CLIENT_ID', 'client')
     vi.stubEnv('AZURE_ARM_CLIENT_SECRET', 'secret')
-    vi.stubEnv('AZURE_ARM_SUBSCRIPTION_ID', 'subscription')
-    vi.stubEnv('AZURE_ARM_RESOURCE_GROUP', 'rg')
-    vi.stubEnv('APIM_SERVICE_NAME', 'apim')
-    vi.stubEnv('AZURE_KEY_VAULT_NAME', 'vault')
+    vi.stubEnv(
+      'AIP_ENVIRONMENTS',
+      JSON.stringify({
+        infradev: {
+          subscriptionId: '00000000-0000-0000-0000-000000000000',
+          resourceGroup: 'rg',
+          apimName: 'apim',
+          foundryAccounts: ['aif'],
+          tenantsVault: 'vault'
+        }
+      })
+    )
 
     await expect(
       import('#/adapters/tenant-orchestrator-registry.js')

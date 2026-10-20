@@ -20,6 +20,10 @@ import { getMemberRole } from '#/services/team-service.js'
 // local development included. Research credentials are subscription keys.
 const TEAM_CREDENTIAL_TYPE = 'oauth'
 
+// Research credentials issued before `environment` was persisted were all
+// minted against the hand-built sandbox resources.
+const LEGACY_RESEARCH_ENVIRONMENT = 'sandbox'
+
 /**
  * Best-effort lookup of a user's team, tolerant of the day-1 interim trust
  * model where `x-user-id` is an unverified, caller-asserted value that may
@@ -37,6 +41,42 @@ async function findTeamIdForUser(db, userId) {
     .findOne({ _id: new ObjectId(userId) }, { projection: { teamId: 1 } })
 
   return user?.teamId ?? null
+}
+
+/**
+ * The environment a credential was issued in. Every lifecycle call (renew,
+ * rotate, revoke, suspend, reveal, vault) reads this, never the current
+ * `research.environment`, so a credential issued before a move still acts on
+ * the resources that hold it. Falls back for a research document the
+ * `2026-10-20-research-credentials-environment` backfill has not reached yet;
+ * remove the fallback once it has run in every environment.
+ * @param {{tier?: string, environment?: string|null}} credential
+ * @returns {string|null}
+ */
+export function environmentOf(credential) {
+  return (
+    credential.environment ??
+    (credential.tier === 'research' ? LEGACY_RESEARCH_ENVIRONMENT : null)
+  )
+}
+
+/**
+ * Mongo filter that scopes a research credential lookup to one environment,
+ * counting a document with no `environment` as the legacy `sandbox` one, so a
+ * key left in an old environment never blocks issuing into the new one.
+ * @param {string} environment
+ * @returns {object}
+ */
+function researchEnvironmentFilter(environment) {
+  return environment === LEGACY_RESEARCH_ENVIRONMENT
+    ? {
+        $or: [
+          { environment },
+          { environment: null },
+          { environment: { $exists: false } }
+        ]
+      }
+    : { environment }
 }
 
 /**
@@ -60,12 +100,14 @@ export function externalGatewaySubscriptionIdOf(credential) {
  * is best-effort (omitted if the team has none recorded) rather than a
  * required field, since it is metadata for operators, not an access check.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string|null, environment: string|null}} credential
+ * @param {{teamId: string|null, tier?: string, environment: string|null}} credential
  */
-async function buildVaultTags(db, { teamId, environment }) {
+async function buildVaultTags(db, credential) {
+  const { teamId } = credential
+  const environment = environmentOf(credential)
   const tags = {
     'aip-team': teamId ?? 'research',
-    'aip-environment': environment ?? config.get('cdpEnvironment')
+    ...(environment && { 'aip-environment': environment })
   }
 
   if (teamId && ObjectId.isValid(teamId)) {
@@ -104,6 +146,7 @@ export async function writeSecretToVault(db, vault, credential, secret) {
     await vault.put({
       credentialId: credential._id.toString(),
       issuerKey: credential.issuerKey,
+      environment: environmentOf(credential),
       secret,
       tags,
       expiresOn: credential.expiresAt
@@ -156,7 +199,8 @@ export async function issueCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const { tier = 'research', teamId, environment, userId, modelSlug } = params
+  const { tier = 'research', teamId, userId, modelSlug } = params
+  const environment = resolveIssueEnvironment(tier, params.environment)
 
   if (tier !== 'team') {
     // Guards the check-for-reusable-pending/failed-doc-then-write below
@@ -170,7 +214,12 @@ export async function issueCredential(
     )
 
     try {
-      return await issueCredentialForParams(db, params, registry, vault)
+      return await issueCredentialForParams(
+        db,
+        { ...params, environment },
+        registry,
+        vault
+      )
     } finally {
       await lock.free()
     }
@@ -189,6 +238,33 @@ export async function issueCredential(
   } finally {
     await lock.free()
   }
+}
+
+/**
+ * A research key is issued into the configured research environment; naming a
+ * different one is refused, so a caller can never aim the portal's API
+ * Management role at an instance this deployment was not set up for. A team
+ * credential's environment is the team deployment's, passed through.
+ * @param {'research'|'team'} tier
+ * @param {string|undefined} requested
+ * @returns {string|undefined}
+ */
+function resolveIssueEnvironment(tier, requested) {
+  if (tier === 'team') {
+    return requested
+  }
+
+  const researchEnvironment = config.get('research.environment')
+
+  if (requested && requested !== researchEnvironment) {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Research keys are not available in this environment',
+      'environment-not-available'
+    )
+  }
+
+  return researchEnvironment
 }
 
 async function issueCredentialForParams(
@@ -293,9 +369,12 @@ async function issueCredentialForParams(
 
     resolvedTeamId = teamId
   } else {
-    const existingCredential = await db
-      .collection('credentials')
-      .findOne({ userId, modelSlug, status: { $in: ['active', 'expired'] } })
+    const existingCredential = await db.collection('credentials').findOne({
+      userId,
+      modelSlug,
+      ...researchEnvironmentFilter(environment),
+      status: { $in: ['active', 'expired'] }
+    })
 
     if (existingCredential?.status === 'active') {
       throw boomWithCode(
@@ -359,6 +438,7 @@ async function issueCredentialForParams(
           userId,
           modelSlug,
           tier: 'research',
+          ...researchEnvironmentFilter(environment),
           status: { $in: ['pending', 'failed'] }
         })
       : null
@@ -717,7 +797,8 @@ export async function renewCredential(
     const { issuer } = registry.forCredential(credential)
     await issuer.renew({
       externalId: externalGatewaySubscriptionIdOf(credential),
-      expiresAt
+      expiresAt,
+      environment: environmentOf(credential)
     })
 
     const updated = await db.collection('credentials').findOneAndUpdate(
@@ -733,6 +814,7 @@ export async function renewCredential(
       await vault.updateExpiry({
         credentialId: id,
         issuerKey: credential.issuerKey,
+        environment: environmentOf(credential),
         expiresOn: new Date(expiresAt)
       })
 
@@ -806,7 +888,8 @@ export async function rotateCredential(
 
     const { issuer } = registry.forCredential(credential)
     const rotated = await issuer.rotate({
-      externalId: externalGatewaySubscriptionIdOf(credential)
+      externalId: externalGatewaySubscriptionIdOf(credential),
+      environment: environmentOf(credential)
     })
 
     const now = new Date().toISOString()
@@ -873,7 +956,8 @@ export async function revokeCredential(
 
     const { issuer } = registry.forCredential(credential)
     await issuer.revoke({
-      externalId: externalGatewaySubscriptionIdOf(credential)
+      externalId: externalGatewaySubscriptionIdOf(credential),
+      environment: environmentOf(credential)
     })
 
     // Soft-deletes for 90 days. Best-effort: the credential is already
@@ -882,7 +966,8 @@ export async function revokeCredential(
     try {
       await vault.remove({
         credentialId: credential._id.toString(),
-        issuerKey: credential.issuerKey
+        issuerKey: credential.issuerKey,
+        environment: environmentOf(credential)
       })
     } catch {
       // intentionally swallowed, see comment above
@@ -968,7 +1053,8 @@ export async function revealCredential(
 
   const secret = await vault.get({
     credentialId: credential._id.toString(),
-    issuerKey: credential.issuerKey
+    issuerKey: credential.issuerKey,
+    environment: environmentOf(credential)
   })
 
   if (!secret) {

@@ -50,6 +50,40 @@ describe('#credentials routes', () => {
     })
   })
 
+  test('POST /v1/credentials records the research environment on the credential, defaulting to the configured one', async () => {
+    const { result } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': 'env-user-1', 'idempotency-key': randomUUID() },
+      payload: { modelSlug: 'gpt-4o' }
+    })
+
+    expect(result.credential.environment).toBe('infradev')
+  })
+
+  test('POST /v1/credentials refuses a research environment this instance is not configured for', async () => {
+    const { result, statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': 'env-user-2', 'idempotency-key': randomUUID() },
+      payload: { modelSlug: 'gpt-4o', environment: 'sandbox' }
+    })
+
+    expect(statusCode).toBe(403)
+    expect(result.code).toBe('environment-not-available')
+  })
+
+  test('POST /v1/credentials rejects an environment that is not an environment name', async () => {
+    const { statusCode } = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': 'env-user-3', 'idempotency-key': randomUUID() },
+      payload: { modelSlug: 'gpt-4o', environment: 'Infra Dev' }
+    })
+
+    expect(statusCode).toBe(400)
+  })
+
   test('POST /v1/credentials replays without a secret for a repeated Idempotency-Key', async () => {
     const idempotencyKey = randomUUID()
     const headers = { 'x-user-id': 'user-2', 'idempotency-key': idempotencyKey }
@@ -126,6 +160,36 @@ describe('#credentials routes', () => {
     expect(statusCode).toBe(409)
     expect(result.code).toBe('credential-expired-use-renew')
   })
+
+  test.each([
+    ['an expired', { status: 'expired', environment: 'sandbox' }],
+    ['an active', { status: 'active', environment: 'sandbox' }],
+    ['a legacy expired', { status: 'expired' }]
+  ])(
+    'POST /v1/credentials issues into the configured environment past %s key left in the sandbox',
+    async (_label, old) => {
+      const userId = `user-moved-${randomUUID()}`
+
+      await server.db.collection('credentials').insertOne({
+        userId,
+        modelSlug: 'gpt-5-mini',
+        tier: 'research',
+        type: 'apim-subscription',
+        createdAt: new Date().toISOString(),
+        ...old
+      })
+
+      const { result, statusCode } = await server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+        payload: { modelSlug: 'gpt-5-mini' }
+      })
+
+      expect(statusCode).toBe(201)
+      expect(result.credential.environment).toBe('infradev')
+    }
+  )
 
   test('POST /v1/credentials rejects a model that does not exist', async () => {
     const { result, statusCode } = await server.inject({
