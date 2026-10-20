@@ -1,7 +1,7 @@
 import { invalidateModelsCache } from '#/services/models-service.js'
 
 // Pinned data-plane api-version per apiProfile, verified against the sandbox
-// gateway (docs/plans/implemented/integration/research-tier-integration-plan.md in
+// gateway (docs/plans/implemented/02-research-tier.md in
 // ai-platform-frontend): `responses` 404s on the chat-completions default.
 // Takes precedence over whatever the source supplies for that profile (see
 // normalizeModel below) - a source has been seen shipping a stale generic
