@@ -94,13 +94,13 @@ export async function expireCredentials(
  * than this backend created it. Logged, never revoked: an engineer decides.
  * A failed check is logged and counts as none found, so it never blocks the
  * rest of the sweep.
- * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('pino').Logger} [logger]
+ * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @returns {Promise<number>} how many stray subscriptions were found
  */
 export async function flagStraySubscriptions(
-  registry = credentialIssuerRegistry,
-  logger
+  logger,
+  registry = credentialIssuerRegistry
 ) {
   if (registry.isMockedFor('research')) {
     return 0

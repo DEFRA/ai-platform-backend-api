@@ -35,10 +35,7 @@ export const maintenance = {
       request.db
     )
 
-    const straySubscriptions = await flagStraySubscriptions(
-      undefined,
-      request.logger
-    )
+    const straySubscriptions = await flagStraySubscriptions(request.logger)
 
     return h.response({
       expired,

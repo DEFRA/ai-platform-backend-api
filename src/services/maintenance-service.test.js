@@ -130,7 +130,7 @@ describe('#flagStraySubscriptions', () => {
     const logger = { warn: vi.fn(), error: vi.fn() }
 
     await expect(
-      flagStraySubscriptions(liveRegistry(find), logger)
+      flagStraySubscriptions(logger, liveRegistry(find))
     ).resolves.toBe(2)
 
     expect(find).toHaveBeenCalledWith({ environment: 'infradev' })
@@ -150,7 +150,7 @@ describe('#flagStraySubscriptions', () => {
       await import('#/services/maintenance-service.js')
     const registry = { isMockedFor: () => true, forCredential: vi.fn() }
 
-    await expect(flagStraySubscriptions(registry)).resolves.toBe(0)
+    await expect(flagStraySubscriptions(undefined, registry)).resolves.toBe(0)
     expect(registry.forCredential).not.toHaveBeenCalled()
   })
 
@@ -161,7 +161,7 @@ describe('#flagStraySubscriptions', () => {
     const logger = { warn: vi.fn(), error: vi.fn() }
 
     await expect(
-      flagStraySubscriptions(liveRegistry(find), logger)
+      flagStraySubscriptions(logger, liveRegistry(find))
     ).resolves.toBe(0)
     expect(logger.error).toHaveBeenCalledWith(
       expect.any(Error),
@@ -176,6 +176,8 @@ describe('#flagStraySubscriptions', () => {
       .fn()
       .mockResolvedValue([{ name: 'manual-key', reasons: ['unexpected-name'] }])
 
-    await expect(flagStraySubscriptions(liveRegistry(find))).resolves.toBe(1)
+    await expect(
+      flagStraySubscriptions(undefined, liveRegistry(find))
+    ).resolves.toBe(1)
   })
 })

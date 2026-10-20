@@ -67,10 +67,7 @@ describe('#credentialExpiryScheduler', () => {
     )
     expect(reconcilePendingCredentials).toHaveBeenCalledWith(server.db)
     expect(pollTeamDeployments).toHaveBeenCalledWith(server.db, server.logger)
-    expect(flagStraySubscriptions).toHaveBeenCalledWith(
-      undefined,
-      server.logger
-    )
+    expect(flagStraySubscriptions).toHaveBeenCalledWith(server.logger)
     expect(server.logger.debug).toHaveBeenCalledWith(
       result,
       'Credential expiry sweep ran'

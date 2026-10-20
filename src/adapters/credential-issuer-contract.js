@@ -1,3 +1,5 @@
+const MS_PER_DAY = 24 * 60 * 60 * 1000
+
 /**
  * Shared `CredentialIssuer` contract suite, run against every adapter (mock
  * and the nocked Azure APIM adapter) so a new provider's Liskov substitution
@@ -53,7 +55,7 @@ export function describeCredentialIssuerContract(
       await expect(
         issuer.renew({
           externalId: issued.externalId,
-          expiresAt: new Date(Date.now() + 86400000).toISOString(),
+          expiresAt: new Date(Date.now() + MS_PER_DAY).toISOString(),
           environment
         })
       ).resolves.toMatchObject({ externalId: issued.externalId })

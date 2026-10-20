@@ -41,10 +41,7 @@ export const credentialExpiryScheduler = {
             server.db,
             server.logger
           )
-          const straySubscriptions = await flagStraySubscriptions(
-            undefined,
-            server.logger
-          )
+          const straySubscriptions = await flagStraySubscriptions(server.logger)
           const result = {
             expired,
             suspended,

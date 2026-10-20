@@ -57,11 +57,30 @@ function strayReasons(subscription, researchScope) {
   return reasons
 }
 
-// Only follows a next link that stays on the ARM host.
+// Follows a next link only while it stays on the ARM host.
 function nextArmPath(page) {
   return page?.nextLink?.startsWith(ARM_ORIGIN)
     ? page.nextLink.slice(ARM_ORIGIN.length)
     : null
+}
+
+// Pages are chained, so each request needs the previous page's next link.
+async function listStraySubscriptions(armClient, path, researchScope) {
+  const page = await armClient.request('GET', path)
+  const strays = (page?.value ?? [])
+    .map((subscription) => ({
+      name: subscription.name,
+      reasons: strayReasons(subscription, researchScope)
+    }))
+    .filter(({ reasons }) => reasons.length > 0)
+  const next = nextArmPath(page)
+
+  return next
+    ? [
+        ...strays,
+        ...(await listStraySubscriptions(armClient, next, researchScope))
+      ]
+    : strays
 }
 
 /**
@@ -199,25 +218,12 @@ export function createApimCredentialIssuer({
     // that is not a research key on the research API is reported.
     async findStraySubscriptions({ environment }) {
       const base = baseFor(environment)
-      const researchScope = `${base}/apis/${config.get('apim.researchApiId')}`
-      const strays = []
-      let path = `${base}/subscriptions?api-version=${API_VERSION}`
 
-      while (path) {
-        const page = await armClient.request('GET', path)
-
-        for (const subscription of page?.value ?? []) {
-          const reasons = strayReasons(subscription, researchScope)
-
-          if (reasons.length > 0) {
-            strays.push({ name: subscription.name, reasons })
-          }
-        }
-
-        path = nextArmPath(page)
-      }
-
-      return strays
+      return listStraySubscriptions(
+        armClient,
+        `${base}/subscriptions?api-version=${API_VERSION}`,
+        `${base}/apis/${config.get('apim.researchApiId')}`
+      )
     }
   }
 }
