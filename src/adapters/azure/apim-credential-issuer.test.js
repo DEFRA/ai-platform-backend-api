@@ -315,6 +315,26 @@ describe('createApimCredentialIssuer', () => {
       ).resolves.toEqual([])
     })
 
+    test.each([
+      'https://management.azure.com.attacker.example/subscriptions',
+      'https://management.azure.com@attacker.example/subscriptions'
+    ])(
+      'does not follow a next link that only starts with the ARM origin: %s',
+      async (nextLink) => {
+        nock.cleanAll()
+        const scope = nock(ARM_BASE_URL)
+          .get(`${SERVICE_BASE_PATH}/subscriptions?api-version=2024-05-01`)
+          .reply(200, { value: [], nextLink })
+
+        await expect(
+          createAzureIssuer().findStraySubscriptions({
+            environment: 'infradev'
+          })
+        ).resolves.toEqual([])
+        expect(scope.isDone()).toBe(true)
+      }
+    )
+
     test('does not follow a next link off the ARM host', async () => {
       nock.cleanAll()
       nock(ARM_BASE_URL)

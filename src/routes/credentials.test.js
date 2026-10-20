@@ -161,6 +161,36 @@ describe('#credentials routes', () => {
     expect(result.code).toBe('credential-expired-use-renew')
   })
 
+  test.each([
+    ['an expired', { status: 'expired', environment: 'sandbox' }],
+    ['an active', { status: 'active', environment: 'sandbox' }],
+    ['a legacy expired', { status: 'expired' }]
+  ])(
+    'POST /v1/credentials issues into the configured environment past %s key left in the sandbox',
+    async (_label, old) => {
+      const userId = `user-moved-${randomUUID()}`
+
+      await server.db.collection('credentials').insertOne({
+        userId,
+        modelSlug: 'gpt-5-mini',
+        tier: 'research',
+        type: 'apim-subscription',
+        createdAt: new Date().toISOString(),
+        ...old
+      })
+
+      const { result, statusCode } = await server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+        payload: { modelSlug: 'gpt-5-mini' }
+      })
+
+      expect(statusCode).toBe(201)
+      expect(result.credential.environment).toBe('infradev')
+    }
+  )
+
   test('POST /v1/credentials rejects a model that does not exist', async () => {
     const { result, statusCode } = await server.inject({
       method: 'POST',

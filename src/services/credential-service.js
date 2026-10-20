@@ -61,6 +61,25 @@ export function environmentOf(credential) {
 }
 
 /**
+ * Mongo filter that scopes a research credential lookup to one environment,
+ * counting a document with no `environment` as the legacy `sandbox` one, so a
+ * key left in an old environment never blocks issuing into the new one.
+ * @param {string} environment
+ * @returns {object}
+ */
+function researchEnvironmentFilter(environment) {
+  return environment === LEGACY_RESEARCH_ENVIRONMENT
+    ? {
+        $or: [
+          { environment },
+          { environment: null },
+          { environment: { $exists: false } }
+        ]
+      }
+    : { environment }
+}
+
+/**
  * Reads the provider-neutral gateway subscription id, falling back to the
  * pre-rename `apimSubscriptionId` field for documents the backfill hasn't
  * reached yet (see `src/common/backfills/registry.js`). Exported so
@@ -350,9 +369,12 @@ async function issueCredentialForParams(
 
     resolvedTeamId = teamId
   } else {
-    const existingCredential = await db
-      .collection('credentials')
-      .findOne({ userId, modelSlug, status: { $in: ['active', 'expired'] } })
+    const existingCredential = await db.collection('credentials').findOne({
+      userId,
+      modelSlug,
+      ...researchEnvironmentFilter(environment),
+      status: { $in: ['active', 'expired'] }
+    })
 
     if (existingCredential?.status === 'active') {
       throw boomWithCode(
@@ -416,6 +438,7 @@ async function issueCredentialForParams(
           userId,
           modelSlug,
           tier: 'research',
+          ...researchEnvironmentFilter(environment),
           status: { $in: ['pending', 'failed'] }
         })
       : null

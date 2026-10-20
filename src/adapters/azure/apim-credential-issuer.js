@@ -57,9 +57,11 @@ function strayReasons(subscription, researchScope) {
   return reasons
 }
 
-// Follows a next link only while it stays on the ARM host.
+// Follows a next link only while it stays on the ARM host: the origin must be
+// followed by `/`, so `management.azure.com.evil.example` and
+// `management.azure.com@evil.example` are refused.
 function nextArmPath(page) {
-  return page?.nextLink?.startsWith(ARM_ORIGIN)
+  return page?.nextLink?.startsWith(`${ARM_ORIGIN}/`)
     ? page.nextLink.slice(ARM_ORIGIN.length)
     : null
 }

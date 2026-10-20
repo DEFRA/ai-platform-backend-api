@@ -403,7 +403,7 @@ revoke, reveal and expiry acts on **that** environment's instance and vault, not
 one. To keep credentials issued before a move working, leave the old environment in
 `AIP_ENVIRONMENTS`: credentials issued before `environment` was persisted count as `sandbox`
 (the hand-built resources), so a deployment that still holds any needs a `sandbox` entry until they
-have expired. The scheduled sweep also logs a warning for any API Management subscription in the
+have been revoked or retired (an expired key can still be renewed or revoked, which needs the entry). The scheduled sweep also logs a warning for any API Management subscription in the
 research environment that is not a `research-*` key on the research API.
 
 `armAuth.authMethod` (`AZURE_ARM_AUTH_METHOD`) defaults to `client-secret`, which is the only
