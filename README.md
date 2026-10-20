@@ -348,17 +348,18 @@ its `allowedDeployments` is read from the team's deployments on every response, 
 removed model leaves the credential at once. A revoked credential keeps what it covered when it was
 revoked.
 
-| Variable                           | Default                         | Purpose                                                                                                                                                                                |
-| :--------------------------------- | :------------------------------ | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`)                                    |
-| `TEAM_ENVIRONMENTS`                | `infradev`                      | Comma-separated environments this instance may deploy a team's models to (D1): `infradev` on the CDP dev instance, `sandbox` on test; anything else is `403 environment-not-available` |
-| `GITOPS_TENANTS_REPO`              | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                                                           |
-| `GITOPS_DEPLOYMENTS_REPO`          | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                                                      |
-| `GITOPS_POLL_MIN_INTERVAL_MS`      | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                                                           |
-| `GITOPS_CLAIM_LEASE_MS`            | `600000`                        | How long a claimed retry, revert or abandon waits for its dispatch before another poll may claim it again                                                                              |
-| `TEAM_DEFAULT_TOKENS_PER_MINUTE`   | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                                                           |
-| `TEAM_DEFAULT_REQUESTS_PER_MINUTE` | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                                                         |
-| `AIP_ENVIRONMENTS`                 | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group                                                          |
+| Variable                           | Default                         | Purpose                                                                                                                                                                                                    |
+| :--------------------------------- | :------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`)                                                        |
+| `TEAM_ENVIRONMENTS`                | `infradev`                      | Comma-separated environments this instance may deploy a team's models to (D1): `infradev` on the CDP dev instance, `sandbox` on test; anything else is `403 environment-not-available`                     |
+| `GITOPS_TENANTS_REPO`              | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                                                                               |
+| `GITOPS_DEPLOYMENTS_REPO`          | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                                                                          |
+| `GITOPS_POLL_MIN_INTERVAL_MS`      | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                                                                               |
+| `GITOPS_CLAIM_LEASE_MS`            | `600000`                        | How long a claimed retry, revert or abandon waits for its dispatch before another poll may claim it again                                                                                                  |
+| `TEAM_DEFAULT_TOKENS_PER_MINUTE`   | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                                                                               |
+| `TEAM_DEFAULT_REQUESTS_PER_MINUTE` | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                                                                             |
+| `AIP_ENVIRONMENTS`                 | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group, and research keys are issued into the entry named by `RESEARCH_ENVIRONMENT` |
+| `RESEARCH_ENVIRONMENT`             | `infradev`                      | The `AIP_ENVIRONMENTS` entry research keys are issued into; live mode refuses to start when it is missing or lacks `apimName` or `tenantsVault`                                                            |
 
 ```json
 {
@@ -378,24 +379,32 @@ Deployments and Pull requests read to poll. Polls are conditional on ETags, at m
 operation per interval, back off on rate limits and skip finished operations; the maintenance
 scheduler also sweeps operations nobody is watching.
 
-### Testing against live Azure resources (sandbox)
+### Testing against live Azure resources
 
 By default the credential issuer and vault run in-memory (`PROVISIONING_MODE=mock`, the default) -
-no Azure access needed. To run locally against the **real** sandbox APIM/Key Vault from the
-[research tier integration plan](../ai-platform-frontend/docs/plans/implemented/integration/research-tier-integration-plan.md)'s
-Phase 0, create a `.env` file in the repo root (already gitignored; `npm run dev`'s
-`--env-file-if-exists=.env` loads it automatically - no other wiring needed) with:
+no Azure access needed. To run locally against **real** resources, create a `.env` file in the
+repo root (already gitignored; `npm run dev`'s `--env-file-if-exists=.env` loads it automatically -
+no other wiring needed) with:
 
-| Variable                    | Value                                                             |
-| :-------------------------- | :---------------------------------------------------------------- |
-| `PROVISIONING_MODE`         | `live` (`azure` is a deprecated alias and still works)            |
-| `AZURE_ARM_TENANT_ID`       | The ARM app registration's tenant ID                              |
-| `AZURE_ARM_CLIENT_ID`       | The ARM app registration's client ID                              |
-| `AZURE_ARM_CLIENT_SECRET`   | The ARM app registration's client secret                          |
-| `AZURE_ARM_SUBSCRIPTION_ID` | The sandbox subscription ID (`az account show --query id -o tsv`) |
-| `AZURE_ARM_RESOURCE_GROUP`  | `SNDAIEEXPRGP1401` (per the plan's Phase 0 STATUS note)           |
-| `APIM_SERVICE_NAME`         | `DEPLOYTESTDEFRA` (per the plan's Phase 0 STATUS note)            |
-| `AZURE_KEY_VAULT_NAME`      | `kv-aip-sandbox-tenants` (per the plan's 0.9 step)                |
+| Variable                  | Value                                                                           |
+| :------------------------ | :------------------------------------------------------------------------------ |
+| `PROVISIONING_MODE`       | `live` (`azure` is a deprecated alias and still works)                          |
+| `AZURE_ARM_TENANT_ID`     | The ARM app registration's tenant ID                                            |
+| `AZURE_ARM_CLIENT_ID`     | The ARM app registration's client ID                                            |
+| `AZURE_ARM_CLIENT_SECRET` | The ARM app registration's client secret                                        |
+| `RESEARCH_ENVIRONMENT`    | The `AIP_ENVIRONMENTS` entry research keys are issued into (default `infradev`) |
+| `AIP_ENVIRONMENTS`        | JSON as in the table above; the entry must carry `apimName` and `tenantsVault`  |
+
+The subscription, resource group, API Management instance and Key Vault the research tier uses are
+all read from the `AIP_ENVIRONMENTS` entry named by `RESEARCH_ENVIRONMENT` - there are no separate
+variables for them, and the backend refuses to start in live mode when that entry is missing.
+Each research credential records the environment it was issued in, and every later renew, rotate,
+revoke, reveal and expiry acts on **that** environment's instance and vault, not the configured
+one. To keep credentials issued before a move working, leave the old environment in
+`AIP_ENVIRONMENTS`: credentials issued before `environment` was persisted count as `sandbox`
+(the hand-built resources), so a deployment that still holds any needs a `sandbox` entry until they
+have expired. The scheduled sweep also logs a warning for any API Management subscription in the
+research environment that is not a `research-*` key on the research API.
 
 `armAuth.authMethod` (`AZURE_ARM_AUTH_METHOD`) defaults to `client-secret`, which is the only
 method available locally - there is no AWS STS to federate a token from outside CDP. Every deployed
@@ -407,20 +416,18 @@ environment via config only; see `azure-credential.js` for the credential constr
 `AZURE_ARM_FEDERATED_AUDIENCE` (default `api://AzureADTokenExchange`) for the federated credential's
 configured audience.
 
-`APIM_RESEARCH_API_ID` needs no override - its `research` default already matches the API built in
-0.6/0.7. `CATALOGUE_SOURCE` can stay on its `file` default: the seed fixture already carries the
-real Foundry model slugs recorded in Phase 2 (`gpt-4o`, `gpt-4.1-nano`, etc.), so there's no need to
-also set `CATALOGUE_SOURCE=github`/`GITHUB_TOKEN` just to smoke test credential issuing.
+`APIM_RESEARCH_API_ID` needs no override - its `research` default matches the platform-owned
+`research` API. `CATALOGUE_SOURCE` can stay on its `file` default for a smoke test of credential
+issuing: the seed fixture carries the research model slugs.
 
 **Issuing, rotating, revoking and revealing a credential only talks to ARM
 (`management.azure.com`) and Key Vault (`{vault}.vault.azure.net`) - both public management-plane
 endpoints reachable from any normal machine.** Calling the model itself goes through a third,
-separate endpoint - the `research` API's own gateway - which for this sandbox instance is also
-**public**: `DEPLOYTESTDEFRA`'s gateway is the APIM default hostname
-`https://deploytestdefra.azure-api.net` (confirmed when the plan's 0.8 smoke test curl succeeded
-from an ordinary machine, no VPN/Bastion/jump box needed). So the full loop - issue a credential,
-call the model with it in Postman/curl, reveal it again later, rotate or revoke it - is all
-testable from a normal dev machine.
+separate endpoint - the `research` API's own gateway, the API Management instance's hostname.
+While the platform runs with public access (`network.mode: public-minimal`) that is reachable from
+an ordinary machine too, so the full loop - issue a credential, call the model with it in
+Postman/curl, reveal it again later, rotate or revoke it - is testable from a normal dev machine.
+Below, `<gateway-host>` is the environment's API Management gateway hostname.
 
 A minimal smoke test once the env vars above are set and `npm run dev` is running:
 
@@ -435,20 +442,20 @@ Take the `secret` from that response and call the model directly against the gat
 request to import into Postman - `POST`, these two headers, the body below):
 
 ```bash
-# chat-completions operation - {deployment-id} is the modelSlug, e.g. gpt-4o
-curl -s -X POST "https://deploytestdefra.azure-api.net/research/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview" \
+# chat-completions operation - {deployment-id} is the deployment name, e.g. gpt-4o
+curl -s -X POST "https://<gateway-host>/research/openai/deployments/gpt-4o/chat/completions?api-version=2024-05-01-preview" \
   -H "Ocp-Apim-Subscription-Key: <secret>" -H "Content-Type: application/json" \
   -d '{"messages":[{"role":"user","content":"hello"}]}'
 
 # responses operation - model is a body field, not a URL segment, and needs a newer api-version
-curl -s -X POST "https://deploytestdefra.azure-api.net/research/openai/responses?api-version=2025-03-01-preview" \
+curl -s -X POST "https://<gateway-host>/research/openai/responses?api-version=2025-03-01-preview" \
   -H "Ocp-Apim-Subscription-Key: <secret>" -H "Content-Type: application/json" \
   -d '{"model":"gpt-4o","input":"hello"}'
 ```
 
-Allowed `{deployment-id}`/`model` values: `gpt-4.1-nano`, `gpt-5-nano`, `gpt-5-nano-2`, `gpt-5-mini`,
-`gpt-5.3-codex`, `gpt-4o`, `gpt-4o-2` (anything else, e.g. the excluded `text-embedding-ada-002`,
-returns `403 model-not-granted`; no key returns `401`).
+Allowed `{deployment-id}`/`model` values are the names in the environment's platform-owned
+`research.json` (`allowedDeployments`); anything else, e.g. the excluded `text-embedding-ada-002`,
+returns `403 model-not-granted`, and no key returns `401`.
 
 ```bash
 # Reveal it again later (replace {id} with the credential _id from the issue response above)

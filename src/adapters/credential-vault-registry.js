@@ -36,10 +36,11 @@ export function createCredentialVaultRegistry(vaultsByKey) {
   }
 }
 
-// Keyed by catalogue gateway id. Safe to construct with the gateway's
-// config unset - clients are built lazily on first request.
+// Keyed by catalogue gateway id. Safe to construct with no environment
+// configured - the vault is resolved per call from the credential's own
+// environment, and its client is built lazily on first use.
 const vaultFactories = {
-  [AZURE_APIM]: createKeyVaultCredentialVault
+  [AZURE_APIM]: () => createKeyVaultCredentialVault()
 }
 
 const vaultsByKey = { mock: mockCredentialVault }

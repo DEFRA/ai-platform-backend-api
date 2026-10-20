@@ -59,6 +59,7 @@ describe('#maintenance routes', () => {
     expect(result.suspended).toBeGreaterThanOrEqual(1)
     expect(result).toHaveProperty('reconciled')
     expect(result).toHaveProperty('vaultReconciled')
+    expect(result.straySubscriptions).toBe(0)
   })
 
   test('POST /maintenance/expire-credentials retries a credential flagged vaultState: unwritten', async () => {

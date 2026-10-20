@@ -78,5 +78,9 @@ export const mockCredentialIssuer = {
 
   async suspend({ externalId }) {
     return { externalId }
+  },
+
+  async findStraySubscriptions() {
+    return []
   }
 }

@@ -1,11 +1,16 @@
+const infradev = {
+  subscriptionId: '00000000-0000-0000-0000-000000000000',
+  resourceGroup: 'rg-placeholder',
+  apimName: 'apim-placeholder',
+  foundryAccounts: ['aif-placeholder'],
+  tenantsVault: 'kv-placeholder'
+}
+
 const armEnv = {
   AZURE_ARM_TENANT_ID: 'tenant',
   AZURE_ARM_CLIENT_ID: 'client',
   AZURE_ARM_CLIENT_SECRET: 'secret',
-  AZURE_ARM_SUBSCRIPTION_ID: 'subscription',
-  AZURE_ARM_RESOURCE_GROUP: 'rg',
-  APIM_SERVICE_NAME: 'apim',
-  AZURE_KEY_VAULT_NAME: 'vault'
+  AIP_ENVIRONMENTS: JSON.stringify({ infradev })
 }
 
 // Federated auth has no client secret - the AWS STS token proves identity instead.
@@ -101,6 +106,69 @@ describe('#config provisioning', () => {
   })
 })
 
+describe('#config research environment', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  test('defaults to infradev', async () => {
+    const { config } = await loadConfig({})
+
+    expect(config.get('research.environment')).toBe('infradev')
+  })
+
+  test('refuses a research environment that is not an environment name', async () => {
+    await expect(
+      loadConfig({ RESEARCH_ENVIRONMENT: 'Infra Dev' })
+    ).rejects.toThrow('RESEARCH_ENVIRONMENT must be a lowercase environment')
+  })
+
+  test('live mode refuses a research environment missing from AIP_ENVIRONMENTS', async () => {
+    await expect(
+      loadConfig({
+        PROVISIONING_MODE: 'live',
+        RESEARCH_ENVIRONMENT: 'sandbox',
+        ...armEnv
+      })
+    ).rejects.toThrow(
+      'RESEARCH_ENVIRONMENT "sandbox" must be in AIP_ENVIRONMENTS'
+    )
+  })
+
+  test('live mode refuses to boot with no AIP_ENVIRONMENTS at all', async () => {
+    await expect(
+      loadConfig({
+        PROVISIONING_MODE: 'live',
+        ...armEnv,
+        AIP_ENVIRONMENTS: '{}'
+      })
+    ).rejects.toThrow('RESEARCH_ENVIRONMENT "infradev" must be in')
+  })
+
+  test('live mode accepts a research environment that is configured', async () => {
+    const { config } = await loadConfig({
+      PROVISIONING_MODE: 'live',
+      ...armEnv
+    })
+
+    expect(config.get('research.environment')).toBe('infradev')
+  })
+
+  test('does not check the environment in mock mode or when research is mocked', async () => {
+    await expect(
+      loadConfig({ PROVISIONING_MODE: 'mock', AIP_ENVIRONMENTS: '{}' })
+    ).resolves.toBeDefined()
+    await expect(
+      loadConfig({
+        PROVISIONING_MODE: 'live',
+        MOCK_TIERS: 'research',
+        ...armEnv,
+        AIP_ENVIRONMENTS: '{}'
+      })
+    ).resolves.toBeDefined()
+  })
+})
+
 describe('#config armAuth.authMethod', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
@@ -156,14 +224,6 @@ describe('#config tenant orchestrator and GitOps', () => {
   })
 
   test('parses AIP_ENVIRONMENTS from JSON', async () => {
-    const infradev = {
-      subscriptionId: '00000000-0000-0000-0000-000000000000',
-      resourceGroup: 'rg-placeholder',
-      apimName: 'apim-placeholder',
-      foundryAccounts: ['aif-placeholder'],
-      tenantsVault: 'kv-placeholder'
-    }
-
     const { config } = await loadConfig({
       AIP_ENVIRONMENTS: JSON.stringify({ infradev })
     })

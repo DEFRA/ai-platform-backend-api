@@ -1,9 +1,12 @@
 import { recordAuditEvent } from '#/services/audit-service.js'
+import { config } from '#/config.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
+import { AZURE_APIM } from '#/adapters/gateway-keys.js'
 import {
   writeSecretToVault,
-  externalGatewaySubscriptionIdOf
+  externalGatewaySubscriptionIdOf,
+  environmentOf
 } from '#/services/credential-service.js'
 import { sweepGitopsDeployments } from '#/services/team-deployment-gitops.js'
 import { requireLock } from '#/common/helpers/mongo-lock.js'
@@ -53,7 +56,8 @@ export async function expireCredentials(
       // getting stuck 'expired' here while still active upstream forever.
       const { issuer } = registry.forCredential(credential)
       await issuer.suspend({
-        externalId: externalGatewaySubscriptionIdOf(credential)
+        externalId: externalGatewaySubscriptionIdOf(credential),
+        environment: environmentOf(credential)
       })
       suspended += 1
 
@@ -81,6 +85,48 @@ export async function expireCredentials(
   }
 
   return { expired, suspended }
+}
+
+/**
+ * Reports any API Management subscription in the research environment that
+ * is not a `research-*` key scoped to the research API. The portal's role
+ * can write a subscription for any API, so a stray one means something other
+ * than this backend created it. Logged, never revoked: an engineer decides.
+ * A failed check is logged and counts as none found, so it never blocks the
+ * rest of the sweep.
+ * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {import('pino').Logger} [logger]
+ * @returns {Promise<number>} how many stray subscriptions were found
+ */
+export async function flagStraySubscriptions(
+  registry = credentialIssuerRegistry,
+  logger
+) {
+  if (registry.isMockedFor('research')) {
+    return 0
+  }
+
+  const environment = config.get('research.environment')
+
+  try {
+    const { issuer } = registry.forCredential({ issuerKey: AZURE_APIM })
+    const strays = await issuer.findStraySubscriptions({ environment })
+
+    for (const stray of strays) {
+      logger?.warn(
+        { environment, subscription: stray.name, reasons: stray.reasons },
+        'API Management subscription is not a research key on the research API'
+      )
+    }
+
+    return strays.length
+  } catch (error) {
+    logger?.error(
+      error,
+      'Failed to check for stray API Management subscriptions'
+    )
+    return 0
+  }
 }
 
 /**
@@ -143,7 +189,7 @@ async function reconcileUnwrittenVaultSecrets(db, registry, vault) {
         modelSlug: credential.modelSlug,
         tier: credential.tier,
         teamId: credential.teamId,
-        environment: credential.environment
+        environment: environmentOf(credential)
       })
 
       if (await writeSecretToVault(db, vault, credential, reissued.secret)) {

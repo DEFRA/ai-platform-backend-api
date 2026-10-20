@@ -4,7 +4,8 @@ import Boom from '@hapi/boom'
 import { config } from '#/config.js'
 import {
   expireCredentials,
-  reconcilePendingCredentials
+  reconcilePendingCredentials,
+  flagStraySubscriptions
 } from '#/services/maintenance-service.js'
 
 export const maintenance = {
@@ -34,6 +35,17 @@ export const maintenance = {
       request.db
     )
 
-    return h.response({ expired, suspended, reconciled, vaultReconciled })
+    const straySubscriptions = await flagStraySubscriptions(
+      undefined,
+      request.logger
+    )
+
+    return h.response({
+      expired,
+      suspended,
+      reconciled,
+      vaultReconciled,
+      straySubscriptions
+    })
   }
 }

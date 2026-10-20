@@ -10,13 +10,17 @@
  * which is still read as a fallback on documents predating the rename - see
  * `src/common/backfills/registry.js`).
  * The research tier issues subscription keys; the team tier is OAuth only, so
- * an issuer that serves it issues an OAuth client secret.
+ * an issuer that serves it issues an OAuth client secret. Every call carries the
+ * `environment` the credential was issued in, never the current configuration,
+ * so a credential issued in an earlier environment still renews and revokes
+ * against the resources that hold it.
  * @typedef {object} CredentialIssuer
- * @property {(params: {userId: string, modelSlug: string, tier: 'research'|'team', teamId?: string|null, environment?: string|null}) => Promise<{externalId: string, secret: string, keyHint: string, expiresAt: string}>} issue
- * @property {(params: {externalId: string, expiresAt: string}) => Promise<{externalId: string}>} renew
- * @property {(params: {externalId: string}) => Promise<{externalId: string, secret: string, keyHint: string}>} rotate
- * @property {(params: {externalId: string}) => Promise<{externalId: string}>} revoke
- * @property {(params: {externalId: string}) => Promise<{externalId: string}>} suspend
+ * @property {(params: {userId: string, modelSlug: string, tier: 'research'|'team', teamId?: string|null, environment: string|null}) => Promise<{externalId: string, secret: string, keyHint: string, expiresAt: string}>} issue
+ * @property {(params: {externalId: string, expiresAt: string, environment: string|null}) => Promise<{externalId: string}>} renew
+ * @property {(params: {externalId: string, environment: string|null}) => Promise<{externalId: string, secret: string, keyHint: string}>} rotate
+ * @property {(params: {externalId: string, environment: string|null}) => Promise<{externalId: string}>} revoke
+ * @property {(params: {externalId: string, environment: string|null}) => Promise<{externalId: string}>} suspend
+ * @property {(params: {environment: string}) => Promise<{name: string, reasons: string[]}[]>} findStraySubscriptions - subscriptions on the gateway that are not research keys on the research API
  */
 
 export {}

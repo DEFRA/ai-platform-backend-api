@@ -2,7 +2,8 @@ import { config } from '#/config.js'
 import {
   expireCredentials,
   reconcilePendingCredentials,
-  pollTeamDeployments
+  pollTeamDeployments,
+  flagStraySubscriptions
 } from '#/services/maintenance-service.js'
 
 /**
@@ -40,6 +41,10 @@ export const credentialExpiryScheduler = {
             server.db,
             server.logger
           )
+          const straySubscriptions = await flagStraySubscriptions(
+            undefined,
+            server.logger
+          )
           const result = {
             expired,
             suspended,
@@ -47,7 +52,8 @@ export const credentialExpiryScheduler = {
             vaultReconciled,
             polled,
             transitioned,
-            abandoned
+            abandoned,
+            straySubscriptions
           }
 
           // Always log at debug so a sweep's absence of work is still observable;
@@ -59,7 +65,8 @@ export const credentialExpiryScheduler = {
             reconciled ||
             vaultReconciled ||
             transitioned ||
-            abandoned
+            abandoned ||
+            straySubscriptions
           ) {
             server.logger.info(result, 'Credential expiry sweep completed')
           }

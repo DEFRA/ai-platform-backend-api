@@ -140,6 +140,12 @@ export const config = convict({
     env: 'ALLOWED_EMAIL_DOMAINS'
   },
   research: {
+    environment: {
+      doc: 'The AIP_ENVIRONMENTS entry research keys are issued into (subscription, API Management instance and tenants vault). Each credential records the environment it was issued in, so changing this never strands an existing key',
+      format: String,
+      default: 'infradev',
+      env: 'RESEARCH_ENVIRONMENT'
+    },
     credentialTtlDays: {
       doc: 'Research tier credential time-to-live in days',
       format: 'nat',
@@ -313,20 +319,6 @@ export const config = convict({
       sensitive: true,
       env: 'AZURE_ARM_CLIENT_SECRET'
     },
-    subscriptionId: {
-      doc: 'Azure subscription ID that hosts APIM',
-      format: String,
-      nullable: true,
-      default: null,
-      env: 'AZURE_ARM_SUBSCRIPTION_ID'
-    },
-    resourceGroup: {
-      doc: 'Resource group that hosts the APIM instance',
-      format: String,
-      nullable: true,
-      default: null,
-      env: 'AZURE_ARM_RESOURCE_GROUP'
-    },
     authMethod: {
       doc: 'How the backend authenticates as the ARM app registration - federated (AWS STS web identity) everywhere except local, where there is no AWS STS to federate from',
       format: [ARM_AUTH_METHOD_CLIENT_SECRET, 'federated'],
@@ -341,30 +333,11 @@ export const config = convict({
     }
   },
   apim: {
-    serviceName: {
-      doc: 'APIM service (instance) name',
-      format: String,
-      nullable: true,
-      default: null,
-      env: 'APIM_SERVICE_NAME'
-    },
     researchApiId: {
       doc: 'APIM API id the research tier subscription is scoped to (/apis/{id}, not a product)',
       format: String,
       default: 'research',
       env: 'APIM_RESEARCH_API_ID'
-    }
-  },
-  // Backend -> Azure Key Vault data plane, for the credential vault only -
-  // shares the armAuth.* credential (see azure-credential.js) but talks to
-  // a different host/token audience than ARM, so it gets its own key.
-  keyVault: {
-    vaultName: {
-      doc: 'Name of the tenants Key Vault (kv-aip-{env}-tenants) credential secrets are persisted to',
-      format: String,
-      nullable: true,
-      default: null,
-      env: 'AZURE_KEY_VAULT_NAME'
     }
   },
   catalogue: {
@@ -436,10 +409,6 @@ config.validate({ allowed: 'strict' })
 const REQUIRED_ARM_AUTH_KEYS = [
   'armAuth.tenantId',
   'armAuth.clientId',
-  'armAuth.subscriptionId',
-  'armAuth.resourceGroup',
-  'apim.serviceName',
-  'keyVault.vaultName',
   ...(config.get('armAuth.authMethod') === ARM_AUTH_METHOD_CLIENT_SECRET
     ? ['armAuth.clientSecret']
     : ['armAuth.federatedAudience'])
@@ -506,6 +475,30 @@ if (config.get('provisioning.mode') === 'live') {
         `Gateway ${gateway} requires ${missing.join(', ')} to be set`
       )
     }
+  }
+}
+
+if (!/^[a-z][a-z0-9]{1,15}$/.test(config.get('research.environment'))) {
+  throw new Error(
+    'RESEARCH_ENVIRONMENT must be a lowercase environment name such as infradev'
+  )
+}
+
+// The subscription, resource group, API Management instance and vault the
+// research tier issues into all come from the one AIP_ENVIRONMENTS entry, so a
+// missing one must stop the boot rather than fail the first issued key.
+if (
+  config.get('provisioning.mode') === 'live' &&
+  config.get('provisioning.gateways').includes(AZURE_APIM) &&
+  !config.get('provisioning.mockTiers').includes('research')
+) {
+  const researchEnvironment = config.get('research.environment')
+  const environment = config.get('aipEnvironments')[researchEnvironment]
+
+  if (!environment?.apimName || !environment?.tenantsVault) {
+    throw new Error(
+      `RESEARCH_ENVIRONMENT "${researchEnvironment}" must be in AIP_ENVIRONMENTS with an apimName and a tenantsVault`
+    )
   }
 }
 

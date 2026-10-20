@@ -669,4 +669,62 @@ describe('#backfillRegistry', () => {
       expect(updated.oauthClient.registration).toEqual(registration)
     })
   })
+
+  describe('2026-10-20-research-credentials-environment', () => {
+    const backfillId = '2026-10-20-research-credentials-environment'
+
+    test('sets sandbox on a research credential with a null or missing environment', async () => {
+      const [nullEnvironment, missingEnvironment] = await Promise.all(
+        [{ environment: null }, {}].map((fields) =>
+          db.collection('credentials').insertOne({
+            userId: 'legacy-research-user',
+            tier: 'research',
+            status: 'active',
+            ...fields
+          })
+        )
+      )
+
+      const { modifiedCount } = await findBackfill(backfillId).run(db)
+
+      expect(modifiedCount).toBeGreaterThanOrEqual(2)
+      const updated = await Promise.all(
+        [nullEnvironment, missingEnvironment].map(({ insertedId }) =>
+          db.collection('credentials').findOne({ _id: insertedId })
+        )
+      )
+      expect(updated.map((doc) => doc.environment)).toEqual([
+        'sandbox',
+        'sandbox'
+      ])
+    })
+
+    test('leaves a team credential and an already-set research environment alone', async () => {
+      const team = await db
+        .collection('credentials')
+        .insertOne({ tier: 'team', status: 'active', environment: null })
+      const research = await db.collection('credentials').insertOne({
+        tier: 'research',
+        status: 'active',
+        environment: 'infradev'
+      })
+
+      await findBackfill(backfillId).run(db)
+
+      const [teamDoc, researchDoc] = await Promise.all([
+        db.collection('credentials').findOne({ _id: team.insertedId }),
+        db.collection('credentials').findOne({ _id: research.insertedId })
+      ])
+      expect(teamDoc.environment).toBeNull()
+      expect(researchDoc.environment).toBe('infradev')
+    })
+
+    test('is a no-op the second time it runs', async () => {
+      await findBackfill(backfillId).run(db)
+
+      await expect(findBackfill(backfillId).run(db)).resolves.toEqual({
+        modifiedCount: 0
+      })
+    })
+  })
 })

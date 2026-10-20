@@ -298,6 +298,7 @@ describe('#credential-service vault wiring', () => {
     expect(vault.updateExpiry).toHaveBeenCalledWith({
       credentialId: issued.credential._id.toString(),
       issuerKey: 'mock',
+      environment: 'infradev',
       expiresOn: new Date(renewed.expiresAt)
     })
 
@@ -472,5 +473,196 @@ describe('#credential-service externalGatewaySubscriptionId fallback', () => {
     })
 
     expect(revoked.status).toBe('revoked')
+  })
+})
+
+describe('#credential-service research environment', () => {
+  let server
+  let db
+  let locker
+
+  beforeAll(async () => {
+    // Dynamic import needed due to config being updated by vitest-mongodb
+    const { createServer } = await import('#/server.js')
+    await loadCredentialService()
+
+    server = await createServer()
+    await server.initialize()
+    db = server.db
+    locker = server.locker
+  })
+
+  afterAll(async () => {
+    await server.stop({ timeout: 0 })
+  })
+
+  // The credential's own environment, as if issued before the portal moved.
+  async function insertCredential({ userId, environment }) {
+    const { insertedId } = await db.collection('credentials').insertOne({
+      userId,
+      modelSlug: 'gpt-4o',
+      tier: 'research',
+      status: 'active',
+      type: 'apim-subscription',
+      externalGatewaySubscriptionId: `research-${userId}-gpt-4o`,
+      keyHint: 'aaaa',
+      issuerKey: 'mock',
+      renewalCount: 0,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() + 86400000).toISOString(),
+      ...(environment !== undefined && { environment })
+    })
+
+    return insertedId.toString()
+  }
+
+  function spyRegistry() {
+    const issuer = {
+      renew: vi.fn(async ({ externalId }) => ({ externalId })),
+      rotate: vi.fn(async ({ externalId }) => ({
+        externalId,
+        secret: 'rotated-secret',
+        keyHint: 'cret'
+      })),
+      revoke: vi.fn(async ({ externalId }) => ({ externalId }))
+    }
+
+    return { issuer, registry: { forCredential: () => ({ issuer }) } }
+  }
+
+  test('a research key is issued into the configured research environment and says so', async () => {
+    const vault = stubVault()
+    const userId = `env-default-user-${randomUUID()}`
+
+    const { credential } = await issueCredential(
+      db,
+      locker,
+      { userId, modelSlug: 'gpt-4o', idempotencyKey: randomUUID() },
+      credentialIssuerRegistry,
+      vault
+    )
+
+    expect(credential.environment).toBe('infradev')
+    expect(vault.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        environment: 'infradev',
+        tags: expect.objectContaining({ 'aip-environment': 'infradev' })
+      })
+    )
+  })
+
+  test('accepts the configured environment named explicitly, refuses any other', async () => {
+    const userId = `env-named-user-${randomUUID()}`
+
+    const { credential } = await issueCredential(
+      db,
+      locker,
+      {
+        userId,
+        modelSlug: 'gpt-4o',
+        environment: 'infradev',
+        idempotencyKey: randomUUID()
+      },
+      credentialIssuerRegistry,
+      stubVault()
+    )
+
+    expect(credential.environment).toBe('infradev')
+
+    await expect(
+      issueCredential(
+        db,
+        locker,
+        {
+          userId: `env-other-user-${randomUUID()}`,
+          modelSlug: 'gpt-4o',
+          environment: 'sandbox',
+          idempotencyKey: randomUUID()
+        },
+        credentialIssuerRegistry,
+        stubVault()
+      )
+    ).rejects.toMatchObject({
+      output: { statusCode: 403 },
+      data: { code: 'environment-not-available' }
+    })
+  })
+
+  test('renew, rotate, revoke and reveal act on the credential environment, not the configured one', async () => {
+    const userId = `env-seam-user-${randomUUID()}`
+    const id = await insertCredential({ userId, environment: 'sandbox' })
+    const { issuer, registry } = spyRegistry()
+    const vault = stubVault()
+    await vault.put({ credentialId: id, secret: 'stored-secret' })
+
+    await renewCredential(db, locker, { id, userId }, registry, vault)
+    await rotateCredential(db, locker, { id, userId }, registry, vault)
+    await revealCredential(
+      db,
+      { id, actorUserId: userId, reason: 'testing' },
+      vault
+    )
+    await revokeCredential(db, locker, { id, userId }, registry, vault)
+
+    expect(issuer.renew).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: 'sandbox' })
+    )
+    expect(issuer.rotate).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: 'sandbox' })
+    )
+    expect(issuer.revoke).toHaveBeenCalledWith(
+      expect.objectContaining({ environment: 'sandbox' })
+    )
+
+    for (const method of ['updateExpiry', 'put', 'get', 'remove']) {
+      expect(vault[method]).toHaveBeenCalledWith(
+        expect.objectContaining({ environment: 'sandbox' })
+      )
+    }
+
+    expect(vault.put).toHaveBeenLastCalledWith(
+      expect.objectContaining({
+        tags: expect.objectContaining({ 'aip-environment': 'sandbox' })
+      })
+    )
+  })
+
+  test.each([null, undefined])(
+    'a research credential with environment %s is treated as sandbox until the backfill has run',
+    async (environment) => {
+      const userId = `env-legacy-user-${randomUUID()}`
+      const id = await insertCredential({ userId, environment })
+      const { issuer, registry } = spyRegistry()
+
+      await revokeCredential(db, locker, { id, userId }, registry, stubVault())
+
+      expect(issuer.revoke).toHaveBeenCalledWith(
+        expect.objectContaining({ environment: 'sandbox' })
+      )
+    }
+  )
+
+  test('revoking a credential whose environment is not configured fails and leaves it active', async () => {
+    const userId = `env-missing-user-${randomUUID()}`
+    const id = await insertCredential({ userId, environment: 'gone' })
+    const failure = Object.assign(
+      new Error('Environment "gone" is not configured in AIP_ENVIRONMENTS'),
+      { code: 'environment-not-configured' }
+    )
+    const registry = {
+      forCredential: () => ({
+        issuer: { revoke: vi.fn().mockRejectedValue(failure) }
+      })
+    }
+
+    await expect(
+      revokeCredential(db, locker, { id, userId }, registry, stubVault())
+    ).rejects.toThrow('is not configured')
+
+    const stored = await db
+      .collection('credentials')
+      .findOne({ userId, status: { $exists: true } })
+
+    expect(stored.status).toBe('active')
   })
 })

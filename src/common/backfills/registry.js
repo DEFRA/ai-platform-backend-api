@@ -517,5 +517,27 @@ export const backfillRegistry = [
 
       return { modifiedCount }
     }
+  },
+  // A research credential now records the environment it was issued in, and
+  // every lifecycle call (renew, rotate, revoke, suspend, reveal, vault) reads
+  // it instead of the single hand-built environment the flat configuration
+  // described. Every research credential that exists today was minted against
+  // those hand-built resources, which `AIP_ENVIRONMENTS` names `sandbox`.
+  // `environmentOf()` in credential-service.js reads the same value for a
+  // document this has not reached yet. Must stay after
+  // 2026-09-25-credentials-environment-default, which sets the null it matches.
+  {
+    id: '2026-10-20-research-credentials-environment',
+    description:
+      'Sets environment: "sandbox" on research credentials docs with no environment',
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('credentials')
+        .updateMany({ tier: 'research', environment: null }, [
+          { $set: { environment: 'sandbox' } }
+        ])
+
+      return { modifiedCount }
+    }
   }
 ]

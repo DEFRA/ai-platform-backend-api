@@ -1,4 +1,12 @@
-import { createKeyVaultCredentialVault } from '#/adapters/azure/key-vault-credential-vault.js'
+import { createKeyVaultCredentialVault as createVaultFor } from '#/adapters/azure/key-vault-credential-vault.js'
+
+// One vault, whatever the environment - the per-environment routing has its own tests below.
+function createKeyVaultCredentialVault({ client }) {
+  return createVaultFor({
+    createClient: () => client,
+    resolveEnvironment: () => ({ tenantsVault: 'kv-test' })
+  })
+}
 
 function fakeClient() {
   const secrets = new Map()
@@ -124,5 +132,88 @@ describe('#createKeyVaultCredentialVault', () => {
         expiresOn: new Date()
       })
     ).rejects.toThrow()
+  })
+
+  describe('per environment', () => {
+    const tenantsVaults = { infradev: 'kv-infradev', sandbox: 'kv-sandbox' }
+
+    function createRoutedVault() {
+      const clientsByUrl = new Map()
+      const vault = createVaultFor({
+        createClient: (url) => {
+          const client = fakeClient()
+          clientsByUrl.set(url, client)
+          return client
+        },
+        resolveEnvironment: (name) => {
+          if (!tenantsVaults[name]) {
+            throw new Error(`Environment "${name}" is not configured`)
+          }
+
+          return { tenantsVault: tenantsVaults[name] }
+        }
+      })
+
+      return { vault, clientsByUrl }
+    }
+
+    test('writes to, and reads back from, the vault of the credential environment', async () => {
+      const { vault, clientsByUrl } = createRoutedVault()
+
+      await vault.put({
+        credentialId: 'a',
+        environment: 'infradev',
+        secret: 'infradev-secret'
+      })
+      await vault.put({
+        credentialId: 'b',
+        environment: 'sandbox',
+        secret: 'sandbox-secret'
+      })
+
+      expect([...clientsByUrl.keys()].sort()).toEqual([
+        'https://kv-infradev.vault.azure.net',
+        'https://kv-sandbox.vault.azure.net'
+      ])
+      await expect(
+        vault.get({ credentialId: 'a', environment: 'infradev' })
+      ).resolves.toBe('infradev-secret')
+      await expect(
+        vault.get({ credentialId: 'a', environment: 'sandbox' })
+      ).resolves.toBeNull()
+    })
+
+    test('builds one client per vault, not one per call', async () => {
+      const { vault, clientsByUrl } = createRoutedVault()
+
+      await vault.put({
+        credentialId: 'a',
+        environment: 'infradev',
+        secret: 's'
+      })
+      await vault.put({
+        credentialId: 'b',
+        environment: 'infradev',
+        secret: 's'
+      })
+
+      expect(clientsByUrl.size).toBe(1)
+    })
+
+    test.each(['put', 'get', 'remove', 'updateExpiry'])(
+      '%s fails closed for an environment that is not configured',
+      async (method) => {
+        const { vault } = createRoutedVault()
+
+        await expect(
+          vault[method]({
+            credentialId: 'a',
+            environment: 'nowhere',
+            secret: 's',
+            expiresOn: new Date()
+          })
+        ).rejects.toThrow('is not configured')
+      }
+    )
   })
 })

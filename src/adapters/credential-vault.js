@@ -7,12 +7,13 @@
  * `_id` (stringified), used as the opaque secret name, never a
  * provider-specific id. `issuerKey` is the key of the issuer that minted the
  * credential; the live vault registry routes on it and the real vault
- * adapters ignore it.
+ * adapters ignore it. `environment` is the credential's own environment, which
+ * the real vault adapter resolves to that environment's tenants vault.
  * @typedef {object} CredentialVault
- * @property {(params: {credentialId: string, issuerKey?: string, secret: string, tags?: Record<string, string>, expiresOn?: Date}) => Promise<void>} put
- * @property {(params: {credentialId: string, issuerKey?: string}) => Promise<string|null>} get
- * @property {(params: {credentialId: string, issuerKey?: string}) => Promise<void>} remove
- * @property {(params: {credentialId: string, issuerKey?: string, expiresOn: Date}) => Promise<void>} updateExpiry
+ * @property {(params: {credentialId: string, issuerKey?: string, environment?: string|null, secret: string, tags?: Record<string, string>, expiresOn?: Date}) => Promise<void>} put
+ * @property {(params: {credentialId: string, issuerKey?: string, environment?: string|null}) => Promise<string|null>} get
+ * @property {(params: {credentialId: string, issuerKey?: string, environment?: string|null}) => Promise<void>} remove
+ * @property {(params: {credentialId: string, issuerKey?: string, environment?: string|null, expiresOn: Date}) => Promise<void>} updateExpiry
  */
 
 export {}

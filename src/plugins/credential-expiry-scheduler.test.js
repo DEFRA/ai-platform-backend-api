@@ -19,7 +19,8 @@ describe('#credentialExpiryScheduler', () => {
         .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
       pollTeamDeployments: vi
         .fn()
-        .mockResolvedValue({ polled: 2, transitioned: 1, abandoned: 0 })
+        .mockResolvedValue({ polled: 2, transitioned: 1, abandoned: 0 }),
+      flagStraySubscriptions: vi.fn().mockResolvedValue(1)
     }))
 
     const { credentialExpiryScheduler } =
@@ -27,7 +28,8 @@ describe('#credentialExpiryScheduler', () => {
     const {
       expireCredentials,
       reconcilePendingCredentials,
-      pollTeamDeployments
+      pollTeamDeployments,
+      flagStraySubscriptions
     } = await import('#/services/maintenance-service.js')
 
     const server = {
@@ -53,7 +55,8 @@ describe('#credentialExpiryScheduler', () => {
       vaultReconciled: 0,
       polled: 2,
       transitioned: 1,
-      abandoned: 0
+      abandoned: 0,
+      straySubscriptions: 1
     }
 
     expect(expireCredentials).toHaveBeenCalledWith(
@@ -64,6 +67,10 @@ describe('#credentialExpiryScheduler', () => {
     )
     expect(reconcilePendingCredentials).toHaveBeenCalledWith(server.db)
     expect(pollTeamDeployments).toHaveBeenCalledWith(server.db, server.logger)
+    expect(flagStraySubscriptions).toHaveBeenCalledWith(
+      undefined,
+      server.logger
+    )
     expect(server.logger.debug).toHaveBeenCalledWith(
       result,
       'Credential expiry sweep ran'
@@ -88,7 +95,8 @@ describe('#credentialExpiryScheduler', () => {
         .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
       pollTeamDeployments: vi
         .fn()
-        .mockResolvedValue({ polled: 3, transitioned: 0, abandoned: 0 })
+        .mockResolvedValue({ polled: 3, transitioned: 0, abandoned: 0 }),
+      flagStraySubscriptions: vi.fn().mockResolvedValue(0)
     }))
 
     const { credentialExpiryScheduler } =
