@@ -33,7 +33,7 @@ Core delivery platform Node.js Backend Template.
 
 ## Documentation
 
-- [Implemented features](../ai-platform-frontend/docs/implemented-features.md) — what's been built
+- [Implemented features](../ai-platform-frontend/docs/plans/implemented/implemented-features.md) — what's been built
   so far across this repo and `ai-platform-frontend`, for new joiners.
 
 ## Requirements

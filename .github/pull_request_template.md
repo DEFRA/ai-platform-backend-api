@@ -8,7 +8,7 @@
 - [ ] New or changed behaviour has tests; a bug fix has a regression test
 - [ ] No secret, PII or full credential in code, logs or tests
 - [ ] New persisted fields have a dated backfill
-- [ ] `ai-platform-frontend/docs/implemented-features.md` updated where a phase landed
+- [ ] `ai-platform-frontend/docs/plans/implemented/implemented-features.md` updated where a phase landed
 - [ ] Breaking change called out
 
 ## Review
