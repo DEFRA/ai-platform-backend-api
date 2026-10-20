@@ -5,44 +5,35 @@ applyTo: 'src/**'
 
 # The "three routes to a credential" journey
 
-This service's core journey (browse a model, request a credential, manage a team's access) is
-specified end-to-end in committed plan docs owned by `ai-platform-frontend` (the frontend routes
-they build are the entry point into this repo's API surface) — read the relevant one before
-adding or changing anything the journey touches, rather than re-deriving the flow from scratch.
-That's rarely just `routes`/`services`/`adapters`: past work under this journey has also touched
-`src/plugins/mongodb.js` (new indexes/collections), `src/plugins/router.js` (registering new route
-plugins), `src/config.js` (new config keys) and `src/common/seed/models.seed.json` (seed data for
-new tiers/environments) — check the plan's own "Relevant files" and "Steps" sections for the exact
-list on a given route:
+This service's core journey (browse a model, request a credential, manage a team's access) is documented in the plan
+files owned by `ai-platform-frontend`, which build the frontend routes that are the entry point into this repo's API.
+Read the relevant one before adding or changing anything the journey touches, rather than re-deriving the flow. That is
+rarely just `routes`, `services` and `adapters`: past work has also touched `src/plugins/mongodb.js` (indexes, collections),
+`src/plugins/router.js`, `src/config.js` (new config keys) and `src/common/seed/` (seed data).
 
-- [ai-platform-frontend/docs/plans/implemented/route1-plan.md](../../../ai-platform-frontend/docs/plans/implemented/route1-plan.md) — research tier shared model access: `users`/`models`/`credentials` routes and services. Implemented.
-- [ai-platform-frontend/docs/plans/implemented/route2-plan.md](../../../ai-platform-frontend/docs/plans/implemented/route2-plan.md) — team tier, first person in a team: `teams`, `team-deployments`, the `TenantOrchestrator` port. Implemented.
-- [ai-platform-frontend/docs/plans/implemented/route3-plan.md](../../../ai-platform-frontend/docs/plans/implemented/route3-plan.md) — team tier, joining a team: role enforcement (`getMemberRole`), the `rotate` operation. Implemented.
-- [ai-platform-frontend/docs/plans/implemented/route0-welcome-plan.md](../../../ai-platform-frontend/docs/plans/implemented/route0-welcome-plan.md) — frontend-only home page, no backend changes.
+**Built** (one file per category, in [ai-platform-frontend/docs/plans/implemented/](../../../ai-platform-frontend/docs/plans/implemented/)):
 
-Cross-cutting plans under `docs/plans/implemented/centralised-gateway/` and
-`docs/plans/in-progress/` are not
-journey routes, but they replace the ports and adapters the routes above call. The cross-repository IaC
-baseline plan lives in `ai-platform-discovery-docs`, beside the design pack it implements:
+- [02-research-tier.md](../../../ai-platform-frontend/docs/plans/implemented/02-research-tier.md): `users`, `models`, `credentials`, the Azure APIM `CredentialIssuer`, the Key Vault `CredentialVault`, per-environment resolution (`AIP_ENVIRONMENTS`). Read before touching `adapters/azure/`, `credential-service.js` or `aip-environment.js`; it records the non-obvious APIM and ARM behaviour found against real Azure.
+- [03-team-tier.md](../../../ai-platform-frontend/docs/plans/implemented/03-team-tier.md): `teams`, `team-deployments`, the `TenantOrchestrator` port and its GitHub adapter, verification, role enforcement and `rotate`. Read before touching `team-deployment-*.js`, `adapters/github/` or the desired-state builder.
+- [04-catalogue-and-gateway.md](../../../ai-platform-frontend/docs/plans/implemented/04-catalogue-and-gateway.md): the `CatalogueSource` port, `catalogue-service.js`, and the `hosting`/`gateway` shape (`adapter` is renamed `gateway` everywhere except `src/adapters/`, where it is the design-pattern term). Read before touching either registry, `config.js`'s provisioning keys, the seed data or the backfill registry.
+- [05-platform-and-gitops-pipeline.md](../../../ai-platform-frontend/docs/plans/implemented/05-platform-and-gitops-pipeline.md): the five repositories, Infradev, CDP dev config and operating notes.
+- [06-shared-services-and-security.md](../../../ai-platform-frontend/docs/plans/implemented/06-shared-services-and-security.md): idempotency, audit, locks, backfills, security.
+- [01-portal-journeys.md](../../../ai-platform-frontend/docs/plans/implemented/01-portal-journeys.md): the frontend pages that call this API.
 
-- [ai-platform-frontend/docs/plans/in-progress/research-tier-integration-plan.md](../../../ai-platform-frontend/docs/plans/in-progress/research-tier-integration-plan.md) — replaces `mock-credential-issuer.js` with a real Azure APIM ARM adapter, moves the model catalogue from `models.seed.json` to a GitHub-hosted `CatalogueSource` port, and adds Key Vault credential persistence with an audited reveal endpoint. Phase 0 (Azure setup), Phase 1 (`CredentialIssuer` registry/Azure adapter), Phase 2 (`CatalogueSource`/`catalogue-service.js` sync, real catalogue content pushed and tagged `v0.1.0` in `ai-platform-infra`), Phase 3 (`CredentialVault` port/registry, Key Vault adapter, `POST /v1/credentials/{id}/reveal`) and Phase 5 (frontend; this repo's only Phase 5 change is `GET /v1/models?includeIneligible=true` on the existing route, used by the catalogue browse page only - connect journeys keep the eligible-only default) are complete; Phase 4 (ARM liveness reconcile) and Phase 6 (CDP deployment) are **deferred, not removed** (user decision) — still valid future work, don't start them without being asked. Read before touching `adapters/`, `models-service.js`, `credential-service.js` or the seed data — it corrects several natural but wrong assumptions about how APIM is called, and its STATUS note records concrete deviations (Foundry hostname, operation URL templates, policy XML escaping, and the APIM gateway turning out to be publicly reachable rather than the private-VIP the doc originally assumed) found during Phase 0.
-- [ai-platform-frontend/docs/plans/implemented/centralised-gateway/centralised-gateway-plan.md](../../../ai-platform-frontend/docs/plans/implemented/centralised-gateway/centralised-gateway-plan.md) — adopts the 8 Oct 2026 design-pack direction that Azure APIM is the **only** gateway and credential adapter, and that Amazon Bedrock and direct vendor APIs are hosting platforms _behind_ it, never separate credential adapters or vaults. Models stop declaring `cloud`/`adapter` and inherit a nested `hosting: {platform, cloud, provider}` plus `gateway` from their provider offering. `adapter` is renamed to **`gateway`** throughout — documents, config (`ENABLED_GATEWAYS`, `provisioning.gateways`), constants (`DEFAULT_GATEWAY`) and the `gateway-not-enabled` error code. The single exception is `src/adapters/`, the `#/adapters/*` alias and the ports-and-adapters files in it, which keep the word because there it is the design-pattern term, not a word for a gateway. **Phases R-H complete (9 Oct 2026)**, so model documents now carry `hosting` and `gateway` only, and the catalogue sync reads only the new offering shape. Read before touching `catalogue-service.js`, either credential registry, `config.js`'s provisioning keys, the seed data or the backfill registry — it also fixes several comments in those files that still assert the superseded "a gateway equals an adapter, Bedrock is its own adapter" model.
-- [ai-platform-discovery-docs/docs/iac-baseline-plan.md](../../../ai-platform-discovery-docs/docs/iac-baseline-plan.md) — the 12 Oct 2026 minimum IaC baseline for Phase 1 in SND1 (`infradev`). Replaces `mock-tenant-orchestrator.js` with a GitHub adapter that dispatches a `submit` workflow with the whole team document (the backend never commits), polls the submit run, pull request, merge and GitHub Deployment, verifies with ARM and applies the retry-then-revert failure policy (WS5); the Teams developer's part (team `slug`, the service code, configurable environments, the desired-state builder) is WS6. Build stories B15 and B16 carry it, and B13, B14 and B17 to B19 carry the teams direction of 12 Oct 2026 (design F: AI Platform teams separate from CDP teams, Admin and Member roles, several teams per person, service-code chargeback with no separate billing code). **Not started.** Read before touching `team-deployment-service.js`, the `TenantOrchestrator` port, its registry or GitHub App code.
-- [ai-platform-frontend/docs/plans/in-progress/build-stories-delivery-plan.md](../../../ai-platform-frontend/docs/plans/in-progress/build-stories-delivery-plan.md) — the phased delivery plan for build stories B01 to B19, written against `ai-platform-discovery-docs` PR #18 (13 Oct 2026). Phase 0 restructures `build-stories.md`; Phases 1 to 6 deliver the rest. Records which stories are Implemented, Partial or Proposal and, importantly, the eleven places where built code now contradicts the 12 Oct 2026 design and must be refactored rather than extended — including the team `slug`, the three-character `serviceCode`, the hard-coded `TEAM_FACING_ENVIRONMENT`, the deprecated `azure` provisioning mode and the `TenantOrchestrator` port shape. **Not started.** Read before starting any build story, to check whether the work is a refactor rather than a new feature.
+**Not built** (one file): [ai-platform-frontend/docs/plans/remaining.md](../../../ai-platform-frontend/docs/plans/remaining.md).
+Read it before starting any build story, to check whether the work is a refactor of something built and which items are
+blocked or deferred.
 
-Each plan's "STATUS" line at the top records whether it has been built. Cross-repo context:
+Cross-repo context:
 
-- [ai-platform-frontend/docs/ui-flow-three-routes.md](../../../ai-platform-frontend/docs/ui-flow-three-routes.md) — the source UI flow diagrams (route paths, API contract, known gaps), with the original images, captured in text since the originals aren't in any repo.
-- [ai-platform-discovery-docs/src/content/design-orchestration.md](../../../ai-platform-discovery-docs/src/content/design-orchestration.md) — design C: every backend action is either the slow GitOps path (team/model provisioning, `TenantOrchestrator`) or the fast Direct API path (`CredentialIssuer` — issue/renew/rotate/revoke). This split is why "connect to a dedicated team model" is modelled as two ports, not one.
-- The matching frontend work for each route lives in `ai-platform-frontend` — see its [.github/instructions/route-plans.instructions.md](../../../ai-platform-frontend/.github/instructions/route-plans.instructions.md).
+- [ai-platform-frontend/docs/ui-flow-three-routes.md](../../../ai-platform-frontend/docs/ui-flow-three-routes.md): the source UI flow (route paths, API contract, known gaps).
+- [ai-platform-discovery-docs/docs/iac-baseline-plan.md](../../../ai-platform-discovery-docs/docs/iac-baseline-plan.md): the IaC baseline behind B15 and B16.
+- [ai-platform-discovery-docs/src/content/design-orchestration.md](../../../ai-platform-discovery-docs/src/content/design-orchestration.md): design C. Every backend action is either the slow GitOps path (`TenantOrchestrator`) or the fast direct API path (`CredentialIssuer`); this split is why "connect to a dedicated team model" uses two ports.
+- The matching frontend work: [ai-platform-frontend route-plans.instructions.md](../../../ai-platform-frontend/.github/instructions/route-plans.instructions.md).
 
 ## Keeping these plans current
 
-The plan docs in `ai-platform-frontend/docs/plans/` are the single source of truth for this
-journey — there is no separate copy in this repo or in agent memory. When a design change affects
-a backend route/service/adapter covered here, edit the relevant `routeN-plan.md` in the frontend
-repo directly (update its `STATUS`/decisions, add a dated note) rather than tracking the change
-separately here. Plans sit in `implemented/` or `in-progress/` by status, with an index in
-`ai-platform-frontend/docs/plans/README.md`: whenever a backend change alters a plan's state, move
-the plan to the right folder and update that README in the same change, following the rules in the
-frontend's [route-plans.instructions.md](../../../ai-platform-frontend/.github/instructions/route-plans.instructions.md#whenever-you-touch-a-plan-keep-the-folders-and-the-readme-in-sync).
+The plan files in `ai-platform-frontend/docs/plans/` are the single source of truth for this journey; there is no copy in this
+repo or in agent memory. When a backend change affects a feature covered there, edit the matching `implemented/NN-*.md` file or
+move the item out of `remaining.md` into it, in the frontend repo, and follow the rules in the frontend's
+[route-plans.instructions.md](../../../ai-platform-frontend/.github/instructions/route-plans.instructions.md#whenever-you-touch-a-plan-keep-the-folders-and-the-readme-in-sync).
