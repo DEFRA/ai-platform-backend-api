@@ -36,6 +36,7 @@ describe('buildProgressSteps', () => {
   const T2 = '2026-10-21T10:42:00.000Z'
   const T3 = '2026-10-21T10:43:00.000Z'
   const T4 = '2026-10-21T10:44:00.000Z'
+  const T5 = '2026-10-21T10:50:00.000Z'
   const statusTimes = {
     requested: T0,
     'pr-raised': T1,
@@ -76,6 +77,30 @@ describe('buildProgressSteps', () => {
     )
 
     expect(steps.map(({ at }) => at)).toEqual([T2, T2, T3, T3])
+  })
+
+  test('keeps completed steps in order across a retry that records deploying after deployed', () => {
+    const polled = {
+      requested: T0,
+      deployed: T4
+    }
+    const ats = (status, times) =>
+      buildProgressSteps({ status, statusTimes: times }, 'GPT-4o').map(
+        ({ at }) => at
+      )
+
+    // Polling skipped everything between requested and deployed.
+    const before = ats('deployed', polled)
+
+    expect(before).toEqual([T4, T4, T4, T4])
+    // The retry resumes at deploying, five minutes later.
+    expect(ats('deploying', { ...polled, deploying: T5 })).toEqual([
+      T4,
+      T4,
+      T4,
+      null
+    ])
+    expect(ats('deployed', { ...polled, deploying: T5 })).toEqual(before)
   })
 
   test('falls back to when the entry was created and activated for one from before times were recorded', () => {

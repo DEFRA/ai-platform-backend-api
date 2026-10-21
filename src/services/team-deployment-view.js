@@ -51,16 +51,20 @@ function stepState(index, currentIndex) {
 // When each step started, then when the last one ended (so one more than
 // there are steps), from the times the entry recorded. A step the entry went
 // past without a poll seeing it takes the start of the next, so it reads as
-// instant; entries from before times were recorded fall back to when they
-// were created and activated, and otherwise have none (null).
+// instant, and no step starts after the next one does (a retry that records
+// `deploying` after `deployed` was reached must not move the steps before
+// it); entries from before times were recorded fall back to when they were
+// created and activated, and otherwise have none (null).
 function stepBoundaries(entry) {
   const times = entry.statusTimes ?? {}
   const boundaries = [times.active ?? entry.activatedAt ?? null]
 
   for (const step of [...PROGRESS_STEPS].reverse()) {
+    const next = boundaries[0]
     const starts = step.statuses.map((status) => times[status]).filter(Boolean)
+    const start = starts.sort()[0] ?? next
 
-    boundaries.unshift(starts.sort()[0] ?? boundaries[0])
+    boundaries.unshift(next && next < start ? next : start)
   }
 
   boundaries[0] = times.requested ?? entry.createdAt ?? boundaries[0]
