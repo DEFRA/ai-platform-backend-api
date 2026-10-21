@@ -1265,6 +1265,54 @@ describe('#teams routes', () => {
     })
 
     describe('a team addressed by slug', () => {
+      test('resolves a slug of 24 hex characters when no team has that id', async () => {
+        const hexName = 'abcdefabcdefabcdefabcdef'
+        const created = await server.inject({
+          method: 'POST',
+          url: '/v1/teams',
+          headers: postHeaders('slug-hex'),
+          payload: { name: hexName, serviceCode: 'ABC' }
+        })
+        const bySlug = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${hexName}`,
+          headers: { 'x-user-id': 'slug-hex' }
+        })
+        const deployments = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${hexName}/deployments`,
+          headers: { 'x-user-id': 'slug-hex' }
+        })
+
+        expect(created.result.team.slug).toBe(hexName)
+        expect(bySlug.statusCode).toBe(200)
+        expect(bySlug.result.team._id.toString()).toBe(
+          created.result.team._id.toString()
+        )
+        expect(deployments.statusCode).toBe(200)
+      })
+
+      test('gives a team with that id precedence over another team with that slug', async () => {
+        const team = await newTeam('slug-id-wins')
+
+        await server.db.collection('teams').insertOne({
+          name: `Decoy ${team.teamId}`,
+          normalisedName: `decoy-${team.teamId}`,
+          slug: team.teamId,
+          createdBy: 'slug-decoy',
+          idempotencyKey: randomUUID()
+        })
+
+        const byId = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${team.teamId}`,
+          headers: { 'x-user-id': 'slug-id-wins' }
+        })
+
+        expect(byId.statusCode).toBe(200)
+        expect(byId.result.team._id.toString()).toBe(team.teamId)
+      })
+
       test('reads, changes and removes members the same as by id', async () => {
         const team = await newTeam('slug-1')
         const memberId = await activeMember(
@@ -1460,6 +1508,20 @@ describe('#teams routes', () => {
         const { result } = await getTeam(team, 'env-2')
 
         expect(result.environments).toEqual([])
+      })
+
+      test('is refused as upstream-unavailable when a file cannot be read, not as an empty list', async () => {
+        const team = await newTeam('env-4')
+
+        vi.spyOn(
+          mockTenantOrchestrator,
+          'getCurrentDocument'
+        ).mockRejectedValue(new Error('GitHub is down'))
+
+        const { statusCode, result } = await getTeam(team, 'env-4')
+
+        expect(statusCode).toBe(502)
+        expect(result.code).toBe('upstream-unavailable')
       })
 
       test('does not read the files for someone outside the team', async () => {

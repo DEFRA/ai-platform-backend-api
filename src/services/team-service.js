@@ -18,7 +18,8 @@ import { readTeamEnvironments } from '#/services/team-desired-state.js'
 const MAX_SLUG_ATTEMPTS = 10
 
 // A team id as `ObjectId#toString` writes it. A slug must start with a letter
-// and may in theory be 24 hex characters, in which case the id wins.
+// and may in theory be 24 hex characters, so an id-shaped value is an id only
+// when a team has it, and is otherwise looked up as a slug.
 const TEAM_ID_PATTERN = /^[0-9a-f]{24}$/
 
 function membershipLock(teamId) {
@@ -28,16 +29,21 @@ function membershipLock(teamId) {
 /**
  * Resolves the `{id}` of a team route, which is the team's id or its slug
  * (the frontend addresses a team by slug), to the id every other record
- * (members, deployments, locks) is keyed by. An id is returned as it is, so
- * an id with no team behind it still reads as "not a member" downstream; a
- * slug is looked up. Returns null for a slug no team holds or text that is
- * neither.
+ * (members, deployments, locks) is keyed by. A team's id takes precedence;
+ * a 24-hex-character value no team has as its id is looked up as a slug,
+ * since a team name can derive one. Returns null for a value no team holds
+ * as its id or slug, or text that is neither.
  * @param {import('mongodb').Db} db
  * @param {string} idOrSlug
  * @returns {Promise<string|null>}
  */
 export async function resolveTeamId(db, idOrSlug) {
-  if (TEAM_ID_PATTERN.test(idOrSlug)) {
+  if (
+    TEAM_ID_PATTERN.test(idOrSlug) &&
+    (await db
+      .collection('teams')
+      .findOne({ _id: new ObjectId(idOrSlug) }, { projection: { _id: 1 } }))
+  ) {
     return idOrSlug
   }
 
@@ -365,7 +371,7 @@ export async function findTeamById(
     .collection('teamMembers')
     .find({ teamId: id })
     .toArray()
-  const files = await readTeamEnvironments(registry, team.slug)
+  const files = await readTeamFiles(registry, team.slug)
 
   return {
     team,
@@ -377,6 +383,25 @@ export async function findTeamById(
         tokensPerMinute: document.gateway?.limits?.tokensPerMinute ?? null
       }
     }))
+  }
+}
+
+/**
+ * The team's tenant files, a failed read of `ai-platform-tenants` refused as
+ * `502 upstream-unavailable` - distinct from a team with no file, which reads
+ * as an empty list.
+ * @param {import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry} registry
+ * @param {string} slug
+ */
+async function readTeamFiles(registry, slug) {
+  try {
+    return await readTeamEnvironments(registry, slug)
+  } catch {
+    throw boomWithCode(
+      Boom.badGateway,
+      "Failed to read the team's environments",
+      'upstream-unavailable'
+    )
   }
 }
 
