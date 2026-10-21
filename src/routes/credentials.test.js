@@ -905,13 +905,17 @@ describe('#credentials routes', () => {
     const teamId = await createTeamWithActiveDeployment(adminId)
     const credential = await teamCredentialOf(teamId)
 
-    // What a failed attempt leaves behind.
-    await server.db
-      .collection('credentials')
-      .updateOne(
-        { _id: credential._id },
-        { $set: { status: 'failed', failureReason: 'issuer-error' } }
-      )
+    // What a failed attempt, made a while ago, leaves behind.
+    await server.db.collection('credentials').updateOne(
+      { _id: credential._id },
+      {
+        $set: {
+          status: 'failed',
+          failureReason: 'issuer-error',
+          createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString()
+        }
+      }
+    )
 
     await server.inject({
       method: 'GET',

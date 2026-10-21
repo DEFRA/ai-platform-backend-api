@@ -321,7 +321,12 @@ async function issueAndActivate(
 
   const credential = { _id: insertedId, ...pending, ...active }
 
-  await writeSecretToVault(db, vault, credential, issued.secret)
+  const vaultWritten = await writeSecretToVault(
+    db,
+    vault,
+    credential,
+    issued.secret
+  )
 
   await recordAuditEvent(db, {
     actorUserId: pending.userId,
@@ -331,7 +336,7 @@ async function issueAndActivate(
     outcome: 'success'
   })
 
-  return { credential, secret: issued.secret }
+  return { credential, secret: issued.secret, vaultWritten }
 }
 
 async function issueCredentialForParams(
@@ -454,14 +459,16 @@ const TEAM_CREDENTIAL_FILTER = {
  * its secret goes straight to the vault. The secret is never returned or
  * persisted; an admin reveals it with `revealCredential`. Runs under the
  * lock the team's credential has always had, so concurrent activations
- * create one credential. A failed earlier attempt is retried rather than
- * left as a second row.
+ * create one credential. An attempt that did not finish - failed, abandoned
+ * `pending` after a crash, or one that failed before an issuer was even
+ * resolved (recorded as a `failed` document with its reason) - is reused
+ * rather than left beside a second row.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner and the audit actor
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
- * @returns {Promise<{credential: object, created: boolean}>}
+ * @returns {Promise<{credential: object, created: boolean, vaultWritten?: boolean}>} `vaultWritten` is false when the credential was created but its secret is not in the vault yet (reconciliation retries it)
  */
 export async function ensureTeamCredential(
   db,
@@ -486,7 +493,9 @@ export async function ensureTeamCredential(
     }
 
     const model = await findModelBySlug(db, modelSlug)
-    const { issuerKey, issuer } = resolveIssuer(registry, model, 'team')
+    const reusable = await db
+      .collection('credentials')
+      .findOne({ ...scope, status: { $in: ['pending', 'failed'] } })
     const pending = {
       userId: requestedBy,
       teamId,
@@ -498,7 +507,7 @@ export async function ensureTeamCredential(
       type: 'apim-subscription',
       status: 'pending',
       idempotencyKey: `team-activation:${operationId}`,
-      issuerKey,
+      issuerKey: null,
       // A team credential spans several models, so it records no single
       // provider/offering, only the cloud and gateway of the model that
       // created it.
@@ -509,15 +518,20 @@ export async function ensureTeamCredential(
       createdAt: new Date().toISOString(),
       renewalCount: 0
     }
-    const reusable = await db
-      .collection('credentials')
-      .findOne({ ...scope, status: 'failed' })
+
+    let resolved
+    try {
+      resolved = resolveIssuer(registry, model, 'team')
+    } catch (error) {
+      await recordUnissued(db, reusable, pending, error)
+      throw error
+    }
 
     // Shared indefinitely across the team and never renewed (see
     // `renewCredential`'s tier guard), so it has no expiry.
-    const { credential } = await issueAndActivate(db, vault, {
-      issuer,
-      pending,
+    const { credential, vaultWritten } = await issueAndActivate(db, vault, {
+      issuer: resolved.issuer,
+      pending: { ...pending, issuerKey: resolved.issuerKey },
       reusable,
       issueParams: {
         userId: requestedBy,
@@ -529,28 +543,66 @@ export async function ensureTeamCredential(
       expiresAt: null
     })
 
-    return { credential, created: true }
+    return { credential, created: true, vaultWritten }
   } finally {
     await lock.free()
   }
 }
 
+// Keeps a record that an attempt never reached an issuer, so the activation
+// can be retried later without recreating a credential an admin revoked.
+async function recordUnissued(db, reusable, pending, error) {
+  const failed = {
+    ...pending,
+    status: 'failed',
+    failureReason: error.data?.code ?? 'issuer-unavailable'
+  }
+
+  if (reusable) {
+    await db
+      .collection('credentials')
+      .updateOne({ _id: reusable._id }, { $set: failed })
+  } else {
+    await db.collection('credentials').insertOne(failed)
+  }
+}
+
 /**
- * Whether a team's earlier attempt at its credential for an environment
- * failed and nothing active has replaced it, so the activation that follows
- * any later poll can try again.
+ * Whether a team's credential for an environment still needs creating even
+ * though one of its models is active there: nothing is active and either no
+ * attempt has been recorded or the last one did not finish (`failed`, or
+ * `pending` after a crash) at least `retryAfterMs` ago. A credential an
+ * admin revoked is not recreated by a poll, only by a later activation.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, environment: string}} params
+ * @param {{teamId: string, environment: string}} team
+ * @param {{retryAfterMs?: number}} [options] - how long after an attempt a retry waits, so a persistent failure is not retried on every poll
  * @returns {Promise<boolean>}
  */
-export async function teamCredentialNeedsRetry(db, { teamId, environment }) {
-  const scope = { teamId, environment, ...TEAM_CREDENTIAL_FILTER }
-  const [failed, active] = await Promise.all([
-    db.collection('credentials').findOne({ ...scope, status: 'failed' }),
-    db.collection('credentials').findOne({ ...scope, status: 'active' })
-  ])
+export async function teamCredentialNeedsRetry(
+  db,
+  { teamId, environment },
+  { retryAfterMs = 0 } = {}
+) {
+  const attempts = await db
+    .collection('credentials')
+    .find(
+      { teamId, environment, ...TEAM_CREDENTIAL_FILTER },
+      { projection: { status: 1, createdAt: 1 } }
+    )
+    .toArray()
+  const cutoff = new Date(Date.now() - retryAfterMs).toISOString()
 
-  return Boolean(failed) && !active
+  if (attempts.some(({ status }) => status === 'active')) {
+    return false
+  }
+
+  return (
+    attempts.length === 0 ||
+    attempts.some(
+      ({ status, createdAt }) =>
+        ['pending', 'failed'].includes(status) && createdAt <= cutoff
+    )
+  )
 }
 
 /**

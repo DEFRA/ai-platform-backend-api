@@ -358,8 +358,11 @@ environment turns `active`, under the lock `team-credential:{teamId}:{environmen
 straight to the vault and is never returned, and `POST /v1/credentials` no longer issues team
 credentials (only `tier: research`; `team` is refused with `400`). A later model in the same
 environment reuses it, and a different environment gets its own. If creating it fails (for example
-no gateway issues team credentials in `live` mode without `MOCK_TIERS=team`) the activation stands,
-the failure is logged and audited, and the next poll of an active deployment retries. Any team member
+no gateway issues team credentials in `live` mode without `MOCK_TIERS=team`, or the vault write
+fails) the activation stands and the failure is logged and audited against the deployment
+(`teamDeployment.credential`). Any later poll of an active deployment retries, at most once per poll
+interval, while the team has no active credential and no record of one an admin revoked; the
+unfinished attempt's document is reused, never duplicated. Any team member
 can see the credential (`GET /v1/credentials`, `keyHint` only); only a team admin can reveal its
 secret with a reason (`POST /v1/credentials/{id}/reveal`), rotate or revoke it. It covers
 whatever the team's gateway grants there: its `allowedDeployments` is read from the team's deployments

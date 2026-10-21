@@ -103,6 +103,7 @@ describe('team-deployment-gitops', () => {
     return gitops.refreshEntryStatus(db, doc, entry, {
       registry: githubRegistry(orchestrator),
       pollMinIntervalMs: 0,
+      locker: server.locker,
       ...deps
     })
   }
@@ -1283,12 +1284,13 @@ describe('team-deployment-gitops', () => {
       }
     )
 
-    test('logs a failed credential for an engineer without failing or undoing the activation', async () => {
+    test('logs and audits a failed credential against the operation without failing or undoing the activation', async () => {
       const orchestrator = fakeOrchestrator()
-      const logger = { warn: vi.fn() }
-      const ensureCredential = vi
-        .fn()
-        .mockRejectedValue(new Error('issuer unavailable'))
+      const logger = { warn: vi.fn(), debug: vi.fn() }
+      const failure = Object.assign(new Error('not enabled'), {
+        data: { code: 'gateway-not-enabled' }
+      })
+      const ensureCredential = vi.fn().mockRejectedValue(failure)
       const entry = activating()
       const doc = await insertDocument(entry)
 
@@ -1303,33 +1305,174 @@ describe('team-deployment-gitops', () => {
       expect(refreshed.status).toBe('active')
       expect((await storedEntry(entry.id)).status).toBe('active')
       expect(logger.warn).toHaveBeenCalledWith(
-        expect.objectContaining({ operationId: entry.operationId }),
-        'Creating the team credential failed, retrying on the next poll'
+        { code: 'gateway-not-enabled', operationId: entry.operationId },
+        'Creating the team credential failed, retrying on a later poll'
+      )
+      expect(await auditEvents(entry)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'teamDeployment.credential',
+            outcome: 'failure',
+            code: 'gateway-not-enabled'
+          })
+        ])
       )
     })
 
-    test('retries a failed credential when an active entry is polled, and only then', async () => {
+    test('logs and audits a secret that could not be written to the vault, keeping the activation', async () => {
       const orchestrator = fakeOrchestrator()
-      const ensureCredential = vi.fn().mockResolvedValue({ created: true })
+      const logger = { warn: vi.fn(), debug: vi.fn() }
+      const ensureCredential = vi
+        .fn()
+        .mockResolvedValue({ created: true, vaultWritten: false })
+      const entry = activating()
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(activeResult(entry))
+
+      const refreshed = await refresh(orchestrator, doc, entry, {
+        locker: server.locker,
+        ensureCredential,
+        logger
+      })
+
+      expect(refreshed.status).toBe('active')
+      expect(logger.warn).toHaveBeenCalledWith(
+        { code: 'vault-write-failed', operationId: entry.operationId },
+        'The team secret could not be written to the vault, reconciliation will retry it'
+      )
+      expect(await auditEvents(entry)).toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            action: 'teamDeployment.credential',
+            outcome: 'failure',
+            code: 'vault-write-failed'
+          })
+        ])
+      )
+    })
+
+    test('keeps the activation when the failure itself cannot be audited', async () => {
+      const orchestrator = fakeOrchestrator()
+      const logger = { warn: vi.fn(), debug: vi.fn() }
+      const entry = activating()
+      const doc = await insertDocument(entry)
+      const collection = db.collection.bind(db)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(activeResult(entry))
+
+      const spy = vi.spyOn(db, 'collection').mockImplementation((name) => {
+        const real = collection(name)
+
+        return name === 'auditEvents'
+          ? {
+              insertOne: async (event) => {
+                if (event.action === 'teamDeployment.credential') {
+                  throw new Error('audit down')
+                }
+
+                return real.insertOne(event)
+              }
+            }
+          : real
+      })
+
+      try {
+        const refreshed = await refresh(orchestrator, doc, entry, {
+          locker: server.locker,
+          ensureCredential: vi.fn().mockRejectedValue(new Error('boom')),
+          logger
+        })
+
+        expect(refreshed.status).toBe('active')
+      } finally {
+        spy.mockRestore()
+      }
+
+      expect(logger.warn).toHaveBeenCalledWith(
+        { code: 'credential-failed', operationId: entry.operationId },
+        'The team credential failure could not be audited'
+      )
+    })
+
+    test('retries a credential still missing when an active entry is polled, logging only at debug and auditing nothing', async () => {
+      const orchestrator = fakeOrchestrator()
+      const logger = { warn: vi.fn(), debug: vi.fn() }
+      const ensureCredential = vi.fn().mockRejectedValue(new Error('down'))
       const entry = activating({ status: 'active' })
       const doc = await insertDocument(entry)
-      const deps = { locker: server.locker, ensureCredential }
+      const deps = { locker: server.locker, ensureCredential, logger }
 
+      // Nothing recorded for the team: the credential was never created.
       await refresh(orchestrator, doc, entry, deps)
 
-      expect(ensureCredential).not.toHaveBeenCalled()
+      expect(ensureCredential).toHaveBeenCalledTimes(1)
+      expect(orchestrator.getDeploymentStatus).not.toHaveBeenCalled()
+      expect(logger.warn).not.toHaveBeenCalled()
+      expect(logger.debug).toHaveBeenCalledWith(
+        { code: 'credential-failed', operationId: entry.operationId },
+        'Creating the team credential failed, retrying on a later poll'
+      )
+      expect(await auditEvents(entry)).toEqual([])
+    })
+
+    test.each([
+      ['an active credential', { status: 'active' }],
+      [
+        'a revoked credential, which a poll never recreates',
+        { status: 'revoked' }
+      ]
+    ])('does not retry when the team already has %s', async (_label, held) => {
+      const orchestrator = fakeOrchestrator()
+      const ensureCredential = vi.fn()
+      const entry = activating({ status: 'active' })
+      const doc = await insertDocument(entry)
 
       await db.collection('credentials').insertOne({
         teamId: doc.teamId,
         environment: 'sandbox',
         tier: 'team',
         credentialType: 'oauth',
-        status: 'failed'
+        createdAt: anHourAgo(),
+        ...held
+      })
+      await refresh(orchestrator, doc, entry, {
+        locker: server.locker,
+        ensureCredential
+      })
+
+      expect(ensureCredential).not.toHaveBeenCalled()
+    })
+
+    test('waits out the poll interval before retrying an attempt that did not finish', async () => {
+      const orchestrator = fakeOrchestrator()
+      const ensureCredential = vi.fn().mockResolvedValue({ created: true })
+      const entry = activating({ status: 'active' })
+      const doc = await insertDocument(entry)
+      const deps = {
+        locker: server.locker,
+        ensureCredential,
+        pollMinIntervalMs: 60000
+      }
+
+      const { insertedId } = await db.collection('credentials').insertOne({
+        teamId: doc.teamId,
+        environment: 'sandbox',
+        tier: 'team',
+        credentialType: 'oauth',
+        status: 'failed',
+        createdAt: justNow()
       })
       await refresh(orchestrator, doc, entry, deps)
 
+      expect(ensureCredential).not.toHaveBeenCalled()
+
+      await db
+        .collection('credentials')
+        .updateOne({ _id: insertedId }, { $set: { createdAt: anHourAgo() } })
+      await refresh(orchestrator, doc, entry, deps)
+
       expect(ensureCredential).toHaveBeenCalledTimes(1)
-      expect(orchestrator.getDeploymentStatus).not.toHaveBeenCalled()
     })
   })
 })

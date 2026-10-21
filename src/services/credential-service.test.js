@@ -530,12 +530,12 @@ describe('#credential-service ensureTeamCredential', () => {
     )
   })
 
-  test('flags the credential vaultState: unwritten when the vault write fails, still without returning the secret', async () => {
+  test('flags the credential vaultState: unwritten and reports vaultWritten: false when the vault write fails, still without returning the secret', async () => {
     const vault = stubVault({
       put: vi.fn().mockRejectedValue(new Error('vault unavailable'))
     })
 
-    const { credential } = await ensureTeamCredential(
+    const result = await ensureTeamCredential(
       db,
       locker,
       params(),
@@ -543,9 +543,14 @@ describe('#credential-service ensureTeamCredential', () => {
       vault
     )
 
+    expect(result).toMatchObject({ created: true, vaultWritten: false })
+    expect(result).not.toHaveProperty('secret')
     expect(
-      (await db.collection('credentials').findOne({ _id: credential._id }))
-        .vaultState
+      (
+        await db
+          .collection('credentials')
+          .findOne({ _id: result.credential._id })
+      ).vaultState
     ).toBe('unwritten')
   })
 
@@ -597,7 +602,7 @@ describe('#credential-service ensureTeamCredential', () => {
     ).toBe(1)
   })
 
-  test('is refused as gateway-not-enabled when no issuer serves the team tier, leaving nothing behind', async () => {
+  test('is refused as gateway-not-enabled when no issuer serves the team tier, recording the attempt so a later poll can retry it', async () => {
     const request = params()
     const live = createCredentialIssuerRegistry({}, 'live', [])
 
@@ -607,32 +612,145 @@ describe('#credential-service ensureTeamCredential', () => {
       output: { statusCode: 501 },
       data: { code: 'gateway-not-enabled' }
     })
+
+    const [recorded] = await db
+      .collection('credentials')
+      .find({ teamId: request.teamId })
+      .toArray()
+
+    expect(recorded).toMatchObject({
+      tier: 'team',
+      status: 'failed',
+      failureReason: 'gateway-not-enabled',
+      issuerKey: null
+    })
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(true)
+
+    // The issuer is enabled later: the same document is reused and activated.
+    const retried = await ensureTeamCredential(
+      db,
+      locker,
+      { ...request, operationId: randomUUID() },
+      credentialIssuerRegistry,
+      stubVault()
+    )
+
+    expect(retried.credential._id.toString()).toBe(recorded._id.toString())
+    expect(retried.credential).toMatchObject({
+      status: 'active',
+      issuerKey: 'mock'
+    })
     expect(
       await db
         .collection('credentials')
         .countDocuments({ teamId: request.teamId })
-    ).toBe(0)
+    ).toBe(1)
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
   })
 
-  test('a team with nothing failed, or with an active credential, needs no retry', async () => {
+  test('records a repeated attempt that never reached an issuer on the same document, whatever the model or error', async () => {
+    const request = params({ modelSlug: 'a-model-not-in-the-catalogue' })
+    const broken = {
+      forModel: () => {
+        throw new Error('registry unavailable')
+      }
+    }
+
+    await expect(
+      ensureTeamCredential(db, locker, request, broken, stubVault())
+    ).rejects.toThrow('registry unavailable')
+    await expect(
+      ensureTeamCredential(db, locker, request, broken, stubVault())
+    ).rejects.toThrow('registry unavailable')
+
+    const recorded = await db
+      .collection('credentials')
+      .find({ teamId: request.teamId })
+      .toArray()
+
+    expect(recorded).toHaveLength(1)
+    expect(recorded[0]).toMatchObject({
+      status: 'failed',
+      failureReason: 'issuer-unavailable',
+      cloud: null,
+      gateway: null
+    })
+  })
+
+  test('reuses a pending attempt a crash left behind rather than adding a second document', async () => {
     const request = params()
+    const { insertedId } = await db.collection('credentials').insertOne({
+      teamId: request.teamId,
+      environment: 'sandbox',
+      tier: 'team',
+      credentialType: 'oauth',
+      status: 'pending',
+      userId: request.requestedBy,
+      idempotencyKey: 'team-activation:crashed',
+      createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    })
 
-    expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(true)
 
-    await ensureTeamCredential(
+    const { credential } = await ensureTeamCredential(
       db,
       locker,
       request,
       credentialIssuerRegistry,
       stubVault()
     )
-    await db.collection('credentials').insertOne({
+
+    expect(credential._id.toString()).toBe(insertedId.toString())
+    expect(credential.status).toBe('active')
+    expect(
+      await db
+        .collection('credentials')
+        .countDocuments({ teamId: request.teamId })
+    ).toBe(1)
+  })
+
+  test('says a poll needs to retry only when nothing is active and nothing is recorded or an attempt stalled', async () => {
+    const request = params()
+    const held = (status, createdAt) => ({
       teamId: request.teamId,
       environment: 'sandbox',
       tier: 'team',
       credentialType: 'oauth',
-      status: 'failed'
+      status,
+      createdAt
     })
+    const anHourAgo = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    const retryAfterMs = 60000
+
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(true)
+
+    // A failed attempt inside the wait is left alone, then retried.
+    const { insertedId } = await db
+      .collection('credentials')
+      .insertOne(held('failed', new Date().toISOString()))
+
+    expect(await teamCredentialNeedsRetry(db, request, { retryAfterMs })).toBe(
+      false
+    )
+
+    await db
+      .collection('credentials')
+      .updateOne({ _id: insertedId }, { $set: { createdAt: anHourAgo } })
+
+    expect(await teamCredentialNeedsRetry(db, request, { retryAfterMs })).toBe(
+      true
+    )
+
+    // An admin's revoked credential is not recreated by a poll.
+    await db
+      .collection('credentials')
+      .updateOne({ _id: insertedId }, { $set: { status: 'revoked' } })
+
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
+
+    // An active one is never retried.
+    await db.collection('credentials').insertOne(held('active', anHourAgo))
+    await db.collection('credentials').insertOne(held('failed', anHourAgo))
 
     expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
   })

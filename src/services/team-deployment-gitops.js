@@ -41,6 +41,10 @@ import {
 // through the same GitOps states.
 const FOLLOW_UPS = ['revert', 'abandon', 'remove']
 
+// Stable codes a team credential failure is audited under.
+const VAULT_WRITE_FAILED = 'vault-write-failed'
+const CREDENTIAL_FAILED = 'credential-failed'
+
 const REVERT_FAILED_REASON =
   'The apply failed again after a fresh retry and reverting the change failed too, so platform engineers have been alerted'
 const REMOVE_FAILED_REASON =
@@ -461,36 +465,83 @@ async function applyPolicies(db, doc, entry, polled, settings, deps) {
 // environment, which is created (its secret going to the vault, never
 // returned) if the team has none. The grant itself is the
 // `allowedDeployments` entry `persistStatus` has already written. A failure
-// is logged for an engineer and never fails the poll or undoes the
-// activation: the failed credential is retried on the next poll of an
-// active entry (`retryTeamCredential`). Logs carry operation IDs only.
+// never fails the poll or undoes the activation: it is logged and audited
+// against the deployment's operation with a stable code (once, on the
+// activation; a later retry only logs at debug, so a standing outage does
+// not repeat itself on every poll) and retried by `retryTeamCredential`.
+// Logs and audit events carry operation IDs and codes only.
 async function grantTeamCredential(
   db,
   doc,
   entry,
-  { ensureCredential, locker, logger }
+  { ensureCredential, locker, logger },
+  { retry = false } = {}
 ) {
   try {
-    await ensureCredential(db, locker, {
+    const { vaultWritten } = await ensureCredential(db, locker, {
       teamId: doc.teamId,
       environment: doc.environment,
       modelSlug: entry.modelSlug,
       requestedBy: entry.requestedBy,
       operationId: entry.operationId
     })
+
+    if (vaultWritten === false) {
+      await reportCredentialFailure(db, entry, logger, {
+        code: VAULT_WRITE_FAILED,
+        message:
+          'The team secret could not be written to the vault, reconciliation will retry it',
+        retry
+      })
+    }
   } catch (error) {
+    await reportCredentialFailure(db, entry, logger, {
+      code: error.data?.code ?? error.code ?? CREDENTIAL_FAILED,
+      message: 'Creating the team credential failed, retrying on a later poll',
+      retry
+    })
+  }
+}
+
+async function reportCredentialFailure(
+  db,
+  entry,
+  logger,
+  { code, message, retry }
+) {
+  logger?.[retry ? 'debug' : 'warn'](
+    { code, operationId: entry.operationId },
+    message
+  )
+
+  if (retry) {
+    return
+  }
+
+  try {
+    await auditDeployment(db, entry, {
+      action: 'teamDeployment.credential',
+      outcome: 'failure',
+      code
+    })
+  } catch {
     logger?.warn(
-      pollFailure(error, entry),
-      'Creating the team credential failed, retrying on the next poll'
+      { code, operationId: entry.operationId },
+      'The team credential failure could not be audited'
     )
   }
 }
 
-// Retries a credential whose earlier creation failed, once the model it
-// was for is active and nothing else has replaced it.
+// Creates a credential still missing for an active entry: none recorded, or
+// an earlier attempt that did not finish (`teamCredentialNeedsRetry`), at
+// most once per poll interval.
 async function retryTeamCredential(db, doc, entry, settings) {
-  if (await teamCredentialNeedsRetry(db, doc)) {
-    await grantTeamCredential(db, doc, entry, settings)
+  const needed = await teamCredentialNeedsRetry(db, doc, {
+    retryAfterMs: settings.pollMinIntervalMs
+  })
+
+  if (needed) {
+    await grantTeamCredential(db, doc, entry, settings, { retry: true })
   }
 }
 
