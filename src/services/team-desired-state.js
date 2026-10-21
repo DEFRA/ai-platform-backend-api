@@ -144,6 +144,17 @@ async function inheritedLimits(registry, slug, environment) {
   return first?.document.gateway.limits
 }
 
+// The file's own limits when it has them (never overwritten by a later
+// request, and kept by a removal even when the catalogue has moved on), else
+// the team's first environment's, else the defaults.
+async function limitsFor({ current, registry, team, environment, model }) {
+  return (
+    current?.gateway?.limits ??
+    (await inheritedLimits(registry, team.slug, environment)) ??
+    limitsOf(model ?? {})
+  )
+}
+
 /**
  * Creates the WS6 builder the GitHub orchestrator submits with. Returns the
  * whole next revision of the team's file and the revision it was built from,
@@ -198,10 +209,7 @@ export function createTeamDesiredStateBuilder({
         // A team's agreed limits are never overwritten by a later request;
         // a removal keeps them even when the catalogue has moved on. A team's
         // first request in an environment copies its first environment's.
-        limits:
-          current?.gateway?.limits ??
-          (await inheritedLimits(registry, team.slug, environment)) ??
-          limitsOf(model ?? {})
+        limits: await limitsFor({ current, registry, team, environment, model })
       },
       oauth: current?.oauth ?? {
         federations: [],

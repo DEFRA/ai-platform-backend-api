@@ -19,7 +19,12 @@ const serviceCodeField = Joi.string()
   .pattern(/^[A-Z0-9]{3}$/)
 
 // Trimmed and optional; empty clears it.
-const descriptionField = Joi.string().trim().max(500).allow('')
+const MAX_DESCRIPTION_LENGTH = 500
+const MAX_EMAIL_LENGTH = 254
+const descriptionField = Joi.string()
+  .trim()
+  .max(MAX_DESCRIPTION_LENGTH)
+  .allow('')
 
 const memberRoleField = Joi.string().valid('admin', 'user')
 
@@ -143,7 +148,7 @@ export const teams = [
         headers: idempotentHeaders,
         params: idParam,
         payload: Joi.object({
-          email: Joi.string().email().max(254).required(),
+          email: Joi.string().email().max(MAX_EMAIL_LENGTH).required(),
           role: memberRoleField.default('user')
         }).unknown(false)
       }
