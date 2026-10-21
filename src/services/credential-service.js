@@ -207,6 +207,7 @@ export async function issueCredential(
   try {
     return await issueCredentialForParams(
       db,
+      locker,
       { ...params, environment },
       registry,
       vault
@@ -351,6 +352,7 @@ async function issueAndActivate(
 
 async function issueCredentialForParams(
   db,
+  locker,
   { userId, modelSlug, purpose, idempotencyKey, environment },
   registry = credentialIssuerRegistry,
   vault = credentialVault
@@ -432,7 +434,7 @@ async function issueCredentialForParams(
   // /manage's "Keys you can use" table fills up with duplicate entries for
   // one logical request (none of which can be usefully renewed or revoked,
   // since they were never actually issued).
-  const reusable = await db.collection('credentials').findOne({
+  const unfinished = await db.collection('credentials').findOne({
     userId,
     modelSlug,
     tier: 'research',
@@ -440,20 +442,31 @@ async function issueCredentialForParams(
     status: { $in: ['pending', 'failed'] }
   })
 
-  const { credential, secret } = await issueAndActivate(db, vault, {
-    issuer,
-    pending,
-    reusable,
-    issueParams: {
-      userId,
-      modelSlug,
-      tier: 'research',
-      teamId: pending.teamId,
-      environment
-    }
-  })
+  // Held from before the row exists until its secret is stored, so neither a
+  // revocation nor a reconciliation of the vault marker can act on a
+  // credential still being issued.
+  return withCredentialRow(
+    db,
+    locker,
+    unfinished,
+    async ({ reusable, rowId }) => {
+      const { credential, secret } = await issueAndActivate(db, vault, {
+        issuer,
+        pending,
+        reusable,
+        insertId: rowId,
+        issueParams: {
+          userId,
+          modelSlug,
+          tier: 'research',
+          teamId: pending.teamId,
+          environment
+        }
+      })
 
-  return { credential, secret }
+      return { credential, secret }
+    }
+  )
 }
 
 const TEAM_CREDENTIAL_FILTER = {

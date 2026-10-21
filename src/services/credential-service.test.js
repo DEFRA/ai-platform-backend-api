@@ -127,6 +127,66 @@ describe('#credential-service vault wiring', () => {
     expect(stored.vaultState).toBeUndefined()
   })
 
+  test('reconciliation leaves a research issuance alone while its secret is still being stored', async () => {
+    const { reconcilePendingCredentials } =
+      await import('#/services/maintenance-service.js')
+    let release
+    const gate = new Promise((resolve) => {
+      release = resolve
+    })
+    const vault = stubVault({
+      put: vi.fn(async () => {
+        await gate
+      })
+    })
+    const reconcileVault = stubVault()
+    const userId = `vault-inflight-user-${randomUUID()}`
+
+    const issuing = issueCredential(
+      db,
+      locker,
+      { userId, modelSlug: 'gpt-4o', idempotencyKey: randomUUID() },
+      credentialIssuerRegistry,
+      vault
+    )
+
+    await vi.waitFor(() => expect(vault.put).toHaveBeenCalled())
+
+    const inFlight = await db.collection('credentials').findOne({ userId })
+
+    // Active and marked, secret not stored yet: a sweep now must not reissue it.
+    expect(inFlight).toMatchObject({
+      status: 'active',
+      vaultState: 'unwritten'
+    })
+
+    await reconcilePendingCredentials(
+      db,
+      locker,
+      credentialIssuerRegistry,
+      reconcileVault
+    )
+
+    expect(reconcileVault.put).not.toHaveBeenCalledWith(
+      expect.objectContaining({ credentialId: inFlight._id.toString() })
+    )
+
+    release()
+
+    const { credential, secret } = await issuing
+
+    expect(vault.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credentialId: credential._id.toString(),
+        secret
+      })
+    )
+    expect(
+      (await db.collection('credentials').findOne({ _id: credential._id }))
+        .vaultState
+    ).toBeUndefined()
+  })
+
   test('issueCredential rejects a model whose gateway is not enabled, without creating a credential', async () => {
     await db.collection('models').insertOne({
       slug: 'other-gateway-not-enabled-model',
