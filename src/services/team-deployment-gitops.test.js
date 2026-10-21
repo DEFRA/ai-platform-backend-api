@@ -1407,6 +1407,11 @@ describe('team-deployment-gitops', () => {
       await refresh(orchestrator, doc, entry, deps)
 
       expect(ensureCredential).toHaveBeenCalledTimes(1)
+      expect(ensureCredential).toHaveBeenCalledWith(
+        db,
+        server.locker,
+        expect.objectContaining({ retryAfterMs: 0 })
+      )
       expect(orchestrator.getDeploymentStatus).not.toHaveBeenCalled()
       expect(logger.warn).not.toHaveBeenCalled()
       expect(logger.debug).toHaveBeenCalledWith(

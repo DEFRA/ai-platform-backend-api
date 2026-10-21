@@ -465,15 +465,15 @@ const TEAM_CREDENTIAL_FILTER = {
  * rather than left beside a second row.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner and the audit actor
+ * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string, retryAfterMs?: number}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner and the audit actor. `retryAfterMs` marks a retry from a poll rather than a new activation: it is checked again inside the lock (see `teamCredentialNeedsRetry`), so polls that raced for it cannot repeat an attempt that has just failed
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
- * @returns {Promise<{credential: object, created: boolean, vaultWritten?: boolean}>} `vaultWritten` is false when the credential was created but its secret is not in the vault yet (reconciliation retries it)
+ * @returns {Promise<{credential: object|null, created: boolean, vaultWritten?: boolean}>} `credential` is null when a retry was no longer needed; `vaultWritten` is false when the credential was created but its secret is not in the vault yet (reconciliation retries it)
  */
 export async function ensureTeamCredential(
   db,
   locker,
-  { teamId, environment, modelSlug, requestedBy, operationId },
+  { teamId, environment, modelSlug, requestedBy, operationId, retryAfterMs },
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
@@ -490,6 +490,17 @@ export async function ensureTeamCredential(
 
     if (active) {
       return { credential: active, created: false }
+    }
+
+    if (
+      retryAfterMs !== undefined &&
+      !(await teamCredentialNeedsRetry(
+        db,
+        { teamId, environment },
+        { retryAfterMs }
+      ))
+    ) {
+      return { credential: null, created: false }
     }
 
     const model = await findModelBySlug(db, modelSlug)

@@ -677,6 +677,80 @@ describe('#credential-service ensureTeamCredential', () => {
     })
   })
 
+  test('a retry that raced another poll for the lock does not repeat an attempt that has just failed', async () => {
+    const request = params()
+    const issue = vi.fn().mockRejectedValue(new Error('issuer unavailable'))
+    const failing = {
+      forModel: () => ({ issuerKey: 'mock', issuer: { issue } })
+    }
+    const stalled = new Date(Date.now() - 60 * 60 * 1000).toISOString()
+
+    await db.collection('credentials').insertOne({
+      teamId: request.teamId,
+      environment: 'sandbox',
+      tier: 'team',
+      credentialType: 'oauth',
+      status: 'failed',
+      createdAt: stalled
+    })
+
+    const polls = await Promise.allSettled(
+      Array.from({ length: 4 }, () =>
+        ensureTeamCredential(
+          db,
+          locker,
+          { ...request, retryAfterMs: 60000 },
+          failing,
+          stubVault()
+        )
+      )
+    )
+
+    // Only the poll that got the lock first calls the issuer; the others find
+    // the attempt they read as stalled has just been retried.
+    expect(issue).toHaveBeenCalledTimes(1)
+    expect(polls.filter(({ status }) => status === 'rejected')).toHaveLength(1)
+    expect(
+      polls.filter(
+        ({ status, value }) =>
+          status === 'fulfilled' && value.credential === null
+      )
+    ).toHaveLength(3)
+  })
+
+  test('a retry creates the credential when it is still needed, and a new activation is never throttled', async () => {
+    const retried = params()
+    const activated = params()
+
+    const fromPoll = await ensureTeamCredential(
+      db,
+      locker,
+      { ...retried, retryAfterMs: 60000 },
+      credentialIssuerRegistry,
+      stubVault()
+    )
+    await db.collection('credentials').insertOne({
+      teamId: activated.teamId,
+      environment: 'sandbox',
+      tier: 'team',
+      credentialType: 'oauth',
+      status: 'failed',
+      createdAt: new Date().toISOString()
+    })
+    const fromActivation = await ensureTeamCredential(
+      db,
+      locker,
+      activated,
+      credentialIssuerRegistry,
+      stubVault()
+    )
+
+    expect(fromPoll).toMatchObject({ created: true })
+    expect(fromPoll.credential.status).toBe('active')
+    expect(fromActivation).toMatchObject({ created: true })
+    expect(fromActivation.credential.status).toBe('active')
+  })
+
   test('reuses a pending attempt a crash left behind rather than adding a second document', async () => {
     const request = params()
     const { insertedId } = await db.collection('credentials').insertOne({

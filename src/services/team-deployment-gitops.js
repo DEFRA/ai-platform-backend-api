@@ -474,7 +474,7 @@ async function grantTeamCredential(
   db,
   doc,
   entry,
-  { ensureCredential, locker, logger },
+  { ensureCredential, locker, logger, pollMinIntervalMs },
   { retry = false } = {}
 ) {
   try {
@@ -483,7 +483,8 @@ async function grantTeamCredential(
       environment: doc.environment,
       modelSlug: entry.modelSlug,
       requestedBy: entry.requestedBy,
-      operationId: entry.operationId
+      operationId: entry.operationId,
+      ...(retry && { retryAfterMs: pollMinIntervalMs })
     })
 
     if (vaultWritten === false) {
