@@ -136,6 +136,62 @@ describe('#maintenance routes', () => {
     ).toBeUndefined()
   })
 
+  test('POST /maintenance/expire-credentials never reissues a credential that was revoked, whether before the sweep or between its scan and its lock', async () => {
+    const issueOne = async (userId) => {
+      const issued = await server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+        payload: { modelSlug: 'gpt-4o' }
+      })
+
+      return new ObjectId(issued.result.credential._id)
+    }
+    const flagged = (id) =>
+      server.db
+        .collection('credentials')
+        .updateOne({ _id: id }, { $set: { vaultState: 'unwritten' } })
+    const revoked = (id) =>
+      server.db
+        .collection('credentials')
+        .updateOne({ _id: id }, { $set: { status: 'revoked' } })
+    const before = await issueOne('maintenance-revoked-before-user')
+    const between = await issueOne('maintenance-revoked-between-user')
+
+    await flagged(before)
+    await revoked(before)
+    await flagged(between)
+
+    // The second is revoked after the sweep scanned it, as its lock is taken.
+    const realLock = server.locker.lock.bind(server.locker)
+    const spy = vi
+      .spyOn(server.locker, 'lock')
+      .mockImplementation(async (resource) => {
+        if (resource === `credential:${between}`) {
+          await revoked(between)
+        }
+
+        return realLock(resource)
+      })
+
+    try {
+      await server.inject({
+        method: 'POST',
+        url: '/maintenance/expire-credentials',
+        headers: { 'x-maintenance-token': 'test-maintenance-token' }
+      })
+    } finally {
+      spy.mockRestore()
+    }
+
+    // Reissuing would have stored the secret and cleared the marker.
+    for (const id of [before, between]) {
+      expect(
+        await server.db.collection('credentials').findOne({ _id: id })
+      ).toMatchObject({ status: 'revoked', vaultState: 'unwritten' })
+    }
+  })
+
   test('POST /maintenance/expire-credentials does not reissue a credential whose marker was cleared after it was found', async () => {
     const issued = await server.inject({
       method: 'POST',

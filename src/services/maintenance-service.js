@@ -6,7 +6,8 @@ import { AZURE_APIM } from '#/adapters/gateway-keys.js'
 import {
   writeSecretToVault,
   externalGatewaySubscriptionIdOf,
-  environmentOf
+  environmentOf,
+  credentialLockName
 } from '#/services/credential-service.js'
 import {
   recoverTeamCredentials,
@@ -56,7 +57,7 @@ export async function expireCredentials(
   let suspended = 0
 
   for (const credential of dueCredentials) {
-    const lock = await requireLock(locker, `credential:${credential._id}`)
+    const lock = await requireLock(locker, credentialLockName(credential._id))
 
     try {
       // Suspend in APIM before marking expired in Mongo - if suspend fails,
@@ -176,9 +177,12 @@ export async function reconcilePendingCredentials(
   return { reconciled: modifiedCount, vaultReconciled }
 }
 
+const RECONCILABLE_STATUSES = ['active', 'expired']
+
 /**
- * Retries the vault write for every credential flagged `vaultState:
- * 'unwritten'`. Leaves the flag in place (to retry again next run) for any
+ * Retries the vault write for every active or expired credential flagged
+ * `vaultState: 'unwritten'` (a revoked one is never reissued). Leaves the
+ * flag in place (to retry again next run) for any
  * credential whose issuer call or vault write still fails. Each credential
  * is read again under its `credential:{id}` lock, the one issuing, rotating
  * and revoking hold, so a credential whose issuance is still running (it is
@@ -192,22 +196,26 @@ export async function reconcilePendingCredentials(
 async function reconcileUnwrittenVaultSecrets(db, locker, registry, vault) {
   const unwritten = await db
     .collection('credentials')
-    .find({ vaultState: 'unwritten' })
+    .find({ vaultState: 'unwritten', status: { $in: RECONCILABLE_STATUSES } })
     .toArray()
 
   let reconciled = 0
 
   for (const found of unwritten) {
-    const lock = await acquireLock(locker, `credential:${found._id}`)
+    const lock = await acquireLock(locker, credentialLockName(found._id))
 
     if (!lock) {
       continue
     }
 
     try {
-      const credential = await db
-        .collection('credentials')
-        .findOne({ _id: found._id, vaultState: 'unwritten' })
+      // Read again under the lock: a revocation that finished first leaves
+      // the marker in place, and a revoked credential is never reissued.
+      const credential = await db.collection('credentials').findOne({
+        _id: found._id,
+        vaultState: 'unwritten',
+        status: { $in: RECONCILABLE_STATUSES }
+      })
 
       if (!credential) {
         continue

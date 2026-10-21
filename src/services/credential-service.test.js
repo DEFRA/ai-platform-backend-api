@@ -850,10 +850,16 @@ describe('#credential-service ensureTeamCredential', () => {
 
     await vi.waitFor(() => expect(issue).toHaveBeenCalled())
 
-    // The revocation cannot slip in while the row is being reissued.
-    await expect(
-      revokeCredential(db, locker, { id, userId: request.requestedBy })
-    ).rejects.toThrow('Failed to acquire lock')
+    // The revocation cannot slip in while the row is being reissued, however
+    // the id is spelled in the request.
+    for (const spelling of [id, id.toUpperCase()]) {
+      await expect(
+        revokeCredential(db, locker, {
+          id: spelling,
+          userId: request.requestedBy
+        })
+      ).rejects.toThrow('Failed to acquire lock')
+    }
 
     release()
 

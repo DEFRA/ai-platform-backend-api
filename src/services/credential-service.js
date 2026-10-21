@@ -562,6 +562,18 @@ export async function ensureTeamCredential(
 
 const UNFINISHED_STATUSES = ['pending', 'failed']
 
+/**
+ * The lock every action on one credential row takes (issuing, renewing,
+ * rotating, revoking, expiring, reconciling its vault secret). Named from the
+ * id's canonical hex form, so a request that spells the same id in upper case
+ * contends for the same lock.
+ * @param {string|import('mongodb').ObjectId} id
+ * @returns {string}
+ */
+export function credentialLockName(id) {
+  return `credential:${ObjectId.isValid(id) ? new ObjectId(id).toHexString() : id}`
+}
+
 // Whether the credential is still owed, read inside the lock: a retry from a
 // poll is owed by `teamCredentialNeedsRetry`; the activation itself is owed
 // unless an admin revoked the team's latest credential after it, which
@@ -600,7 +612,7 @@ async function teamCredentialOwed(
 // the row exists, so it is never visible unlocked.
 async function withCredentialRow(db, locker, unfinished, work) {
   const rowId = unfinished?._id ?? new ObjectId()
-  const lock = await requireLock(locker, `credential:${rowId}`)
+  const lock = await requireLock(locker, credentialLockName(rowId))
 
   try {
     const reusable = unfinished
@@ -615,7 +627,7 @@ async function withCredentialRow(db, locker, unfinished, work) {
     }
 
     const freshId = new ObjectId()
-    const freshLock = await requireLock(locker, `credential:${freshId}`)
+    const freshLock = await requireLock(locker, credentialLockName(freshId))
 
     try {
       return await work({ reusable: null, rowId: freshId })
@@ -988,7 +1000,7 @@ export async function renewCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const lock = await requireLock(locker, `credential:${id}`)
+  const lock = await requireLock(locker, credentialLockName(id))
 
   try {
     const credential = await findCredentialForUser(db, { id, userId })
@@ -1102,7 +1114,7 @@ export async function rotateCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const lock = await requireLock(locker, `credential:${id}`)
+  const lock = await requireLock(locker, credentialLockName(id))
 
   try {
     const credential = await loadCredentialForAction(db, { id, userId })
@@ -1174,7 +1186,7 @@ export async function revokeCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const lock = await requireLock(locker, `credential:${id}`)
+  const lock = await requireLock(locker, credentialLockName(id))
 
   try {
     const credential = await loadCredentialForAction(db, { id, userId })
