@@ -765,4 +765,145 @@ describe('#team-deployments routes', () => {
       expect(unknown.statusCode).toBe(404)
     })
   })
+
+  describe('addressing the team by its slug', () => {
+    async function slugOf(teamId) {
+      const team = await server.db.collection('teams').findOne({ _id: teamId })
+
+      return team.slug
+    }
+
+    test('requests, reads, lists and removes a deployment the same as by id', async () => {
+      const label = 'slug-user-1'
+      const teamId = await createTeam(label)
+      const slug = await slugOf(teamId)
+
+      const requested = await requestModel(slug, label)
+
+      expect(requested.statusCode).toBe(201)
+      expect(requested.headers.location).toBe(`/v1/teams/${slug}/deployments`)
+
+      // Held against the team's id, so the slug and the id see one record.
+      const stored = await server.db
+        .collection('teamDeployments')
+        .findOne({ teamId: teamId.toString() })
+
+      expect(stored.deployments).toHaveLength(1)
+
+      const byId = await requestModel(teamId, label)
+
+      expect(byId.statusCode).toBe(409)
+      expect(byId.result.code).toBe('deployment-exists')
+
+      const deploymentUrl = `/v1/teams/${slug}/deployments/${requested.result.deployment._id}`
+      const read = await server.inject({
+        method: 'GET',
+        url: deploymentUrl,
+        headers: userHeaders(label)
+      })
+      const listed = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${slug}/deployments`,
+        headers: userHeaders(label)
+      })
+
+      expect(read.statusCode).toBe(200)
+      expect(listed.result.items).toHaveLength(1)
+
+      await wait(300)
+      await server.inject({
+        method: 'GET',
+        url: deploymentUrl,
+        headers: userHeaders(label)
+      })
+      const removed = await server.inject({
+        method: 'DELETE',
+        url: deploymentUrl,
+        headers: userHeaders(label)
+      })
+
+      expect(removed.statusCode).toBe(200)
+      expect(removed.result.deployment.status).toBe('removed')
+    })
+
+    test('keeps a person who is not in the team out, and a team member who is not an admin from removing', async () => {
+      const label = 'slug-user-2'
+      const teamId = await createTeam(label)
+      const slug = await slugOf(teamId)
+      const requested = await requestModel(slug, label)
+      const deploymentUrl = `/v1/teams/${slug}/deployments/${requested.result.deployment._id}`
+
+      await signIn('slug-member-2')
+      await server.db.collection('teamMembers').insertOne({
+        teamId: teamId.toString(),
+        userId: userHeaders('slug-member-2')['x-user-id'],
+        role: 'user',
+        status: 'active'
+      })
+
+      const asMember = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${slug}/deployments`,
+        headers: userHeaders('slug-member-2')
+      })
+      const memberRemoves = await server.inject({
+        method: 'DELETE',
+        url: deploymentUrl,
+        headers: userHeaders('slug-member-2')
+      })
+      const stranger = userHeaders('slug-stranger-2')
+      const strangerRequests = await requestModel(slug, 'slug-stranger-2')
+      const strangerLists = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${slug}/deployments`,
+        headers: stranger
+      })
+      const strangerReads = await server.inject({
+        method: 'GET',
+        url: deploymentUrl,
+        headers: stranger
+      })
+      const strangerRemoves = await server.inject({
+        method: 'DELETE',
+        url: deploymentUrl,
+        headers: stranger
+      })
+
+      expect(asMember.statusCode).toBe(200)
+      expect(memberRemoves.statusCode).toBe(403)
+      expect(memberRemoves.result.code).toBe('admin-required')
+      expect(strangerRequests.statusCode).toBe(404)
+      expect(strangerLists.statusCode).toBe(404)
+      expect(strangerReads.statusCode).toBe(404)
+      expect(strangerRemoves.statusCode).toBe(404)
+    })
+
+    test('is not found for a slug no team holds, as for an id no team holds', async () => {
+      const label = 'slug-user-3'
+
+      await signIn(label)
+
+      const requested = await requestModel('no-such-team', label)
+      const listed = await server.inject({
+        method: 'GET',
+        url: '/v1/teams/no-such-team/deployments',
+        headers: userHeaders(label)
+      })
+      const read = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/no-such-team/deployments/${randomUUID()}`,
+        headers: userHeaders(label)
+      })
+      const removed = await server.inject({
+        method: 'DELETE',
+        url: `/v1/teams/no-such-team/deployments/${randomUUID()}`,
+        headers: userHeaders(label)
+      })
+
+      expect(requested.statusCode).toBe(404)
+      expect(listed.statusCode).toBe(404)
+      expect(read.statusCode).toBe(404)
+      expect(removed.statusCode).toBe(404)
+    })
+  })
 })

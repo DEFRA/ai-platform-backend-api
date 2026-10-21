@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
+import { ObjectId } from 'mongodb'
+
 const alpha = JSON.parse(
   readFileSync(
     new URL(
@@ -92,7 +94,7 @@ describe('team-deployment-service (GitOps)', () => {
   })
 
   async function joinTeam(userId) {
-    const teamId = `gitops-team-${randomUUID()}`
+    const teamId = new ObjectId().toString()
 
     await db
       .collection('teamMembers')

@@ -109,6 +109,42 @@ async function findTeam(db, teamId) {
 }
 
 /**
+ * The team's tenant file in each environment this instance deploys to
+ * (`TEAM_ENVIRONMENTS`, in order) that has one on `main`. Environments the
+ * team has no file in are left out.
+ * @param {import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry} registry
+ * @param {string} slug - the team's slug
+ * @param {string[]} [excluding] - environments not to read
+ * @returns {Promise<Array<{environment: string, document: object}>>}
+ */
+export async function readTeamEnvironments(registry, slug, excluding = []) {
+  const environments = config
+    .get('teamDeployment.environments')
+    .filter((environment) => !excluding.includes(environment))
+  const files = await Promise.all(
+    environments.map(async (environment) => {
+      const { document } = await registry.orchestrator.getCurrentDocument({
+        path: teamFilePath(environment, slug)
+      })
+
+      return { environment, document }
+    })
+  )
+
+  return files.filter(({ document }) => document)
+}
+
+// A team's first environment sets the limits a later one starts with, so a
+// team does not meet new limits it never agreed to when it moves on.
+async function inheritedLimits(registry, slug, environment) {
+  const files = await readTeamEnvironments(registry, slug, [environment])
+
+  const first = files.find(({ document }) => document.gateway?.limits)
+
+  return first?.document.gateway.limits
+}
+
+/**
  * Creates the WS6 builder the GitHub orchestrator submits with. Returns the
  * whole next revision of the team's file and the revision it was built from,
  * which `submit` compares with `main` and refuses as `revision-conflict` if
@@ -160,8 +196,12 @@ export function createTeamDesiredStateBuilder({
         credentialType: 'oauth',
         allowedDeployments,
         // A team's agreed limits are never overwritten by a later request;
-        // a removal keeps them even when the catalogue has moved on.
-        limits: current?.gateway?.limits ?? limitsOf(model ?? {})
+        // a removal keeps them even when the catalogue has moved on. A team's
+        // first request in an environment copies its first environment's.
+        limits:
+          current?.gateway?.limits ??
+          (await inheritedLimits(registry, team.slug, environment)) ??
+          limitsOf(model ?? {})
       },
       oauth: current?.oauth ?? {
         federations: [],

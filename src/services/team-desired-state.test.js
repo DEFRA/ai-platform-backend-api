@@ -267,6 +267,124 @@ describe('#createTeamDesiredStateBuilder', () => {
     expect(result.document.deployments[0].capacity).toBe(5)
   })
 
+  describe('limits in a new environment', () => {
+    let config
+    let configuredEnvironments
+
+    beforeAll(async () => {
+      ;({ config } = await import('#/config.js'))
+      configuredEnvironments = config.get('teamDeployment.environments')
+    })
+
+    beforeEach(() => {
+      config.set('teamDeployment.environments', ['infradev', 'qa', 'preprod'])
+    })
+
+    afterEach(() => {
+      config.set('teamDeployment.environments', configuredEnvironments)
+    })
+
+    function fileWithLimits(limits) {
+      return {
+        schemaVersion: 1,
+        revision: 3,
+        gateway: { credentialType: 'oauth', allowedDeployments: [], limits }
+      }
+    }
+
+    // The files `main` holds for a team, by environment.
+    async function buildIn(environment, filesByEnvironment) {
+      const { teamId, slug } = await team()
+      const getCurrentDocument = vi.fn(async ({ path }) => {
+        const [, env] = path.match(/^environments\/([^/]+)\//)
+
+        return { document: filesByEnvironment[env] ?? null }
+      })
+      const builder = createTeamDesiredStateBuilder({
+        registry: { orchestrator: { getCurrentDocument } }
+      })
+      const { document } = await builder(db, {
+        teamId,
+        environment,
+        modelSlug: TEAM_MODEL.slug,
+        operationId: '651f2c0f5c1b4a0012ab34cf'
+      })
+
+      return { document, slug, getCurrentDocument }
+    }
+
+    test("copies the limits of the team's first environment", async () => {
+      const { document, slug, getCurrentDocument } = await buildIn('qa', {
+        infradev: fileWithLimits({
+          requestsPerMinute: 77,
+          tokensPerMinute: 4000
+        })
+      })
+
+      expect(document.revision).toBe(1)
+      expect(document.gateway.limits).toEqual({
+        requestsPerMinute: 77,
+        tokensPerMinute: 4000
+      })
+      expect(getCurrentDocument).toHaveBeenCalledWith({
+        path: `environments/infradev/${slug}.json`
+      })
+    })
+
+    test('takes the first environment in order that has a file, not the one being set up', async () => {
+      const { document } = await buildIn('infradev', {
+        preprod: fileWithLimits({
+          requestsPerMinute: 11,
+          tokensPerMinute: 2200
+        }),
+        qa: fileWithLimits({ requestsPerMinute: 33, tokensPerMinute: 3300 })
+      })
+
+      expect(document.gateway.limits).toEqual({
+        requestsPerMinute: 33,
+        tokensPerMinute: 3300
+      })
+    })
+
+    test('keeps its own limits in an environment that already has a file', async () => {
+      const { document } = await buildIn('qa', {
+        infradev: fileWithLimits({
+          requestsPerMinute: 77,
+          tokensPerMinute: 4000
+        }),
+        qa: fileWithLimits({ requestsPerMinute: 5, tokensPerMinute: 500 })
+      })
+
+      expect(document.revision).toBe(4)
+      expect(document.gateway.limits).toEqual({
+        requestsPerMinute: 5,
+        tokensPerMinute: 500
+      })
+    })
+
+    test('starts from the defaults when the team has no file anywhere else', async () => {
+      const { document, getCurrentDocument } = await buildIn('qa', {})
+
+      expect(document.gateway.limits).toEqual({
+        requestsPerMinute: 90,
+        tokensPerMinute: 1000
+      })
+      expect(getCurrentDocument).toHaveBeenCalledTimes(3)
+    })
+
+    test('skips another environment whose file states no limits', async () => {
+      const { document } = await buildIn('preprod', {
+        infradev: { schemaVersion: 1, revision: 1, gateway: {} },
+        qa: fileWithLimits({ requestsPerMinute: 33, tokensPerMinute: 3300 })
+      })
+
+      expect(document.gateway.limits).toEqual({
+        requestsPerMinute: 33,
+        tokensPerMinute: 3300
+      })
+    })
+  })
+
   describe('a removal', () => {
     const current = {
       schemaVersion: 1,
