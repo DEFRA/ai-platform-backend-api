@@ -228,6 +228,28 @@ describe('team-deployment-gitops', () => {
       expect(entry.statusTimes).toEqual(stored.statusTimes)
     })
 
+    test('keeps the time a status was first reached when a retry revisits it', async () => {
+      const orchestrator = fakeOrchestrator()
+      const first = '2026-10-21T10:44:00.000Z'
+      let entry = githubEntry({
+        status: 'deploying',
+        statusTimes: { requested: '2026-10-21T10:40:00.000Z', deployed: first }
+      })
+      const doc = await insertDocument(entry)
+
+      // deployed -> deploy-failed -> deploying (the retry) -> deployed again
+      orchestrator.getDeploymentStatus.mockResolvedValue({
+        operationId: entry.operationId,
+        status: 'deployed',
+        links: {}
+      })
+      entry = await refresh(orchestrator, doc, entry)
+
+      expect(entry.status).toBe('deployed')
+      expect(entry.statusTimes.deployed).toBe(first)
+      expect((await storedEntry(entry.id)).statusTimes.deployed).toBe(first)
+    })
+
     test('starts the record for an entry made before times were kept', async () => {
       const orchestrator = fakeOrchestrator()
       const entry = githubEntry()

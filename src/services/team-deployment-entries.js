@@ -112,6 +112,19 @@ export function entryFields(fields) {
 }
 
 /**
+ * The entry's `statusTimes` with the time it first reached `status`: a time
+ * already recorded is kept, so a status revisited after a retry does not
+ * move the steps already completed.
+ * @param {Record<string, string>|undefined} statusTimes
+ * @param {string} status
+ * @param {string} at - ISO time
+ * @returns {Record<string, string>}
+ */
+export function withStatusTime(statusTimes, status, at) {
+  return { ...statusTimes, [status]: statusTimes?.[status] ?? at }
+}
+
+/**
  * Records an audit event against one deployment entry, as the backend
  * itself unless an actor is given.
  * @param {import('mongodb').Db} db

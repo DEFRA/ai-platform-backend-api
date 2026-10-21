@@ -16,7 +16,8 @@ import {
   appRegistrationOf,
   auditDeployment,
   entryFilter,
-  findEntry
+  findEntry,
+  withStatusTime
 } from '#/services/team-deployment-entries.js'
 import {
   abandonOperation,
@@ -80,7 +81,7 @@ function statusChangesOf(result, entry) {
   const at = new Date().toISOString()
   const update = {
     status: result.status,
-    statusTimes: { ...entry.statusTimes, [result.status]: at }
+    statusTimes: withStatusTime(entry.statusTimes, result.status, at)
   }
 
   if (result.status === 'active') {

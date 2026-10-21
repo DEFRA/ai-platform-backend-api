@@ -20,7 +20,8 @@ import {
   auditDeployment,
   entryFields,
   entryFilter,
-  findEntry
+  findEntry,
+  withStatusTime
 } from '#/services/team-deployment-entries.js'
 import { refreshEntryStatus } from '#/services/team-deployment-gitops.js'
 import { mustQueue } from '#/services/team-deployment-queue.js'
@@ -507,13 +508,25 @@ export async function listDeploymentsForTeam(
 }
 
 // What a retry or reconcile claims before it dispatches: a failed
-// deployment resuming, and the apply about to go out as its one D14 retry.
+// deployment resuming (and when it first reached `deploying`, which a poll
+// that skipped it never recorded), and the apply about to go out as its one
+// D14 retry.
 function redispatchClaim(entry, kind) {
   const resumes = entry.status === DEPLOY_FAILED
 
   return {
     resumes,
-    changes: resumes ? { status: 'deploying', failureReason: null } : {},
+    changes: resumes
+      ? {
+          status: 'deploying',
+          statusTimes: withStatusTime(
+            entry.statusTimes,
+            'deploying',
+            new Date().toISOString()
+          ),
+          failureReason: null
+        }
+      : {},
     applyRetry: entry.gitops
       ? { claimedAt: new Date().toISOString(), reason: kind }
       : null
@@ -551,7 +564,11 @@ async function claimRedispatch(db, doc, entry, claim) {
 async function releaseRedispatch(db, doc, entry, claim) {
   const restore = {
     ...(claim.resumes
-      ? { status: entry.status, failureReason: entry.failureReason }
+      ? {
+          status: entry.status,
+          statusTimes: entry.statusTimes ?? null,
+          failureReason: entry.failureReason
+        }
       : {}),
     ...(claim.resumes && entry.gitops
       ? { 'gitops.verification': entry.gitops.verification ?? null }

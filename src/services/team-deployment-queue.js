@@ -3,7 +3,8 @@ import {
   CHECKS_FAILED,
   NON_TERMINAL_STATUSES,
   QUEUED,
-  auditDeployment
+  auditDeployment,
+  withStatusTime
 } from '#/services/team-deployment-entries.js'
 import { claimableFieldQuery } from '#/services/team-deployment-gitops-steps.js'
 import {
@@ -181,7 +182,7 @@ async function dispatchQueued(db, doc, entry, claim, settings) {
   const dispatchedAt = now()
   const dispatched = {
     status: 'requested',
-    statusTimes: { ...entry.statusTimes, requested: dispatchedAt },
+    statusTimes: withStatusTime(entry.statusTimes, 'requested', dispatchedAt),
     dispatch: { ...claim, dispatchedAt },
     gitops: isGithub
       ? {
