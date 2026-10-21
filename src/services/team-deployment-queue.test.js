@@ -83,10 +83,16 @@ describe('team deployment queue', () => {
       roles: ['research-user']
     })
     const userId = insertedId.toString()
-    const teamId = new ObjectId().toString()
+    const teamObjectId = new ObjectId()
+    const teamId = teamObjectId.toString()
     const orchestrator = fakeOrchestrator()
     const buildDesiredState = fakeBuilder()
 
+    await db.collection('teams').insertOne({
+      _id: teamObjectId,
+      slug: `queue-${teamId}`,
+      normalisedName: `queue-${teamId}`
+    })
     await db
       .collection('teamMembers')
       .insertOne({ teamId, userId, role: 'admin', status: 'active' })
