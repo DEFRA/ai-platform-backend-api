@@ -94,4 +94,89 @@ describe('#maintenance routes', () => {
 
     expect(credential.vaultState).toBeUndefined()
   })
+
+  test('POST /maintenance/expire-credentials leaves a flagged credential alone while its issuance holds the credential lock, then repairs it', async () => {
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'maintenance-inflight-user',
+        'idempotency-key': randomUUID()
+      },
+      payload: { modelSlug: 'gpt-4o' }
+    })
+    const id = new ObjectId(issued.result.credential._id)
+
+    await server.db
+      .collection('credentials')
+      .updateOne({ _id: id }, { $set: { vaultState: 'unwritten' } })
+
+    // An issuance still running holds the lock revoking and reissuing use.
+    const lock = await server.locker.lock(`credential:${id}`)
+    const sweep = () =>
+      server.inject({
+        method: 'POST',
+        url: '/maintenance/expire-credentials',
+        headers: { 'x-maintenance-token': 'test-maintenance-token' }
+      })
+
+    await sweep()
+
+    expect(
+      (await server.db.collection('credentials').findOne({ _id: id }))
+        .vaultState
+    ).toBe('unwritten')
+
+    await lock.free()
+    await sweep()
+
+    expect(
+      (await server.db.collection('credentials').findOne({ _id: id }))
+        .vaultState
+    ).toBeUndefined()
+  })
+
+  test('POST /maintenance/expire-credentials does not reissue a credential whose marker was cleared after it was found', async () => {
+    const issued = await server.inject({
+      method: 'POST',
+      url: '/v1/credentials',
+      headers: {
+        'x-user-id': 'maintenance-cleared-user',
+        'idempotency-key': randomUUID()
+      },
+      payload: { modelSlug: 'gpt-4o' }
+    })
+    const id = new ObjectId(issued.result.credential._id)
+
+    await server.db
+      .collection('credentials')
+      .updateOne({ _id: id }, { $set: { vaultState: 'unwritten' } })
+
+    // The issuance finishes (clearing the marker) just as the sweep takes the
+    // lock it was waiting on: the credential is read again and left alone.
+    const realLock = server.locker.lock.bind(server.locker)
+    const spy = vi
+      .spyOn(server.locker, 'lock')
+      .mockImplementation(async (resource) => {
+        if (resource === `credential:${id}`) {
+          await server.db
+            .collection('credentials')
+            .updateOne({ _id: id }, { $unset: { vaultState: '' } })
+        }
+
+        return realLock(resource)
+      })
+
+    try {
+      const { result } = await server.inject({
+        method: 'POST',
+        url: '/maintenance/expire-credentials',
+        headers: { 'x-maintenance-token': 'test-maintenance-token' }
+      })
+
+      expect(result.vaultReconciled).not.toBeGreaterThan(0)
+    } finally {
+      spy.mockRestore()
+    }
+  })
 })

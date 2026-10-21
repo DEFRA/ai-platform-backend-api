@@ -1230,7 +1230,8 @@ describe('team-deployment-gitops', () => {
         environment: 'sandbox',
         modelSlug: 'gpt-4o',
         requestedBy: 'requester-1',
-        operationId: entry.operationId
+        operationId: entry.operationId,
+        activatedAt: expect.any(String)
       })
     })
 

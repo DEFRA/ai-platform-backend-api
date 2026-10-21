@@ -36,7 +36,7 @@ export const credentialExpiryScheduler = {
             server.logger
           )
           const { reconciled, vaultReconciled } =
-            await reconcilePendingCredentials(server.db)
+            await reconcilePendingCredentials(server.db, server.locker)
           const { polled, transitioned, abandoned, credentials } =
             await pollTeamDeployments(server.db, server.locker, server.logger)
           const straySubscriptions = await flagStraySubscriptions(server.logger)

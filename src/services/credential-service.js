@@ -475,10 +475,10 @@ const TEAM_CREDENTIAL_FILTER = {
  * rather than left beside a second row.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string, retryAfterMs?: number, activatedAt?: string}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner and the audit actor (an unfinished attempt keeps its own). `retryAfterMs` and `activatedAt` mark a retry from a poll rather than a new activation: it is checked again inside the lock (see `teamCredentialNeedsRetry`), so polls that raced for it cannot repeat an attempt that has just failed
+ * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string, activatedAt?: string|null, retryAfterMs?: number}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner and the audit actor (an unfinished attempt keeps its own). `activatedAt` is when that activation happened: an admin's revocation made after it is respected, checked again inside the lock. `retryAfterMs` marks a retry from a poll rather than the activation itself (see `teamCredentialNeedsRetry`), so polls that raced for the lock cannot repeat an attempt that has just failed
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
- * @returns {Promise<{credential: object|null, created: boolean, vaultWritten?: boolean}>} `credential` is null when a retry was no longer needed; `vaultWritten` is false when the credential was created but its secret is not in the vault yet (reconciliation retries it)
+ * @returns {Promise<{credential: object|null, created: boolean, vaultWritten?: boolean}>} `credential` is null when nothing was owed any longer; `vaultWritten` is false when the credential was created but its secret is not in the vault yet (reconciliation retries it)
  */
 export async function ensureTeamCredential(
   db,
@@ -523,14 +523,13 @@ export async function ensureTeamCredential(
       locker,
       unfinished,
       async ({ reusable, rowId }) => {
-        if (
-          retryAfterMs !== undefined &&
-          !(await teamCredentialNeedsRetry(
-            db,
-            { teamId, environment },
-            { retryAfterMs, activatedAt }
-          ))
-        ) {
+        const owed = await teamCredentialOwed(
+          db,
+          { teamId, environment },
+          { retryAfterMs, activatedAt }
+        )
+
+        if (!owed) {
           return { credential: null, created: false }
         }
 
@@ -549,6 +548,36 @@ export async function ensureTeamCredential(
 }
 
 const UNFINISHED_STATUSES = ['pending', 'failed']
+
+// Whether the credential is still owed, read inside the lock: a retry from a
+// poll is owed by `teamCredentialNeedsRetry`; the activation itself is owed
+// unless an admin revoked the team's latest credential after it, which
+// `activatedAt` tells apart from a revocation that came first.
+async function teamCredentialOwed(
+  db,
+  team,
+  { retryAfterMs, activatedAt = null }
+) {
+  if (retryAfterMs !== undefined) {
+    return teamCredentialNeedsRetry(db, team, { retryAfterMs, activatedAt })
+  }
+
+  const [latest] = await db
+    .collection('credentials')
+    .find(
+      { ...team, ...TEAM_CREDENTIAL_FILTER },
+      { projection: { status: 1, revokedAt: 1 } }
+    )
+    .sort({ createdAt: -1 })
+    .toArray()
+  const revokedAfterActivation =
+    latest?.status === 'revoked' &&
+    activatedAt !== null &&
+    Boolean(latest.revokedAt) &&
+    latest.revokedAt >= activatedAt
+
+  return !revokedAfterActivation
+}
 
 // Runs `work` holding the lock `revokeCredential` takes on the credential
 // row (`credential:{id}`), so an admin cannot revoke a row while it is being

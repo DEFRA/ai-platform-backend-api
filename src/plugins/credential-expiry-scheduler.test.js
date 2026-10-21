@@ -69,7 +69,10 @@ describe('#credentialExpiryScheduler', () => {
       undefined,
       server.logger
     )
-    expect(reconcilePendingCredentials).toHaveBeenCalledWith(server.db)
+    expect(reconcilePendingCredentials).toHaveBeenCalledWith(
+      server.db,
+      server.locker
+    )
     expect(pollTeamDeployments).toHaveBeenCalledWith(
       server.db,
       server.locker,

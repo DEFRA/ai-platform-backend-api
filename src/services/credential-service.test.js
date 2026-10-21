@@ -1038,6 +1038,49 @@ describe('#credential-service ensureTeamCredential', () => {
     ).toBe('revoked')
   })
 
+  test('an initial grant delayed past an admin’s revocation does not replace the credential, but an activation after it does', async () => {
+    const request = params()
+    const minutesAgo = (minutes) =>
+      new Date(Date.now() - minutes * 60 * 1000).toISOString()
+
+    await db.collection('credentials').insertOne({
+      teamId: request.teamId,
+      environment: 'sandbox',
+      tier: 'team',
+      credentialType: 'oauth',
+      status: 'revoked',
+      createdAt: minutesAgo(120),
+      revokedAt: minutesAgo(30)
+    })
+
+    // Activated (60 minutes ago), then revoked (30), before the grant ran.
+    const delayed = await ensureTeamCredential(
+      db,
+      locker,
+      { ...request, activatedAt: minutesAgo(60) },
+      credentialIssuerRegistry,
+      stubVault()
+    )
+
+    expect(delayed).toEqual({ credential: null, created: false })
+    expect(
+      await db
+        .collection('credentials')
+        .countDocuments({ teamId: request.teamId, status: 'active' })
+    ).toBe(0)
+
+    // Activated (10 minutes ago) after the revocation: its credential is owed.
+    const owed = await ensureTeamCredential(
+      db,
+      locker,
+      { ...request, activatedAt: minutesAgo(10) },
+      credentialIssuerRegistry,
+      stubVault()
+    )
+
+    expect(owed.created).toBe(true)
+  })
+
   test('reuses a pending attempt a crash left behind rather than adding a second document', async () => {
     const request = params()
     const { insertedId } = await db.collection('credentials').insertOne({

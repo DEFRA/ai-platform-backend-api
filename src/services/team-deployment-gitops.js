@@ -484,10 +484,8 @@ async function grantTeamCredential(
       modelSlug: entry.modelSlug,
       requestedBy: entry.requestedBy,
       operationId: entry.operationId,
-      ...(retry && {
-        retryAfterMs: pollMinIntervalMs,
-        activatedAt: entry.activatedAt ?? null
-      })
+      activatedAt: entry.activatedAt ?? null,
+      ...(retry && { retryAfterMs: pollMinIntervalMs })
     })
 
     // A credential that was created but whose secret is not in the vault is
