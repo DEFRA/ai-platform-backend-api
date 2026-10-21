@@ -1480,4 +1480,100 @@ describe('team-deployment-gitops', () => {
       expect(ensureCredential).toHaveBeenCalledTimes(1)
     })
   })
+
+  describe('recovering team credentials on the maintenance sweep', () => {
+    function activeEntry() {
+      return githubEntry({ status: 'active', requestedBy: 'requester-1' })
+    }
+
+    test('creates a credential that failed when the model turned active on a later sweep, with no request', async () => {
+      const logger = { warn: vi.fn(), debug: vi.fn() }
+      const entry = activeEntry()
+      const doc = await insertDocument(entry)
+      let failedOnce = false
+      // Other teams in the shared database are neither failed nor created for.
+      const ensureCredential = vi.fn(async (_db, _locker, { teamId }) => {
+        if (teamId !== doc.teamId) {
+          return { created: false }
+        }
+
+        if (!failedOnce) {
+          failedOnce = true
+          throw new Error('issuer unavailable')
+        }
+
+        return { created: true }
+      })
+      const deps = {
+        locker: server.locker,
+        ensureCredential,
+        logger,
+        pollMinIntervalMs: 0
+      }
+      const ours = () =>
+        ensureCredential.mock.calls
+          .map(([, , params]) => params)
+          .filter(({ teamId }) => teamId === doc.teamId)
+
+      expect(await gitops.recoverTeamCredentials(db, deps)).toBe(0)
+      expect(await gitops.recoverTeamCredentials(db, deps)).toBe(1)
+      expect(ours()).toHaveLength(2)
+      expect(ours()[1]).toMatchObject({
+        modelSlug: 'gpt-4o',
+        operationId: entry.operationId,
+        retryAfterMs: 0
+      })
+    })
+
+    test('creates the credential for real once, and leaves a team with one alone', async () => {
+      const entry = activeEntry()
+      const doc = await insertDocument(entry)
+      const deps = { locker: server.locker, pollMinIntervalMs: 0 }
+
+      expect(await gitops.recoverTeamCredentials(db, deps)).toBeGreaterThan(0)
+
+      const held = await db
+        .collection('credentials')
+        .find({ teamId: doc.teamId })
+        .toArray()
+
+      expect(held).toHaveLength(1)
+      expect(held[0]).toMatchObject({ status: 'active', userId: 'requester-1' })
+
+      await gitops.recoverTeamCredentials(db, deps)
+
+      expect(
+        await db
+          .collection('credentials')
+          .countDocuments({ teamId: doc.teamId })
+      ).toBe(1)
+    })
+
+    test('does not recreate a credential an admin revoked, nor touch a team with nothing active', async () => {
+      const ensureCredential = vi.fn().mockResolvedValue({ created: true })
+      const revoked = await insertDocument(activeEntry())
+      const notActive = await insertDocument(githubEntry({ status: 'merged' }))
+
+      await db.collection('credentials').insertOne({
+        teamId: revoked.teamId,
+        environment: 'sandbox',
+        tier: 'team',
+        credentialType: 'oauth',
+        status: 'revoked',
+        createdAt: anHourAgo()
+      })
+      await gitops.recoverTeamCredentials(db, {
+        locker: server.locker,
+        ensureCredential,
+        pollMinIntervalMs: 0
+      })
+
+      const teams = ensureCredential.mock.calls.map(
+        ([, , { teamId }]) => teamId
+      )
+
+      expect(teams).not.toContain(revoked.teamId)
+      expect(teams).not.toContain(notActive.teamId)
+    })
+  })
 })

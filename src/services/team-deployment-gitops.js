@@ -478,7 +478,7 @@ async function grantTeamCredential(
   { retry = false } = {}
 ) {
   try {
-    const { vaultWritten } = await ensureCredential(db, locker, {
+    const { created, vaultWritten } = await ensureCredential(db, locker, {
       teamId: doc.teamId,
       environment: doc.environment,
       modelSlug: entry.modelSlug,
@@ -487,20 +487,26 @@ async function grantTeamCredential(
       ...(retry && { retryAfterMs: pollMinIntervalMs })
     })
 
+    // A credential that was created but whose secret is not in the vault is
+    // a one-off, not a standing failure, so even a retry reports it.
     if (vaultWritten === false) {
       await reportCredentialFailure(db, entry, logger, {
         code: VAULT_WRITE_FAILED,
         message:
           'The team secret could not be written to the vault, reconciliation will retry it',
-        retry
+        retry: false
       })
     }
+
+    return created === true
   } catch (error) {
     await reportCredentialFailure(db, entry, logger, {
       code: error.data?.code ?? error.code ?? CREDENTIAL_FAILED,
       message: 'Creating the team credential failed, retrying on a later poll',
       retry
     })
+
+    return false
   }
 }
 
@@ -535,15 +541,16 @@ async function reportCredentialFailure(
 
 // Creates a credential still missing for an active entry: none recorded, or
 // an earlier attempt that did not finish (`teamCredentialNeedsRetry`), at
-// most once per poll interval.
+// most once per poll interval. Returns whether it created one.
 async function retryTeamCredential(db, doc, entry, settings) {
   const needed = await teamCredentialNeedsRetry(db, doc, {
     retryAfterMs: settings.pollMinIntervalMs
   })
 
-  if (needed) {
-    await grantTeamCredential(db, doc, entry, settings, { retry: true })
-  }
+  return (
+    needed &&
+    (await grantTeamCredential(db, doc, entry, settings, { retry: true }))
+  )
 }
 
 // Polls the entry's own operation, applying the D14 policy to a failed
@@ -769,4 +776,35 @@ export async function sweepGitopsDeployments(db, deps = {}) {
   }
 
   return totals
+}
+
+/**
+ * The maintenance step that gives every team with an active deployment the
+ * credential it is missing - one whose creation failed when the model turned
+ * active, or never ran - without polling GitHub, since an active deployment
+ * is never polled by the sweep. Each team and environment is tried at most
+ * once per poll interval, and a credential an admin revoked is left alone
+ * (`teamCredentialNeedsRetry`).
+ * @param {import('mongodb').Db} db
+ * @param {{logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, ensureCredential?: Function}} [deps]
+ * @returns {Promise<number>} how many credentials were created
+ */
+export async function recoverTeamCredentials(db, deps = {}) {
+  const settings = settingsOf(deps)
+  const docs = await db
+    .collection('teamDeployments')
+    .find({ deployments: { $elemMatch: { status: 'active' } } })
+    .toArray()
+  let created = 0
+
+  // Sequential by design: one team's attempt holds its credential lock.
+  for (const doc of docs) {
+    const entry = doc.deployments.find(({ status }) => status === 'active')
+
+    if (await retryTeamCredential(db, doc, entry, settings)) {
+      created += 1
+    }
+  }
+
+  return created
 }

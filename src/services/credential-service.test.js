@@ -751,6 +751,99 @@ describe('#credential-service ensureTeamCredential', () => {
     expect(fromActivation.credential.status).toBe('active')
   })
 
+  test('a poll retrying an attempt cannot overwrite a revocation that raced it', async () => {
+    const request = params()
+    const { insertedId } = await db.collection('credentials').insertOne({
+      teamId: request.teamId,
+      environment: 'sandbox',
+      tier: 'team',
+      credentialType: 'oauth',
+      status: 'failed',
+      userId: request.requestedBy,
+      createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    })
+    const id = insertedId.toString()
+    let release
+    const gate = new Promise((resolve) => {
+      release = resolve
+    })
+    const issue = vi.fn(async () => {
+      await gate
+
+      return {
+        externalId: 'team-x',
+        secret: 'mock-oauth-abcd',
+        keyHint: 'abcd'
+      }
+    })
+    const slow = {
+      forModel: () => ({ issuerKey: 'mock', issuer: { issue } })
+    }
+
+    const retry = ensureTeamCredential(
+      db,
+      locker,
+      { ...request, retryAfterMs: 60000 },
+      slow,
+      stubVault()
+    )
+
+    await vi.waitFor(() => expect(issue).toHaveBeenCalled())
+
+    // The revocation cannot slip in while the row is being reissued.
+    await expect(
+      revokeCredential(db, locker, { id, userId: request.requestedBy })
+    ).rejects.toThrow('Failed to acquire lock')
+
+    release()
+
+    expect((await retry).credential).toMatchObject({ status: 'active' })
+  })
+
+  test('an unfinished attempt revoked before it is reissued is left revoked and a new document is made', async () => {
+    const request = params()
+    const { insertedId } = await db.collection('credentials').insertOne({
+      teamId: request.teamId,
+      environment: 'sandbox',
+      tier: 'team',
+      credentialType: 'oauth',
+      status: 'failed',
+      createdAt: new Date(Date.now() - 60 * 60 * 1000).toISOString()
+    })
+    const realLock = locker.lock.bind(locker)
+    const spy = vi
+      .spyOn(locker, 'lock')
+      .mockImplementation(async (resource) => {
+        if (resource === `credential:${insertedId}`) {
+          // The revocation wins the race for the row after it was read.
+          await db
+            .collection('credentials')
+            .updateOne({ _id: insertedId }, { $set: { status: 'revoked' } })
+        }
+
+        return realLock(resource)
+      })
+
+    try {
+      const { credential } = await ensureTeamCredential(
+        db,
+        locker,
+        request,
+        credentialIssuerRegistry,
+        stubVault()
+      )
+
+      expect(credential._id.toString()).not.toBe(insertedId.toString())
+      expect(credential.status).toBe('active')
+    } finally {
+      spy.mockRestore()
+    }
+
+    expect(
+      (await db.collection('credentials').findOne({ _id: insertedId })).status
+    ).toBe('revoked')
+  })
+
   test('reuses a pending attempt a crash left behind rather than adding a second document', async () => {
     const request = params()
     const { insertedId } = await db.collection('credentials').insertOne({
@@ -827,6 +920,29 @@ describe('#credential-service ensureTeamCredential', () => {
     await db.collection('credentials').insertOne(held('failed', anHourAgo))
 
     expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
+  })
+
+  test('judges a poll retry by the latest attempt, so an old failure never undoes a later revocation', async () => {
+    const request = params()
+    const held = (status, minutesAgo) => ({
+      teamId: request.teamId,
+      environment: 'sandbox',
+      tier: 'team',
+      credentialType: 'oauth',
+      status,
+      createdAt: new Date(Date.now() - minutesAgo * 60 * 1000).toISOString()
+    })
+
+    // An older failed row beside a newer, revoked credential: left alone.
+    await db.collection('credentials').insertOne(held('failed', 120))
+    await db.collection('credentials').insertOne(held('revoked', 60))
+
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
+
+    // A later activation's attempt that failed is retried.
+    await db.collection('credentials').insertOne(held('failed', 30))
+
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(true)
   })
 })
 

@@ -492,72 +492,114 @@ export async function ensureTeamCredential(
       return { credential: active, created: false }
     }
 
-    if (
-      retryAfterMs !== undefined &&
-      !(await teamCredentialNeedsRetry(
-        db,
-        { teamId, environment },
-        { retryAfterMs }
-      ))
-    ) {
-      return { credential: null, created: false }
-    }
-
-    const model = await findModelBySlug(db, modelSlug)
-    const reusable = await db
+    // The newest attempt that did not finish. An admin can revoke that row
+    // while it is being reissued, and revoking holds only the row's own lock,
+    // so reissuing takes that lock too and looks again before it writes.
+    const unfinished = await db
       .collection('credentials')
-      .findOne({ ...scope, status: { $in: ['pending', 'failed'] } })
-    const pending = {
-      userId: requestedBy,
-      teamId,
-      modelSlug: null,
-      credentialType: TEAM_CREDENTIAL_TYPE,
-      tier: 'team',
-      environment,
-      purpose: null,
-      type: 'apim-subscription',
-      status: 'pending',
-      idempotencyKey: `team-activation:${operationId}`,
-      issuerKey: null,
-      // A team credential spans several models, so it records no single
-      // provider/offering, only the cloud and gateway of the model that
-      // created it.
-      provider: null,
-      offering: null,
-      cloud: model?.hosting?.cloud ?? null,
-      gateway: model?.gateway ?? null,
-      createdAt: new Date().toISOString(),
-      renewalCount: 0
-    }
+      .findOne(
+        { ...scope, status: { $in: UNFINISHED_STATUSES } },
+        { sort: { createdAt: -1 } }
+      )
+    const rowLock = unfinished
+      ? await requireLock(locker, `credential:${unfinished._id}`)
+      : null
 
-    let resolved
     try {
-      resolved = resolveIssuer(registry, model, 'team')
-    } catch (error) {
-      await recordUnissued(db, reusable, pending, error)
-      throw error
-    }
+      const reusable = unfinished
+        ? await db.collection('credentials').findOne({
+            _id: unfinished._id,
+            status: { $in: UNFINISHED_STATUSES }
+          })
+        : null
 
-    // Shared indefinitely across the team and never renewed (see
-    // `renewCredential`'s tier guard), so it has no expiry.
-    const { credential, vaultWritten } = await issueAndActivate(db, vault, {
-      issuer: resolved.issuer,
-      pending: { ...pending, issuerKey: resolved.issuerKey },
-      reusable,
-      issueParams: {
-        userId: requestedBy,
-        modelSlug,
-        tier: 'team',
+      if (
+        retryAfterMs !== undefined &&
+        !(await teamCredentialNeedsRetry(
+          db,
+          { teamId, environment },
+          { retryAfterMs }
+        ))
+      ) {
+        return { credential: null, created: false }
+      }
+
+      return await attemptTeamCredential(db, vault, registry, reusable, {
         teamId,
-        environment
-      },
-      expiresAt: null
-    })
-
-    return { credential, created: true, vaultWritten }
+        environment,
+        modelSlug,
+        requestedBy,
+        operationId
+      })
+    } finally {
+      await rowLock?.free()
+    }
   } finally {
     await lock.free()
   }
+}
+
+const UNFINISHED_STATUSES = ['pending', 'failed']
+
+// One attempt at the credential, on the unfinished document if there is one:
+// resolves the issuer, then issues, activates and puts the secret in the
+// vault. An attempt that fails before an issuer is resolved is recorded.
+async function attemptTeamCredential(
+  db,
+  vault,
+  registry,
+  reusable,
+  { teamId, environment, modelSlug, requestedBy, operationId }
+) {
+  const model = await findModelBySlug(db, modelSlug)
+  const pending = {
+    userId: requestedBy,
+    teamId,
+    modelSlug: null,
+    credentialType: TEAM_CREDENTIAL_TYPE,
+    tier: 'team',
+    environment,
+    purpose: null,
+    type: 'apim-subscription',
+    status: 'pending',
+    idempotencyKey: `team-activation:${operationId}`,
+    issuerKey: null,
+    // A team credential spans several models, so it records no single
+    // provider/offering, only the cloud and gateway of the model that
+    // created it.
+    provider: null,
+    offering: null,
+    cloud: model?.hosting?.cloud ?? null,
+    gateway: model?.gateway ?? null,
+    createdAt: new Date().toISOString(),
+    renewalCount: 0
+  }
+
+  let resolved
+  try {
+    resolved = resolveIssuer(registry, model, 'team')
+  } catch (error) {
+    await recordUnissued(db, reusable, pending, error)
+    throw error
+  }
+
+  // Shared indefinitely across the team and never renewed (see
+  // `renewCredential`'s tier guard), so it has no expiry.
+  const { credential, vaultWritten } = await issueAndActivate(db, vault, {
+    issuer: resolved.issuer,
+    pending: { ...pending, issuerKey: resolved.issuerKey },
+    reusable,
+    issueParams: {
+      userId: requestedBy,
+      modelSlug,
+      tier: 'team',
+      teamId,
+      environment
+    },
+    expiresAt: null
+  })
+
+  return { credential, created: true, vaultWritten }
 }
 
 // Keeps a record that an attempt never reached an issuer, so the activation
@@ -581,9 +623,11 @@ async function recordUnissued(db, reusable, pending, error) {
 /**
  * Whether a team's credential for an environment still needs creating even
  * though one of its models is active there: nothing is active and either no
- * attempt has been recorded or the last one did not finish (`failed`, or
- * `pending` after a crash) at least `retryAfterMs` ago. A credential an
- * admin revoked is not recreated by a poll, only by a later activation.
+ * attempt has been recorded or the latest one did not finish (`failed`, or
+ * `pending` after a crash) at least `retryAfterMs` ago. Only the latest
+ * attempt counts, so an old failed one never undoes a later revocation: a
+ * credential an admin revoked is not recreated by a poll, only by a later
+ * activation.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, environment: string}} team
  * @param {{retryAfterMs?: number}} [options] - how long after an attempt a retry waits, so a persistent failure is not retried on every poll
@@ -600,6 +644,7 @@ export async function teamCredentialNeedsRetry(
       { teamId, environment, ...TEAM_CREDENTIAL_FILTER },
       { projection: { status: 1, createdAt: 1 } }
     )
+    .sort({ createdAt: -1 })
     .toArray()
   const cutoff = new Date(Date.now() - retryAfterMs).toISOString()
 
@@ -607,12 +652,11 @@ export async function teamCredentialNeedsRetry(
     return false
   }
 
+  const [latest] = attempts
+
   return (
-    attempts.length === 0 ||
-    attempts.some(
-      ({ status, createdAt }) =>
-        ['pending', 'failed'].includes(status) && createdAt <= cutoff
-    )
+    latest === undefined ||
+    (UNFINISHED_STATUSES.includes(latest.status) && latest.createdAt <= cutoff)
   )
 }
 

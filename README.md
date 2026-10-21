@@ -360,8 +360,9 @@ credentials (only `tier: research`; `team` is refused with `400`). A later model
 environment reuses it, and a different environment gets its own. If creating it fails (for example
 no gateway issues team credentials in `live` mode without `MOCK_TIERS=team`, or the vault write
 fails) the activation stands and the failure is logged and audited against the deployment
-(`teamDeployment.credential`). Any later poll of an active deployment retries, at most once per poll
-interval, while the team has no active credential and no record of one an admin revoked; the
+(`teamDeployment.credential`). The maintenance sweep, and any later poll of an active deployment,
+retries (at most once per poll interval, serialised with revocation under the credential's own lock)
+while the team has no active credential and its latest attempt is not one an admin revoked; the
 unfinished attempt's document is reused, never duplicated. Any team member
 can see the credential (`GET /v1/credentials`, `keyHint` only); only a team admin can reveal its
 secret with a reason (`POST /v1/credentials/{id}/reveal`), rotate or revoke it. It covers
