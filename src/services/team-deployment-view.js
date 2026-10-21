@@ -7,15 +7,26 @@ import {
 
 // User-facing progress steps for the team's "being set up" wait page - the
 // mapping from design C's real GitOps states (never shown to the user
-// directly) to these four friendly, fixed labels is a business rule, so it
-// lives here rather than being guessed at again in the frontend. The team
-// tier is OAuth only, so its last step prepares an OAuth client secret. The
-// label does not claim the secret is made in Entra while that issuer is mocked.
-const PROGRESS_STEP_LABELS = [
-  'Request recorded',
-  'Team checked',
-  'Setting up access in Azure',
-  'Checking and preparing your client secret'
+// directly) to these four friendly labels is a business rule, so it lives
+// here rather than being guessed at again in the frontend. The team tier is
+// OAuth only, so its last step prepares an OAuth client secret. The label
+// does not claim the secret is made in Entra while that issuer is mocked.
+// Each step starts when the entry first reaches one of its statuses
+// (`entry.statusTimes`); a step ends when the next one starts, the last when
+// the deployment turns `active`.
+const PROGRESS_STEPS = [
+  { label: () => 'Request recorded', statuses: ['requested'] },
+  { label: () => 'Team checked', statuses: ['pr-raised'] },
+  {
+    label: (modelName) => `Setting up ${modelName} in Azure`,
+    statuses: ['merged', 'deploying']
+  },
+  {
+    label: () => 'Preparing your client secret',
+    // The apply has finished, so the Azure step is done: what remains is the
+    // ARM check and activation, which can wait a whole poll interval.
+    statuses: ['deployed', 'verified']
+  }
 ]
 
 const PROGRESS_STEP_INDEX_BY_STATUS = {
@@ -23,12 +34,10 @@ const PROGRESS_STEP_INDEX_BY_STATUS = {
   'pr-raised': 1,
   merged: 2,
   deploying: 2,
-  // The apply has finished, so the Azure step is done: what remains is the
-  // ARM check and activation, which can wait a whole poll interval.
   deployed: 3,
   verified: 3,
   // Past the last step: every step reads done.
-  active: PROGRESS_STEP_LABELS.length
+  active: PROGRESS_STEPS.length
 }
 
 function stepState(index, currentIndex) {
@@ -39,15 +48,40 @@ function stepState(index, currentIndex) {
   return index === currentIndex ? 'current' : 'pending'
 }
 
+// When each step started, then when the last one ended (so one more than
+// there are steps), from the times the entry recorded. A step the entry went
+// past without a poll seeing it takes the start of the next, so it reads as
+// instant; entries from before times were recorded fall back to when they
+// were created and activated, and otherwise have none (null).
+function stepBoundaries(entry) {
+  const times = entry.statusTimes ?? {}
+  const boundaries = [times.active ?? entry.activatedAt ?? null]
+
+  for (const step of [...PROGRESS_STEPS].reverse()) {
+    const starts = step.statuses.map((status) => times[status]).filter(Boolean)
+
+    boundaries.unshift(starts.sort()[0] ?? boundaries[0])
+  }
+
+  boundaries[0] = times.requested ?? entry.createdAt ?? boundaries[0]
+
+  return boundaries
+}
+
 /**
- * Builds the four fixed-label progress steps shown on the team-request wait
- * page, marking each `done`/`current`/`pending` relative to the deployment's
- * current raw status. Returns `null` for a terminal failure status or a
- * removal - the frontend shows its own messaging there.
- * @param {string} status
- * @returns {Array<{label: string, state: string}>|null}
+ * Builds the four progress steps shown on the team-request wait page,
+ * marking each `done`/`current`/`pending` relative to the deployment's
+ * current raw status, and giving each an `at` (ISO time): when a `done` step
+ * finished, when the `current` one started, null for a `pending` one. The
+ * third label names the model. Returns `null` for a terminal failure status
+ * or a removal - the frontend shows its own messaging there.
+ * @param {{status: string, statusTimes?: Record<string, string>, createdAt?: string, activatedAt?: string|null}} entry
+ * @param {string} modelName - the model's display name
+ * @returns {Array<{label: string, state: string, at: string|null}>|null}
  */
-export function buildProgressSteps(status) {
+export function buildProgressSteps(entry, modelName) {
+  const { status } = entry
+
   if (
     TERMINAL_FAILURE_STATUSES.has(status) ||
     status === REMOVING ||
@@ -57,11 +91,18 @@ export function buildProgressSteps(status) {
   }
 
   const currentIndex = PROGRESS_STEP_INDEX_BY_STATUS[status] ?? 0
+  const boundaries = stepBoundaries(entry)
 
-  return PROGRESS_STEP_LABELS.map((label, index) => ({
-    label,
-    state: stepState(index, currentIndex)
-  }))
+  return PROGRESS_STEPS.map(({ label }, index) => {
+    const state = stepState(index, currentIndex)
+    const timeIndex = state === 'done' ? index + 1 : index
+
+    return {
+      label: label(modelName),
+      state,
+      at: state === 'pending' ? null : boundaries[timeIndex]
+    }
+  })
 }
 
 // Links to the GitHub runs and pull request behind a GitOps operation, for
@@ -138,12 +179,14 @@ function verificationFailureOf(entry) {
  * @param {{teamId: string, environment: string}} doc
  * @param {object} entry
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {string} [modelName] - the model's display name, for the step labels; the slug when not given
  * @returns {object}
  */
 export function toDeploymentView(
   doc,
   entry,
-  registry = credentialIssuerRegistry
+  registry = credentialIssuerRegistry,
+  modelName = entry.modelSlug
 ) {
   return {
     _id: entry.id,
@@ -151,7 +194,7 @@ export function toDeploymentView(
     environment: doc.environment,
     modelSlug: entry.modelSlug,
     status: entry.status,
-    progressSteps: buildProgressSteps(entry.status),
+    progressSteps: buildProgressSteps(entry, modelName),
     // True while the team's client secret is a mock, so pages can say so
     // before one exists (R5; removed when Phase 5 B18's Graph issuer lands).
     credentialPlaceholder: registry.isMockedFor('team'),

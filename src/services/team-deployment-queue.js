@@ -178,9 +178,11 @@ async function dispatchQueued(db, doc, entry, claim, settings) {
     return failedDispatch(db, doc, entry, claim, { error, logger })
   }
 
+  const dispatchedAt = now()
   const dispatched = {
     status: 'requested',
-    dispatch: { ...claim, dispatchedAt: now() },
+    statusTimes: { ...entry.statusTimes, requested: dispatchedAt },
+    dispatch: { ...claim, dispatchedAt },
     gitops: isGithub
       ? {
           ...githubTrailOf(submission, entry.operationId),

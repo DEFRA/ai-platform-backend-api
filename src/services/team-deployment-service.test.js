@@ -315,7 +315,7 @@ describe('team-deployment-service (GitOps)', () => {
           server.locker,
           {
             teamId,
-            modelSlugs: ['gpt-4o', 'gpt-4-1-nano'],
+            modelSlugs: ['gpt-4o', 'gpt-5-mini'],
             environment: 'sandbox',
             requestedBy: userId,
             idempotencyKey: randomUUID()
@@ -341,7 +341,7 @@ describe('team-deployment-service (GitOps)', () => {
         server.locker,
         {
           teamId,
-          modelSlugs: ['gpt-4o', 'gpt-4-1-nano'],
+          modelSlugs: ['gpt-4o', 'gpt-5-mini'],
           environment: 'sandbox',
           requestedBy: userId,
           idempotencyKey: randomUUID()
@@ -1175,7 +1175,7 @@ describe('team-deployment-service (GitOps)', () => {
       await requestOne(
         {
           teamId: submitted.teamId,
-          modelSlug: 'gpt-4-1-nano',
+          modelSlug: 'gpt-5-mini',
           environment: 'sandbox',
           requestedBy: submitted.userId,
           idempotencyKey: randomUUID()

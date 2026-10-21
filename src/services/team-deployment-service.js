@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { config } from '#/config.js'
 import { findModelBySlug } from '#/services/models-service.js'
+import { isTeamEligible } from '#/services/catalogue-service.js'
 import {
   tenantOrchestratorRegistry,
   GITHUB_ORCHESTRATOR
@@ -62,6 +63,14 @@ function requireTeamEnvironment(environment) {
       'environment-not-available'
     )
   }
+}
+
+// The deployment as the API returns it, its step labels naming the model by
+// its display name (the catalogue read is cached).
+async function viewOf(db, doc, entry) {
+  const model = await findModelBySlug(db, entry.modelSlug)
+
+  return toDeploymentView(doc, entry, undefined, model?.displayName)
 }
 
 /**
@@ -157,24 +166,19 @@ export async function requestDeployments(
 }
 
 // Refuses the whole request, naming every offender, if any model cannot be
-// deployed to the team tier in this environment.
+// deployed for a team in this environment (the catalogue service's one rule),
+// before anything is written.
 async function requireEligibleModels(db, slugs, environment) {
   const models = await Promise.all(
     slugs.map((slug) => findModelBySlug(db, slug))
   )
-  const refused = slugs.filter((_slug, index) => {
-    const model = models[index]
-
-    return (
-      !model?.eligible ||
-      !model.tiers?.includes('team') ||
-      !model.environments?.includes(environment)
-    )
-  })
+  const refused = slugs.filter(
+    (_slug, index) => !isTeamEligible(models[index], environment)
+  )
 
   if (refused.length > 0) {
     throw boomWithCode(
-      Boom.forbidden,
+      Boom.badRequest,
       'Model is not eligible for this environment',
       'model-not-eligible',
       { modelSlugs: refused }
@@ -223,7 +227,7 @@ async function addDeployments(db, params, deps) {
 
     views.push(
       entry
-        ? toDeploymentView(doc, entry)
+        ? await viewOf(db, doc, entry)
         : await addDeployment(db, { ...params, modelSlug }, deps)
     )
   }
@@ -260,7 +264,7 @@ async function addDeployment(db, params, deps) {
     actorUserId: params.requestedBy
   })
 
-  return toDeploymentView({ teamId, environment }, entry)
+  return viewOf(db, { teamId, environment }, entry)
 }
 
 // The fields every new entry starts with, `requested` or `queued`. The
@@ -270,15 +274,18 @@ function freshEntry(
   { registry },
   status
 ) {
+  const createdAt = new Date().toISOString()
+
   return {
     id: new ObjectId().toString(),
     modelSlug,
     status,
+    statusTimes: { [status]: createdAt },
     operationId: new ObjectId().toString(),
     requestedBy,
     requestedByPrincipal: principal,
     idempotencyKey,
-    createdAt: new Date().toISOString(),
+    createdAt,
     activatedAt: null,
     failureReason: null,
     orchestrator: registry.key,
@@ -298,7 +305,7 @@ async function queueDeployment(db, params, deps) {
     code: QUEUED
   })
 
-  return toDeploymentView(params, entry)
+  return viewOf(db, params, entry)
 }
 
 // A new `requested` entry and what to submit for it: for GitHub, the whole
@@ -454,7 +461,7 @@ export async function getDeployment(
 
   const refreshed = await refreshEntryStatus(db, doc, entry, deps)
 
-  return toDeploymentView(doc, refreshed)
+  return viewOf(db, doc, refreshed)
 }
 
 /**
@@ -492,7 +499,7 @@ export async function listDeploymentsForTeam(
       // Sequential by design: each refresh may write back to the same
       // document, and entries share one document per team+environment.
       const refreshed = await refreshEntryStatus(db, doc, entry, deps)
-      views.push(toDeploymentView(doc, refreshed))
+      views.push(await viewOf(db, doc, refreshed))
     }
   }
 
@@ -575,7 +582,7 @@ async function releaseRedispatch(db, doc, entry, claim) {
 async function currentView(db, doc, entry) {
   const fresh = await db.collection('teamDeployments').findOne({ _id: doc._id })
 
-  return toDeploymentView(doc, findEntry(fresh, entry.id) ?? entry)
+  return viewOf(db, doc, findEntry(fresh, entry.id) ?? entry)
 }
 
 // Dispatches the apply for a claimed redispatch; a refusal releases the
@@ -681,7 +688,7 @@ export async function redispatchApply(
     reason: claim.resumes ? 'deploy-failed -> deploying' : null
   })
 
-  return toDeploymentView(doc, {
+  return viewOf(db, doc, {
     ...entry,
     ...claim.changes,
     gitops: entry.gitops ? { ...entry.gitops, applyRetry } : null

@@ -159,7 +159,7 @@ describe('team deployment queue', () => {
   async function firstAndQueued() {
     const member = await teamMember()
     const first = await request(member, 'gpt-4o')
-    const queued = await request(member, 'gpt-4-1-nano')
+    const queued = await request(member, 'gpt-5-mini')
 
     return { member, first, queued }
   }
@@ -173,10 +173,14 @@ describe('team deployment queue', () => {
       status: 'queued',
       links: {},
       progressSteps: [
-        { label: 'Request recorded', state: 'current' },
-        { label: 'Team checked', state: 'pending' },
-        { label: 'Setting up access in Azure', state: 'pending' },
-        { label: 'Checking and preparing your client secret', state: 'pending' }
+        { label: 'Request recorded', state: 'current', at: stored.createdAt },
+        { label: 'Team checked', state: 'pending', at: null },
+        {
+          label: 'Setting up GPT-5 mini in Azure',
+          state: 'pending',
+          at: null
+        },
+        { label: 'Preparing your client secret', state: 'pending', at: null }
       ]
     })
     expect(member.orchestrator.requestDeployment).toHaveBeenCalledTimes(1)
@@ -219,7 +223,7 @@ describe('team deployment queue', () => {
     expect(member.buildDesiredState).toHaveBeenLastCalledWith(db, {
       teamId: member.teamId,
       environment: 'sandbox',
-      modelSlug: 'gpt-4-1-nano',
+      modelSlug: 'gpt-5-mini',
       operationId: queued.operationId,
       requestedBy: member.userId
     })
@@ -243,6 +247,10 @@ describe('team deployment queue', () => {
         submitRunId: 1001
       })
     })
+    expect(stored.statusTimes).toEqual({
+      queued: queued.progressSteps[0].at,
+      requested: stored.dispatch.dispatchedAt
+    })
     expect(await auditActions(queued._id)).toContainEqual([
       'teamDeployment.dispatch',
       'success',
@@ -255,7 +263,7 @@ describe('team deployment queue', () => {
 
     const views = await Promise.all([
       request(member, 'gpt-4o'),
-      request(member, 'gpt-4-1-nano')
+      request(member, 'gpt-5-mini')
     ])
 
     expect(views.map(({ status }) => status).sort()).toEqual([
@@ -374,7 +382,7 @@ describe('team deployment queue', () => {
       gitops: null
     })
     const unbuildable = queuedEntry('gpt-4o')
-    const next = queuedEntry('gpt-4-1-nano')
+    const next = queuedEntry('gpt-5-mini')
 
     await db.collection('teamDeployments').insertOne({
       teamId: member.teamId,

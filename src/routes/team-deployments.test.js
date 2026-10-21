@@ -202,9 +202,106 @@ describe('#team-deployments routes', () => {
       'gpt-5-nano'
     )
 
-    expect(statusCode).toBe(403)
+    expect(statusCode).toBe(400)
     expect(result.code).toBe('model-not-eligible')
     expect(result.modelSlugs).toEqual(['gpt-5-nano'])
+  })
+
+  describe('team eligibility (D4)', () => {
+    async function memberOf(teamId, label, role) {
+      await signIn(label)
+      await server.db.collection('teamMembers').insertOne({
+        teamId: teamId.toString(),
+        userId: userIds.get(label),
+        role,
+        status: 'active'
+      })
+    }
+
+    async function storedDeployments(teamId) {
+      return server.db
+        .collection('teamDeployments')
+        .findOne({ teamId: teamId.toString() })
+    }
+
+    test.each([
+      ['a team admin', 'admin'],
+      ['a team member', 'user']
+    ])(
+      'refuses GPT-4.1 nano (its team SKU is only in swedencentral) for %s, writing nothing',
+      async (_who, role) => {
+        const owner = `eligibility-owner-${role}`
+        const teamId = await createTeam(owner)
+        const label = `eligibility-${role}`
+
+        await memberOf(teamId, label, role)
+
+        const { result, statusCode } = await requestModel(
+          teamId,
+          label,
+          'gpt-4-1-nano'
+        )
+
+        expect(statusCode).toBe(400)
+        expect(result).toMatchObject({
+          code: 'model-not-eligible',
+          message: 'Model is not eligible for this environment',
+          modelSlugs: ['gpt-4-1-nano']
+        })
+        expect(await storedDeployments(teamId)).toBeNull()
+      }
+    )
+
+    test.each([
+      ['a team admin', 'admin'],
+      ['a team member', 'user']
+    ])('offers GPT-4o to %s', async (_who, role) => {
+      const owner = `eligibility-gpt4o-owner-${role}`
+      const teamId = await createTeam(owner)
+      const label = `eligibility-gpt4o-${role}`
+
+      await memberOf(teamId, label, role)
+
+      const { result, statusCode } = await requestModel(teamId, label, 'gpt-4o')
+
+      expect(statusCode).toBe(201)
+      expect(result.deployment.modelSlug).toBe('gpt-4o')
+    })
+
+    test('refuses a model whose catalogue environments lack the target before writing anything', async () => {
+      const teamId = await createTeam('eligibility-other-env')
+      const gpt4o = await server.db
+        .collection('models')
+        .findOne({ slug: 'gpt-4o' }, { projection: { _id: 0 } })
+
+      await server.db
+        .collection('models')
+        .insertOne({ ...gpt4o, slug: 'gpt-4o-qa-only', environments: ['qa'] })
+
+      const { result, statusCode } = await requestModel(
+        teamId,
+        'eligibility-other-env',
+        'gpt-4o-qa-only'
+      )
+
+      expect(statusCode).toBe(400)
+      expect(result.code).toBe('model-not-eligible')
+      expect(result.modelSlugs).toEqual(['gpt-4o-qa-only'])
+      expect(await storedDeployments(teamId)).toBeNull()
+    })
+
+    test('refuses a non-member before looking at the model', async () => {
+      const teamId = await createTeam('eligibility-owner-outsider')
+
+      const { statusCode } = await requestModel(
+        teamId,
+        'eligibility-outsider',
+        'gpt-4-1-nano'
+      )
+
+      expect(statusCode).toBe(404)
+      expect(await storedDeployments(teamId)).toBeNull()
+    })
   })
 
   test('POST /v1/teams/{teamId}/deployments returns 404 for a non-member', async () => {
@@ -235,7 +332,7 @@ describe('#team-deployments routes', () => {
 
     const first = await requestModel(teamId, 'deploy-user-16')
 
-    const second = await requestModel(teamId, 'deploy-user-16', 'gpt-4-1-nano')
+    const second = await requestModel(teamId, 'deploy-user-16', 'gpt-5-mini')
 
     expect(second.statusCode).toBe(201)
     expect(second.result.deployment._id).not.toBe(
@@ -249,8 +346,8 @@ describe('#team-deployments routes', () => {
     })
 
     expect(result.items.map((item) => item.modelSlug).sort()).toEqual([
-      'gpt-4-1-nano',
-      'gpt-4o'
+      'gpt-4o',
+      'gpt-5-mini'
     ])
     expect(new Set(result.items.map((item) => item.teamId)).size).toBe(1)
   })
@@ -289,7 +386,7 @@ describe('#team-deployments routes', () => {
   })
 
   describe('requesting several models at once', () => {
-    const BOTH = ['gpt-4o', 'gpt-4-1-nano']
+    const BOTH = ['gpt-4o', 'gpt-5-mini']
 
     test('makes one deployment per model in the order asked: the first in flight, the rest queued', async () => {
       const teamId = await createTeam('multi-user-1')
@@ -305,7 +402,7 @@ describe('#team-deployments routes', () => {
         result.deployments.map(({ modelSlug, status }) => [modelSlug, status])
       ).toEqual([
         ['gpt-4o', 'requested'],
-        ['gpt-4-1-nano', 'queued']
+        ['gpt-5-mini', 'queued']
       ])
       expect(
         new Set(result.deployments.map((entry) => entry.operationId)).size
@@ -369,7 +466,7 @@ describe('#team-deployments routes', () => {
         ['gpt-4o', 'gpt-5-nano']
       )
 
-      expect(statusCode).toBe(403)
+      expect(statusCode).toBe(400)
       expect(result.code).toBe('model-not-eligible')
       expect(result.modelSlugs).toEqual(['gpt-5-nano'])
       expect(
@@ -476,21 +573,18 @@ describe('#team-deployments routes', () => {
     expect(second.result.deployment.activatedAt).toBeTruthy()
   })
 
-  test('GET /v1/teams/{teamId}/deployments/{id} exposes the four fixed progress step labels', async () => {
+  test('GET /v1/teams/{teamId}/deployments/{id} exposes the four progress steps, naming the model, with their times', async () => {
     const teamId = await createTeam('deploy-user-6b')
 
     const created = await requestModel(teamId, 'deploy-user-6b')
+    const isoTime = expect.stringMatching(/^\d{4}-\d{2}-\d{2}T[\d:.]+Z$/)
 
-    expect(
-      created.result.deployment.progressSteps.map((step) => step.label)
-    ).toEqual([
-      'Request recorded',
-      'Team checked',
-      'Setting up access in Azure',
-      'Checking and preparing your client secret'
+    expect(created.result.deployment.progressSteps).toEqual([
+      { label: 'Request recorded', state: 'current', at: isoTime },
+      { label: 'Team checked', state: 'pending', at: null },
+      { label: 'Setting up GPT-4o in Azure', state: 'pending', at: null },
+      { label: 'Preparing your client secret', state: 'pending', at: null }
     ])
-    expect(created.result.deployment.progressSteps[0].state).toBe('current')
-    expect(created.result.deployment.progressSteps[1].state).toBe('pending')
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
     const headers = userHeaders('deploy-user-6b')
@@ -498,11 +592,22 @@ describe('#team-deployments routes', () => {
     await wait(300)
 
     const afterActive = await server.inject({ method: 'GET', url, headers })
+    const steps = afterActive.result.deployment.progressSteps
 
     expect(afterActive.result.deployment.status).toBe('active')
-    expect(
-      afterActive.result.deployment.progressSteps.map((step) => step.state)
-    ).toEqual(['done', 'done', 'done', 'done'])
+    expect(steps.map((step) => step.state)).toEqual([
+      'done',
+      'done',
+      'done',
+      'done'
+    ])
+    expect(steps.map((step) => step.at)).toEqual([
+      isoTime,
+      isoTime,
+      isoTime,
+      isoTime
+    ])
+    expect(steps.at(-1).at).toBe(afterActive.result.deployment.activatedAt)
   })
 
   test('GET /v1/teams/{teamId}/deployments/{id} has no progress steps for a failed deployment', async () => {
@@ -607,7 +712,7 @@ describe('#team-deployments routes', () => {
 
     await requestModel(teamId, 'deploy-user-18')
 
-    const queued = await requestModel(teamId, 'deploy-user-18', 'gpt-4-1-nano')
+    const queued = await requestModel(teamId, 'deploy-user-18', 'gpt-5-mini')
 
     expect(queued.statusCode).toBe(201)
     expect(queued.result.deployment.status).toBe('queued')
