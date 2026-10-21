@@ -83,7 +83,7 @@ export const teamDeployments = [
           teamId: request.params.teamId,
           userId: request.headers['x-user-id']
         },
-        { logger: request.logger }
+        { logger: request.logger, locker: request.locker }
       )
 
       return h.response({ items })
@@ -103,7 +103,7 @@ export const teamDeployments = [
           teamId: request.params.teamId,
           userId: request.headers['x-user-id']
         },
-        { logger: request.logger }
+        { logger: request.logger, locker: request.locker }
       )
 
       if (!deployment) {

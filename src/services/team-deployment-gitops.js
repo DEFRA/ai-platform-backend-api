@@ -28,6 +28,10 @@ import {
 import { releaseQueue } from '#/services/team-deployment-queue.js'
 import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
 import {
+  ensureTeamCredential,
+  teamCredentialNeedsRetry
+} from '#/services/credential-service.js'
+import {
   applyVerificationPolicy,
   reportVerificationFailure
 } from '#/services/team-deployment-verification.js'
@@ -45,18 +49,22 @@ const REMOVE_FAILED_REASON =
 function settingsOf({
   registry = tenantOrchestratorRegistry,
   logger,
+  locker,
   pollMinIntervalMs = config.get('gitops.pollMinIntervalMs'),
   claimLeaseMs = config.get('gitops.claimLeaseMs'),
   verifyMaxAttempts = config.get('gitops.verifyMaxAttempts'),
-  buildDesiredState = teamDesiredStateBuilder
+  buildDesiredState = teamDesiredStateBuilder,
+  ensureCredential = ensureTeamCredential
 }) {
   return {
     registry,
     logger,
+    locker,
     pollMinIntervalMs,
     claimLeaseMs,
     verifyMaxAttempts,
-    buildDesiredState
+    buildDesiredState,
+    ensureCredential
   }
 }
 
@@ -449,6 +457,43 @@ async function applyPolicies(db, doc, entry, polled, settings, deps) {
   return result
 }
 
+// A model turning `active` is granted to the team's credential for its
+// environment, which is created (its secret going to the vault, never
+// returned) if the team has none. The grant itself is the
+// `allowedDeployments` entry `persistStatus` has already written. A failure
+// is logged for an engineer and never fails the poll or undoes the
+// activation: the failed credential is retried on the next poll of an
+// active entry (`retryTeamCredential`). Logs carry operation IDs only.
+async function grantTeamCredential(
+  db,
+  doc,
+  entry,
+  { ensureCredential, locker, logger }
+) {
+  try {
+    await ensureCredential(db, locker, {
+      teamId: doc.teamId,
+      environment: doc.environment,
+      modelSlug: entry.modelSlug,
+      requestedBy: entry.requestedBy,
+      operationId: entry.operationId
+    })
+  } catch (error) {
+    logger?.warn(
+      pollFailure(error, entry),
+      'Creating the team credential failed, retrying on the next poll'
+    )
+  }
+}
+
+// Retries a credential whose earlier creation failed, once the model it
+// was for is active and nothing else has replaced it.
+async function retryTeamCredential(db, doc, entry, settings) {
+  if (await teamCredentialNeedsRetry(db, doc)) {
+    await grantTeamCredential(db, doc, entry, settings)
+  }
+}
+
 // Polls the entry's own operation, applying the D14 policy to a failed
 // apply and abandoning a pull request that failed its checks.
 async function refreshOperation(db, doc, entry, settings) {
@@ -484,6 +529,10 @@ async function refreshOperation(db, doc, entry, settings) {
 
   const persisted = await persistStatus(db, doc, entry, result)
 
+  if (persisted.transitioned && result.status === 'active') {
+    await grantTeamCredential(db, doc, persisted.entry, settings)
+  }
+
   if (result.verification) {
     await reportVerificationFailure(db, doc, entry, result, {
       maxAttempts: verifyMaxAttempts,
@@ -508,6 +557,10 @@ function isInProgress(entry) {
 }
 
 async function refreshOwnStatus(db, doc, entry, settings) {
+  if (entry.status === 'active') {
+    await retryTeamCredential(db, doc, entry, settings)
+  }
+
   if (
     entry.status === 'active' ||
     entry.status === REMOVING ||
@@ -550,7 +603,7 @@ async function refreshQueued(db, doc, entry, settings) {
  * @param {import('mongodb').Db} db
  * @param {object} doc
  * @param {object} entry
- * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function}} [deps] - `buildDesiredState` is the WS6 builder a queued GitHub-mode request is built with when dispatched
+ * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps] - locker is the lock manager a model turning active creates its team's credential under; `buildDesiredState` is the WS6 builder a queued GitHub-mode request is built with when dispatched
  */
 export async function refreshEntryStatus(db, doc, entry, deps = {}) {
   const settings = settingsOf(deps)
@@ -612,7 +665,7 @@ async function sweepEntry(db, doc, entry, settings) {
  * request once nothing holds its team file. Operations nobody is watching still
  * progress and reach `active`.
  * @param {import('mongodb').Db} db
- * @param {{registry?: object, logger?: import('pino').Logger, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function}} [deps]
+ * @param {{registry?: object, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps]
  * @returns {Promise<{polled: number, transitioned: number, abandoned: number}>}
  */
 export async function sweepGitopsDeployments(db, deps = {}) {

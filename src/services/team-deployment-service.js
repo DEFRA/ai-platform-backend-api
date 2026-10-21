@@ -432,7 +432,7 @@ async function recordSubmitRun(db, { teamId, environment }, entry, submitted) {
  * isn't disclosed.
  * @param {import('mongodb').Db} db
  * @param {{id: string, teamId: string, userId: string}} params - `teamId` is the team's id or slug
- * @param {{registry?: object, logger?: import('pino').Logger}} [deps]
+ * @param {{registry?: object, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager}} [deps]
  */
 export async function getDeployment(
   db,
@@ -473,7 +473,7 @@ export async function getDeployment(
  * isn't disclosed.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, userId: string}} params - `teamId` is the team's id or slug
- * @param {{registry?: object, logger?: import('pino').Logger}} [deps]
+ * @param {{registry?: object, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager}} [deps]
  */
 export async function listDeploymentsForTeam(
   db,

@@ -1195,4 +1195,141 @@ describe('team-deployment-gitops', () => {
       })
     })
   })
+
+  describe('the team credential on activation', () => {
+    function activating(overrides = {}) {
+      return githubEntry({
+        status: 'verified',
+        requestedBy: 'requester-1',
+        ...overrides
+      })
+    }
+
+    function activeResult(entry) {
+      return { operationId: entry.operationId, status: 'active', links: {} }
+    }
+
+    test('grants the model to the team credential for its environment when the deployment turns active', async () => {
+      const orchestrator = fakeOrchestrator()
+      const ensureCredential = vi.fn().mockResolvedValue({ created: true })
+      const entry = activating()
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(activeResult(entry))
+
+      const refreshed = await refresh(orchestrator, doc, entry, {
+        locker: server.locker,
+        ensureCredential
+      })
+
+      expect(refreshed.status).toBe('active')
+      expect(ensureCredential).toHaveBeenCalledTimes(1)
+      expect(ensureCredential).toHaveBeenCalledWith(db, server.locker, {
+        teamId: doc.teamId,
+        environment: 'sandbox',
+        modelSlug: 'gpt-4o',
+        requestedBy: 'requester-1',
+        operationId: entry.operationId
+      })
+    })
+
+    test('creates the credential for real, once, however often the entry is polled', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = activating()
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(activeResult(entry))
+
+      const active = await refresh(orchestrator, doc, entry, {
+        locker: server.locker
+      })
+
+      await refresh(orchestrator, doc, active, { locker: server.locker })
+      await refresh(orchestrator, doc, active, { locker: server.locker })
+
+      const credentials = await db
+        .collection('credentials')
+        .find({ teamId: doc.teamId })
+        .toArray()
+
+      expect(credentials).toHaveLength(1)
+      expect(credentials[0]).toMatchObject({
+        tier: 'team',
+        environment: 'sandbox',
+        status: 'active',
+        userId: 'requester-1'
+      })
+    })
+
+    test.each(['pr-raised', 'merged', 'deploying'])(
+      'does nothing while the deployment is only %s',
+      async (status) => {
+        const orchestrator = fakeOrchestrator()
+        const ensureCredential = vi.fn()
+        const entry = githubEntry({ status: 'requested' })
+        const doc = await insertDocument(entry)
+
+        orchestrator.getDeploymentStatus.mockResolvedValue({
+          operationId: entry.operationId,
+          status,
+          links: {}
+        })
+        await refresh(orchestrator, doc, entry, {
+          locker: server.locker,
+          ensureCredential
+        })
+
+        expect(ensureCredential).not.toHaveBeenCalled()
+      }
+    )
+
+    test('logs a failed credential for an engineer without failing or undoing the activation', async () => {
+      const orchestrator = fakeOrchestrator()
+      const logger = { warn: vi.fn() }
+      const ensureCredential = vi
+        .fn()
+        .mockRejectedValue(new Error('issuer unavailable'))
+      const entry = activating()
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(activeResult(entry))
+
+      const refreshed = await refresh(orchestrator, doc, entry, {
+        locker: server.locker,
+        ensureCredential,
+        logger
+      })
+
+      expect(refreshed.status).toBe('active')
+      expect((await storedEntry(entry.id)).status).toBe('active')
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ operationId: entry.operationId }),
+        'Creating the team credential failed, retrying on the next poll'
+      )
+    })
+
+    test('retries a failed credential when an active entry is polled, and only then', async () => {
+      const orchestrator = fakeOrchestrator()
+      const ensureCredential = vi.fn().mockResolvedValue({ created: true })
+      const entry = activating({ status: 'active' })
+      const doc = await insertDocument(entry)
+      const deps = { locker: server.locker, ensureCredential }
+
+      await refresh(orchestrator, doc, entry, deps)
+
+      expect(ensureCredential).not.toHaveBeenCalled()
+
+      await db.collection('credentials').insertOne({
+        teamId: doc.teamId,
+        environment: 'sandbox',
+        tier: 'team',
+        credentialType: 'oauth',
+        status: 'failed'
+      })
+      await refresh(orchestrator, doc, entry, deps)
+
+      expect(ensureCredential).toHaveBeenCalledTimes(1)
+      expect(orchestrator.getDeploymentStatus).not.toHaveBeenCalled()
+    })
+  })
 })

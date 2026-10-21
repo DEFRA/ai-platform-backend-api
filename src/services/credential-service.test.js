@@ -10,6 +10,8 @@ let rotateCredential
 let renewCredential
 let revokeCredential
 let revealCredential
+let ensureTeamCredential
+let teamCredentialNeedsRetry
 let credentialIssuerRegistry
 let createCredentialIssuerRegistry
 let createCredentialVaultRegistry
@@ -20,7 +22,9 @@ async function loadCredentialService() {
     rotateCredential,
     renewCredential,
     revokeCredential,
-    revealCredential
+    revealCredential,
+    ensureTeamCredential,
+    teamCredentialNeedsRetry
   } = await import('#/services/credential-service.js'))
   ;({ credentialIssuerRegistry, createCredentialIssuerRegistry } =
     await import('#/adapters/credential-issuer-registry.js'))
@@ -365,27 +369,15 @@ describe('#credential-service vault wiring', () => {
     const userId = `placeholder-user-${randomUUID()}`
     const teamId = `placeholder-team-${randomUUID()}`
 
-    await db.collection('teamMembers').insertOne({
-      teamId,
-      userId,
-      status: 'active'
-    })
-    await db.collection('teamDeployments').insertOne({
-      teamId,
-      environment: 'sandbox',
-      deployments: [{ id: randomUUID(), modelSlug: 'gpt-4o', status: 'active' }]
-    })
-
-    const team = await issueCredential(
+    const team = await ensureTeamCredential(
       db,
       locker,
       {
-        userId,
-        modelSlug: 'gpt-4o',
-        tier: 'team',
         teamId,
         environment: 'sandbox',
-        idempotencyKey: randomUUID()
+        modelSlug: 'gpt-4o',
+        requestedBy: userId,
+        operationId: randomUUID()
       },
       registry,
       vault
@@ -398,16 +390,251 @@ describe('#credential-service vault wiring', () => {
       vault
     )
 
+    expect(team.created).toBe(true)
     expect(team.credential.issuerKey).toBe('mock')
     expect(mockVault.put).toHaveBeenCalledTimes(1)
     expect(mockVault.put).toHaveBeenCalledWith(
-      expect.objectContaining({ secret: team.secret })
+      expect.objectContaining({
+        credentialId: team.credential._id.toString(),
+        secret: expect.stringContaining('mock-oauth-')
+      })
     )
     expect(research.credential.issuerKey).toBe('azure-apim')
     expect(realVault.put).toHaveBeenCalledTimes(1)
     expect(realVault.put).toHaveBeenCalledWith(
       expect.objectContaining({ secret: 'live-research-secret' })
     )
+  })
+})
+
+describe('#credential-service ensureTeamCredential', () => {
+  let server
+  let db
+  let locker
+
+  beforeAll(async () => {
+    const { createServer } = await import('#/server.js')
+    await loadCredentialService()
+
+    server = await createServer()
+    await server.initialize()
+    db = server.db
+    locker = server.locker
+  })
+
+  afterAll(async () => {
+    await server.stop({ timeout: 0 })
+  })
+
+  function params(overrides = {}) {
+    return {
+      teamId: `ensure-team-${randomUUID()}`,
+      environment: 'sandbox',
+      modelSlug: 'gpt-4o',
+      requestedBy: `ensure-user-${randomUUID()}`,
+      operationId: randomUUID(),
+      ...overrides
+    }
+  }
+
+  test('creates the credential, puts the secret in the vault tagged with the team and environment, and returns no secret', async () => {
+    const vault = stubVault()
+    const request = params()
+
+    const result = await ensureTeamCredential(
+      db,
+      locker,
+      request,
+      credentialIssuerRegistry,
+      vault
+    )
+
+    expect(result.created).toBe(true)
+    expect(result).not.toHaveProperty('secret')
+    expect(JSON.stringify(result)).not.toContain('mock-oauth-')
+    expect(vault.put).toHaveBeenCalledWith(
+      expect.objectContaining({
+        credentialId: result.credential._id.toString(),
+        environment: 'sandbox',
+        tags: expect.objectContaining({
+          'aip-team': request.teamId,
+          'aip-environment': 'sandbox'
+        })
+      })
+    )
+    expect(
+      await db
+        .collection('auditEvents')
+        .findOne({ resourceId: result.credential._id.toString() })
+    ).toMatchObject({
+      actorUserId: request.requestedBy,
+      action: 'credential.issue',
+      outcome: 'success'
+    })
+  })
+
+  test('does nothing when the team already holds an active credential for the environment', async () => {
+    const vault = stubVault()
+    const request = params()
+
+    await ensureTeamCredential(
+      db,
+      locker,
+      request,
+      credentialIssuerRegistry,
+      vault
+    )
+    const again = await ensureTeamCredential(
+      db,
+      locker,
+      { ...request, modelSlug: 'gpt-5-mini', operationId: randomUUID() },
+      credentialIssuerRegistry,
+      vault
+    )
+
+    expect(again.created).toBe(false)
+    expect(vault.put).toHaveBeenCalledTimes(1)
+    expect(
+      await db
+        .collection('credentials')
+        .countDocuments({ teamId: request.teamId, tier: 'team' })
+    ).toBe(1)
+  })
+
+  test('creates a new credential when the earlier one was revoked', async () => {
+    const vault = stubVault()
+    const request = params()
+    const first = await ensureTeamCredential(
+      db,
+      locker,
+      request,
+      credentialIssuerRegistry,
+      vault
+    )
+
+    await db
+      .collection('credentials')
+      .updateOne({ _id: first.credential._id }, { $set: { status: 'revoked' } })
+
+    const second = await ensureTeamCredential(
+      db,
+      locker,
+      { ...request, operationId: randomUUID() },
+      credentialIssuerRegistry,
+      vault
+    )
+
+    expect(second.created).toBe(true)
+    expect(second.credential._id.toString()).not.toBe(
+      first.credential._id.toString()
+    )
+  })
+
+  test('flags the credential vaultState: unwritten when the vault write fails, still without returning the secret', async () => {
+    const vault = stubVault({
+      put: vi.fn().mockRejectedValue(new Error('vault unavailable'))
+    })
+
+    const { credential } = await ensureTeamCredential(
+      db,
+      locker,
+      params(),
+      credentialIssuerRegistry,
+      vault
+    )
+
+    expect(
+      (await db.collection('credentials').findOne({ _id: credential._id }))
+        .vaultState
+    ).toBe('unwritten')
+  })
+
+  test('marks the credential failed when the issuer fails, then reuses that document on the retry', async () => {
+    const request = params()
+    const failing = {
+      forModel: () => ({
+        issuerKey: 'mock',
+        issuer: {
+          issue: vi.fn().mockRejectedValue(new Error('issuer unavailable'))
+        }
+      })
+    }
+
+    await expect(
+      ensureTeamCredential(db, locker, request, failing, stubVault())
+    ).rejects.toMatchObject({
+      output: { statusCode: 502 },
+      data: { code: 'upstream-unavailable' }
+    })
+
+    const failed = await db
+      .collection('credentials')
+      .find({ teamId: request.teamId, tier: 'team' })
+      .toArray()
+
+    expect(failed).toHaveLength(1)
+    expect(failed[0]).toMatchObject({
+      status: 'failed',
+      failureReason: 'issuer-error'
+    })
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(true)
+
+    const retried = await ensureTeamCredential(
+      db,
+      locker,
+      { ...request, operationId: randomUUID() },
+      credentialIssuerRegistry,
+      stubVault()
+    )
+
+    expect(retried.credential._id.toString()).toBe(failed[0]._id.toString())
+    expect(retried.credential.status).toBe('active')
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
+    expect(
+      await db
+        .collection('credentials')
+        .countDocuments({ teamId: request.teamId, tier: 'team' })
+    ).toBe(1)
+  })
+
+  test('is refused as gateway-not-enabled when no issuer serves the team tier, leaving nothing behind', async () => {
+    const request = params()
+    const live = createCredentialIssuerRegistry({}, 'live', [])
+
+    await expect(
+      ensureTeamCredential(db, locker, request, live, stubVault())
+    ).rejects.toMatchObject({
+      output: { statusCode: 501 },
+      data: { code: 'gateway-not-enabled' }
+    })
+    expect(
+      await db
+        .collection('credentials')
+        .countDocuments({ teamId: request.teamId })
+    ).toBe(0)
+  })
+
+  test('a team with nothing failed, or with an active credential, needs no retry', async () => {
+    const request = params()
+
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
+
+    await ensureTeamCredential(
+      db,
+      locker,
+      request,
+      credentialIssuerRegistry,
+      stubVault()
+    )
+    await db.collection('credentials').insertOne({
+      teamId: request.teamId,
+      environment: 'sandbox',
+      tier: 'team',
+      credentialType: 'oauth',
+      status: 'failed'
+    })
+
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
   })
 })
 

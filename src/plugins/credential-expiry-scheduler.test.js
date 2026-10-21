@@ -66,7 +66,11 @@ describe('#credentialExpiryScheduler', () => {
       server.logger
     )
     expect(reconcilePendingCredentials).toHaveBeenCalledWith(server.db)
-    expect(pollTeamDeployments).toHaveBeenCalledWith(server.db, server.logger)
+    expect(pollTeamDeployments).toHaveBeenCalledWith(
+      server.db,
+      server.locker,
+      server.logger
+    )
     expect(flagStraySubscriptions).toHaveBeenCalledWith(server.logger)
     expect(server.logger.debug).toHaveBeenCalledWith(
       result,
