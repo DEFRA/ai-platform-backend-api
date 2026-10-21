@@ -844,6 +844,200 @@ describe('#credential-service ensureTeamCredential', () => {
     ).toBe('revoked')
   })
 
+  test('a first issuance cannot be revoked and then overwritten as active while it is still running', async () => {
+    const request = params()
+    let release
+    const gate = new Promise((resolve) => {
+      release = resolve
+    })
+    const issue = vi.fn(async () => {
+      await gate
+
+      return {
+        externalId: 'team-x',
+        secret: 'mock-oauth-abcd',
+        keyHint: 'abcd'
+      }
+    })
+    const slow = {
+      forModel: () => ({ issuerKey: 'mock', issuer: { issue } })
+    }
+
+    const first = ensureTeamCredential(db, locker, request, slow, stubVault())
+
+    await vi.waitFor(() => expect(issue).toHaveBeenCalled())
+
+    // The pending row is already visible, but no admin can revoke it yet.
+    const row = await db
+      .collection('credentials')
+      .findOne({ teamId: request.teamId })
+
+    expect(row.status).toBe('pending')
+    await expect(
+      revokeCredential(db, locker, {
+        id: row._id.toString(),
+        userId: request.requestedBy
+      })
+    ).rejects.toThrow('Failed to acquire lock')
+
+    release()
+
+    expect((await first).credential).toMatchObject({ status: 'active' })
+  })
+
+  test('stores the vault marker with the activation, so a stop before the vault write leaves it for reconciliation', async () => {
+    const request = params()
+    let release
+    const gate = new Promise((resolve) => {
+      release = resolve
+    })
+    const vault = stubVault({
+      put: vi.fn(async () => {
+        await gate
+      })
+    })
+
+    const creating = ensureTeamCredential(
+      db,
+      locker,
+      request,
+      credentialIssuerRegistry,
+      vault
+    )
+
+    await vi.waitFor(() => expect(vault.put).toHaveBeenCalled())
+
+    // Active, secret not in the vault yet: marked, so reconciliation finds it.
+    expect(
+      await db
+        .collection('credentials')
+        .findOne({ teamId: request.teamId, status: 'active' })
+    ).toMatchObject({ vaultState: 'unwritten' })
+
+    release()
+
+    const { credential, vaultWritten } = await creating
+
+    expect(vaultWritten).toBe(true)
+    expect(credential.vaultState).toBeUndefined()
+    expect(
+      (await db.collection('credentials').findOne({ _id: credential._id }))
+        .vaultState
+    ).toBeUndefined()
+  })
+
+  test('recovery on an older activation reuses a newer failed row without clashing with the idempotency key of the revoked one', async () => {
+    const request = params()
+    const activationA = { ...request, operationId: `op-a-${randomUUID()}` }
+    const activationB = {
+      ...request,
+      modelSlug: 'gpt-5-mini',
+      operationId: `op-b-${randomUUID()}`
+    }
+    const failing = {
+      forModel: () => ({
+        issuerKey: 'mock',
+        issuer: { issue: vi.fn().mockRejectedValue(new Error('unavailable')) }
+      })
+    }
+
+    // Model A's credential, then revoked; model B's activation then fails.
+    const first = await ensureTeamCredential(
+      db,
+      locker,
+      activationA,
+      credentialIssuerRegistry,
+      stubVault()
+    )
+
+    await db.collection('credentials').updateOne(
+      { _id: first.credential._id },
+      {
+        $set: {
+          status: 'revoked',
+          revokedAt: new Date(Date.now() - 1000).toISOString()
+        }
+      }
+    )
+    await expect(
+      ensureTeamCredential(db, locker, activationB, failing, stubVault())
+    ).rejects.toMatchObject({ output: { statusCode: 502 } })
+
+    // Recovery is made for the first active deployment, model A.
+    const recovered = await ensureTeamCredential(
+      db,
+      locker,
+      { ...activationA, retryAfterMs: 0 },
+      credentialIssuerRegistry,
+      stubVault()
+    )
+
+    expect(recovered.created).toBe(true)
+    expect(recovered.credential.status).toBe('active')
+    expect(recovered.credential.idempotencyKey).toBe(
+      `team-activation:${activationB.operationId}`
+    )
+    expect(recovered.credential._id.toString()).not.toBe(
+      first.credential._id.toString()
+    )
+  })
+
+  test('a newer activation whose issuance never started is owed a credential even though an older one was revoked', async () => {
+    const request = params()
+    const minutesAgo = (minutes) =>
+      new Date(Date.now() - minutes * 60 * 1000).toISOString()
+    const { insertedId } = await db.collection('credentials').insertOne({
+      teamId: request.teamId,
+      environment: 'sandbox',
+      tier: 'team',
+      credentialType: 'oauth',
+      status: 'revoked',
+      createdAt: minutesAgo(120),
+      revokedAt: minutesAgo(60)
+    })
+
+    // Activated after the revocation: its credential was never made.
+    expect(
+      await teamCredentialNeedsRetry(db, request, {
+        activatedAt: minutesAgo(30)
+      })
+    ).toBe(true)
+    // Activated before the revocation: the admin revoked it deliberately.
+    expect(
+      await teamCredentialNeedsRetry(db, request, {
+        activatedAt: minutesAgo(90)
+      })
+    ).toBe(false)
+    expect(await teamCredentialNeedsRetry(db, request)).toBe(false)
+
+    const owed = await ensureTeamCredential(
+      db,
+      locker,
+      { ...request, retryAfterMs: 0, activatedAt: minutesAgo(30) },
+      credentialIssuerRegistry,
+      stubVault()
+    )
+    const deliberate = await ensureTeamCredential(
+      db,
+      locker,
+      {
+        ...request,
+        retryAfterMs: 0,
+        activatedAt: minutesAgo(90)
+      },
+      credentialIssuerRegistry,
+      stubVault()
+    )
+
+    expect(owed.created).toBe(true)
+    expect(owed.credential._id.toString()).not.toBe(insertedId.toString())
+    // Now the team has an active credential, so a poll adds nothing more.
+    expect(deliberate).toMatchObject({ created: false })
+    expect(
+      (await db.collection('credentials').findOne({ _id: insertedId })).status
+    ).toBe('revoked')
+  })
+
   test('reuses a pending attempt a crash left behind rather than adding a second document', async () => {
     const request = params()
     const { insertedId } = await db.collection('credentials').insertOne({

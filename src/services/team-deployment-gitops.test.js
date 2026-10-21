@@ -1549,6 +1549,70 @@ describe('team-deployment-gitops', () => {
       ).toBe(1)
     })
 
+    test('creates the credential a newer activation is owed after an older one was revoked', async () => {
+      const entry = githubEntry({
+        status: 'active',
+        requestedBy: 'requester-1',
+        activatedAt: justNow()
+      })
+      const doc = await insertDocument(entry)
+
+      await db.collection('credentials').insertOne({
+        teamId: doc.teamId,
+        environment: 'sandbox',
+        tier: 'team',
+        credentialType: 'oauth',
+        status: 'revoked',
+        createdAt: anHourAgo(),
+        revokedAt: anHourAgo()
+      })
+      await gitops.recoverTeamCredentials(db, {
+        locker: server.locker,
+        pollMinIntervalMs: 0
+      })
+
+      expect(
+        await db
+          .collection('credentials')
+          .countDocuments({ teamId: doc.teamId, status: 'active' })
+      ).toBe(1)
+    })
+
+    test('makes the credential for the team’s newest active deployment', async () => {
+      const older = githubEntry({
+        status: 'active',
+        requestedBy: 'requester-old',
+        modelSlug: 'gpt-4o',
+        activatedAt: anHourAgo()
+      })
+      const newer = githubEntry({
+        status: 'active',
+        requestedBy: 'requester-new',
+        modelSlug: 'gpt-5-mini',
+        activatedAt: justNow()
+      })
+      const doc = await insertDocument(newer, older)
+      const ensureCredential = vi.fn(async () => ({ created: false }))
+
+      await gitops.recoverTeamCredentials(db, {
+        locker: server.locker,
+        ensureCredential,
+        pollMinIntervalMs: 0
+      })
+
+      const ours = ensureCredential.mock.calls
+        .map(([, , params]) => params)
+        .filter(({ teamId }) => teamId === doc.teamId)
+
+      expect(ours).toEqual([
+        expect.objectContaining({
+          requestedBy: 'requester-new',
+          modelSlug: 'gpt-5-mini',
+          activatedAt: newer.activatedAt
+        })
+      ])
+    })
+
     test('does not recreate a credential an admin revoked, nor touch a team with nothing active', async () => {
       const ensureCredential = vi.fn().mockResolvedValue({ created: true })
       const revoked = await insertDocument(activeEntry())

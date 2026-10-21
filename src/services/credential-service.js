@@ -266,7 +266,7 @@ function resolveIssuer(registry, model, tier) {
 async function issueAndActivate(
   db,
   vault,
-  { issuer, pending, reusable, issueParams, expiresAt }
+  { issuer, pending, reusable, insertId, issueParams, expiresAt }
 ) {
   let insertedId
   if (reusable) {
@@ -278,7 +278,9 @@ async function issueAndActivate(
         { $set: pending, $unset: { failureReason: '' } }
       )
   } else {
-    ;({ insertedId } = await db.collection('credentials').insertOne(pending))
+    ;({ insertedId } = await db
+      .collection('credentials')
+      .insertOne(insertId ? { _id: insertId, ...pending } : pending))
   }
 
   let issued
@@ -307,26 +309,34 @@ async function issueAndActivate(
     )
   }
 
+  // `vaultState: unwritten` is stored with the activation and cleared once
+  // the secret is in the vault, so a stop between the two leaves a marker
+  // for `reconcilePendingCredentials`, never an active credential whose
+  // secret is nowhere.
   const active = {
     status: 'active',
     externalGatewaySubscriptionId: issued.externalId,
     keyHint: issued.keyHint,
     activatedAt: pending.createdAt,
-    expiresAt: expiresAt === undefined ? issued.expiresAt : expiresAt
+    expiresAt: expiresAt === undefined ? issued.expiresAt : expiresAt,
+    vaultState: 'unwritten'
   }
 
   await db
     .collection('credentials')
     .updateOne({ _id: insertedId }, { $set: active })
 
-  const credential = { _id: insertedId, ...pending, ...active }
+  const unsettled = { _id: insertedId, ...pending, ...active }
 
   const vaultWritten = await writeSecretToVault(
     db,
     vault,
-    credential,
+    unsettled,
     issued.secret
   )
+  const credential = vaultWritten
+    ? { ...unsettled, vaultState: undefined }
+    : unsettled
 
   await recordAuditEvent(db, {
     actorUserId: pending.userId,
@@ -465,7 +475,7 @@ const TEAM_CREDENTIAL_FILTER = {
  * rather than left beside a second row.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string, retryAfterMs?: number}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner and the audit actor. `retryAfterMs` marks a retry from a poll rather than a new activation: it is checked again inside the lock (see `teamCredentialNeedsRetry`), so polls that raced for it cannot repeat an attempt that has just failed
+ * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string, retryAfterMs?: number, activatedAt?: string}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner and the audit actor (an unfinished attempt keeps its own). `retryAfterMs` and `activatedAt` mark a retry from a poll rather than a new activation: it is checked again inside the lock (see `teamCredentialNeedsRetry`), so polls that raced for it cannot repeat an attempt that has just failed
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  * @returns {Promise<{credential: object|null, created: boolean, vaultWritten?: boolean}>} `credential` is null when a retry was no longer needed; `vaultWritten` is false when the credential was created but its secret is not in the vault yet (reconciliation retries it)
@@ -473,7 +483,15 @@ const TEAM_CREDENTIAL_FILTER = {
 export async function ensureTeamCredential(
   db,
   locker,
-  { teamId, environment, modelSlug, requestedBy, operationId, retryAfterMs },
+  {
+    teamId,
+    environment,
+    modelSlug,
+    requestedBy,
+    operationId,
+    retryAfterMs,
+    activatedAt
+  },
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
@@ -492,48 +510,39 @@ export async function ensureTeamCredential(
       return { credential: active, created: false }
     }
 
-    // The newest attempt that did not finish. An admin can revoke that row
-    // while it is being reissued, and revoking holds only the row's own lock,
-    // so reissuing takes that lock too and looks again before it writes.
+    // The newest attempt that did not finish, if any.
     const unfinished = await db
       .collection('credentials')
       .findOne(
         { ...scope, status: { $in: UNFINISHED_STATUSES } },
         { sort: { createdAt: -1 } }
       )
-    const rowLock = unfinished
-      ? await requireLock(locker, `credential:${unfinished._id}`)
-      : null
 
-    try {
-      const reusable = unfinished
-        ? await db.collection('credentials').findOne({
-            _id: unfinished._id,
-            status: { $in: UNFINISHED_STATUSES }
-          })
-        : null
+    return await withCredentialRow(
+      db,
+      locker,
+      unfinished,
+      async ({ reusable, rowId }) => {
+        if (
+          retryAfterMs !== undefined &&
+          !(await teamCredentialNeedsRetry(
+            db,
+            { teamId, environment },
+            { retryAfterMs, activatedAt }
+          ))
+        ) {
+          return { credential: null, created: false }
+        }
 
-      if (
-        retryAfterMs !== undefined &&
-        !(await teamCredentialNeedsRetry(
+        return attemptTeamCredential(
           db,
-          { teamId, environment },
-          { retryAfterMs }
-        ))
-      ) {
-        return { credential: null, created: false }
+          vault,
+          registry,
+          { reusable, rowId },
+          { teamId, environment, modelSlug, requestedBy, operationId }
+        )
       }
-
-      return await attemptTeamCredential(db, vault, registry, reusable, {
-        teamId,
-        environment,
-        modelSlug,
-        requestedBy,
-        operationId
-      })
-    } finally {
-      await rowLock?.free()
-    }
+    )
   } finally {
     await lock.free()
   }
@@ -541,19 +550,57 @@ export async function ensureTeamCredential(
 
 const UNFINISHED_STATUSES = ['pending', 'failed']
 
-// One attempt at the credential, on the unfinished document if there is one:
-// resolves the issuer, then issues, activates and puts the secret in the
-// vault. An attempt that fails before an issuer is resolved is recorded.
+// Runs `work` holding the lock `revokeCredential` takes on the credential
+// row (`credential:{id}`), so an admin cannot revoke a row while it is being
+// issued and have the issuance write `active` over the revocation. A row
+// being retried is locked, then read again: if it has been revoked since it
+// was found, a fresh row is made instead, and that row's id is locked before
+// the row exists, so it is never visible unlocked.
+async function withCredentialRow(db, locker, unfinished, work) {
+  const rowId = unfinished?._id ?? new ObjectId()
+  const lock = await requireLock(locker, `credential:${rowId}`)
+
+  try {
+    const reusable = unfinished
+      ? await db.collection('credentials').findOne({
+          _id: rowId,
+          status: { $in: UNFINISHED_STATUSES }
+        })
+      : null
+
+    if (!unfinished || reusable) {
+      return await work({ reusable, rowId })
+    }
+
+    const freshId = new ObjectId()
+    const freshLock = await requireLock(locker, `credential:${freshId}`)
+
+    try {
+      return await work({ reusable: null, rowId: freshId })
+    } finally {
+      await freshLock.free()
+    }
+  } finally {
+    await lock.free()
+  }
+}
+
+// One attempt at the credential, on the unfinished document if there is one
+// (which keeps its owner and idempotency key, so reusing it can never clash
+// with another row's): resolves the issuer, then issues, activates and puts
+// the secret in the vault. An attempt that fails before an issuer is
+// resolved is recorded.
 async function attemptTeamCredential(
   db,
   vault,
   registry,
-  reusable,
+  { reusable, rowId },
   { teamId, environment, modelSlug, requestedBy, operationId }
 ) {
   const model = await findModelBySlug(db, modelSlug)
+  const userId = reusable?.userId ?? requestedBy
   const pending = {
-    userId: requestedBy,
+    userId,
     teamId,
     modelSlug: null,
     credentialType: TEAM_CREDENTIAL_TYPE,
@@ -562,7 +609,8 @@ async function attemptTeamCredential(
     purpose: null,
     type: 'apim-subscription',
     status: 'pending',
-    idempotencyKey: `team-activation:${operationId}`,
+    idempotencyKey:
+      reusable?.idempotencyKey ?? `team-activation:${operationId}`,
     issuerKey: null,
     // A team credential spans several models, so it records no single
     // provider/offering, only the cloud and gateway of the model that
@@ -579,7 +627,7 @@ async function attemptTeamCredential(
   try {
     resolved = resolveIssuer(registry, model, 'team')
   } catch (error) {
-    await recordUnissued(db, reusable, pending, error)
+    await recordUnissued(db, { reusable, rowId }, pending, error)
     throw error
   }
 
@@ -589,13 +637,8 @@ async function attemptTeamCredential(
     issuer: resolved.issuer,
     pending: { ...pending, issuerKey: resolved.issuerKey },
     reusable,
-    issueParams: {
-      userId: requestedBy,
-      modelSlug,
-      tier: 'team',
-      teamId,
-      environment
-    },
+    insertId: rowId,
+    issueParams: { userId, modelSlug, tier: 'team', teamId, environment },
     expiresAt: null
   })
 
@@ -604,7 +647,7 @@ async function attemptTeamCredential(
 
 // Keeps a record that an attempt never reached an issuer, so the activation
 // can be retried later without recreating a credential an admin revoked.
-async function recordUnissued(db, reusable, pending, error) {
+async function recordUnissued(db, { reusable, rowId }, pending, error) {
   const failed = {
     ...pending,
     status: 'failed',
@@ -616,33 +659,34 @@ async function recordUnissued(db, reusable, pending, error) {
       .collection('credentials')
       .updateOne({ _id: reusable._id }, { $set: failed })
   } else {
-    await db.collection('credentials').insertOne(failed)
+    await db.collection('credentials').insertOne({ _id: rowId, ...failed })
   }
 }
 
 /**
  * Whether a team's credential for an environment still needs creating even
  * though one of its models is active there: nothing is active and either no
- * attempt has been recorded or the latest one did not finish (`failed`, or
- * `pending` after a crash) at least `retryAfterMs` ago. Only the latest
- * attempt counts, so an old failed one never undoes a later revocation: a
- * credential an admin revoked is not recreated by a poll, only by a later
- * activation.
+ * attempt has been recorded, or the latest one did not finish (`failed`, or
+ * `pending` after a crash) at least `retryAfterMs` ago, or the latest one was
+ * revoked before the newest activation (`activatedAt`), whose own issuance
+ * therefore never started. Only the latest attempt counts, so an old failure
+ * never undoes a later revocation, and a credential an admin revoked after
+ * the last activation is not recreated by a poll, only by a later activation.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, environment: string}} team
- * @param {{retryAfterMs?: number}} [options] - how long after an attempt a retry waits, so a persistent failure is not retried on every poll
+ * @param {{retryAfterMs?: number, activatedAt?: string|null}} [options] - `retryAfterMs`: how long after an attempt a retry waits, so a persistent failure is not retried on every poll; `activatedAt`: when the team's newest active deployment activated
  * @returns {Promise<boolean>}
  */
 export async function teamCredentialNeedsRetry(
   db,
   { teamId, environment },
-  { retryAfterMs = 0 } = {}
+  { retryAfterMs = 0, activatedAt = null } = {}
 ) {
   const attempts = await db
     .collection('credentials')
     .find(
       { teamId, environment, ...TEAM_CREDENTIAL_FILTER },
-      { projection: { status: 1, createdAt: 1 } }
+      { projection: { status: 1, createdAt: 1, revokedAt: 1 } }
     )
     .sort({ createdAt: -1 })
     .toArray()
@@ -654,9 +698,19 @@ export async function teamCredentialNeedsRetry(
 
   const [latest] = attempts
 
+  if (latest === undefined) {
+    return true
+  }
+
+  if (UNFINISHED_STATUSES.includes(latest.status)) {
+    return latest.createdAt <= cutoff
+  }
+
   return (
-    latest === undefined ||
-    (UNFINISHED_STATUSES.includes(latest.status) && latest.createdAt <= cutoff)
+    latest.status === 'revoked' &&
+    activatedAt !== null &&
+    Boolean(latest.revokedAt) &&
+    latest.revokedAt < activatedAt
   )
 }
 

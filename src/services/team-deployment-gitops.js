@@ -484,7 +484,10 @@ async function grantTeamCredential(
       modelSlug: entry.modelSlug,
       requestedBy: entry.requestedBy,
       operationId: entry.operationId,
-      ...(retry && { retryAfterMs: pollMinIntervalMs })
+      ...(retry && {
+        retryAfterMs: pollMinIntervalMs,
+        activatedAt: entry.activatedAt ?? null
+      })
     })
 
     // A credential that was created but whose secret is not in the vault is
@@ -539,17 +542,35 @@ async function reportCredentialFailure(
   }
 }
 
-// Creates a credential still missing for an active entry: none recorded, or
-// an earlier attempt that did not finish (`teamCredentialNeedsRetry`), at
-// most once per poll interval. Returns whether it created one.
-async function retryTeamCredential(db, doc, entry, settings) {
+// The team's newest active deployment: the one whose activation a missing
+// credential is owed to, and so the one a retry is made for.
+function newestActive(doc, fallback) {
+  const active = doc.deployments.filter(({ status }) => status === 'active')
+
+  // The document read before this poll may not show the entry as active yet.
+  if (fallback && !active.some(({ id }) => id === fallback.id)) {
+    active.push(fallback)
+  }
+
+  return active.reduce((newest, entry) =>
+    (entry.activatedAt ?? '') > (newest.activatedAt ?? '') ? entry : newest
+  )
+}
+
+// Creates a credential still missing for a team with an active entry: none
+// recorded, an earlier attempt that did not finish, or one revoked before
+// the newest activation (`teamCredentialNeedsRetry`), at most once per poll
+// interval. Returns whether it created one.
+async function retryTeamCredential(db, doc, settings, entry) {
+  const newest = newestActive(doc, entry)
   const needed = await teamCredentialNeedsRetry(db, doc, {
-    retryAfterMs: settings.pollMinIntervalMs
+    retryAfterMs: settings.pollMinIntervalMs,
+    activatedAt: newest.activatedAt ?? null
   })
 
   return (
     needed &&
-    (await grantTeamCredential(db, doc, entry, settings, { retry: true }))
+    (await grantTeamCredential(db, doc, newest, settings, { retry: true }))
   )
 }
 
@@ -617,7 +638,7 @@ function isInProgress(entry) {
 
 async function refreshOwnStatus(db, doc, entry, settings) {
   if (entry.status === 'active') {
-    await retryTeamCredential(db, doc, entry, settings)
+    await retryTeamCredential(db, doc, settings, entry)
   }
 
   if (
@@ -799,9 +820,7 @@ export async function recoverTeamCredentials(db, deps = {}) {
 
   // Sequential by design: one team's attempt holds its credential lock.
   for (const doc of docs) {
-    const entry = doc.deployments.find(({ status }) => status === 'active')
-
-    if (await retryTeamCredential(db, doc, entry, settings)) {
+    if (await retryTeamCredential(db, doc, settings)) {
       created += 1
     }
   }
