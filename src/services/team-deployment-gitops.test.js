@@ -199,6 +199,75 @@ describe('team-deployment-gitops', () => {
     })
   })
 
+  describe('status times', () => {
+    test('records when each status was reached, keeping the earlier times', async () => {
+      const orchestrator = fakeOrchestrator()
+      const requestedAt = '2026-10-21T10:40:00.000Z'
+      let entry = githubEntry({ statusTimes: { requested: requestedAt } })
+      const doc = await insertDocument(entry)
+
+      for (const status of ['pr-raised', 'merged', 'active']) {
+        orchestrator.getDeploymentStatus.mockResolvedValue({
+          operationId: entry.operationId,
+          status,
+          links: {}
+        })
+        entry = await refresh(orchestrator, doc, entry)
+      }
+
+      const stored = await storedEntry(entry.id)
+
+      expect(Object.keys(stored.statusTimes)).toEqual([
+        'requested',
+        'pr-raised',
+        'merged',
+        'active'
+      ])
+      expect(stored.statusTimes.requested).toBe(requestedAt)
+      expect(stored.statusTimes.active).toBe(stored.activatedAt)
+      expect(entry.statusTimes).toEqual(stored.statusTimes)
+    })
+
+    test('keeps the time a status was first reached when a retry revisits it', async () => {
+      const orchestrator = fakeOrchestrator()
+      const first = '2026-10-21T10:44:00.000Z'
+      let entry = githubEntry({
+        status: 'deploying',
+        statusTimes: { requested: '2026-10-21T10:40:00.000Z', deployed: first }
+      })
+      const doc = await insertDocument(entry)
+
+      // deployed -> deploy-failed -> deploying (the retry) -> deployed again
+      orchestrator.getDeploymentStatus.mockResolvedValue({
+        operationId: entry.operationId,
+        status: 'deployed',
+        links: {}
+      })
+      entry = await refresh(orchestrator, doc, entry)
+
+      expect(entry.status).toBe('deployed')
+      expect(entry.statusTimes.deployed).toBe(first)
+      expect((await storedEntry(entry.id)).statusTimes.deployed).toBe(first)
+    })
+
+    test('starts the record for an entry made before times were kept', async () => {
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry()
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue({
+        operationId: entry.operationId,
+        status: 'pr-raised',
+        links: {}
+      })
+      await refresh(orchestrator, doc, entry)
+
+      expect(Object.keys((await storedEntry(entry.id)).statusTimes)).toEqual([
+        'pr-raised'
+      ])
+    })
+  })
+
   describe('claim leases', () => {
     test('claims a D14 retry again once a claim that never dispatched outlives its lease', async () => {
       const orchestrator = fakeOrchestrator()
@@ -951,8 +1020,8 @@ describe('team-deployment-gitops', () => {
         ) => {
           if (modelSlug === 'no-team-sku') {
             throw boomWithCode(
-              Boom.forbidden,
-              'Model has no team tier SKU in the catalogue',
+              Boom.badRequest,
+              'Model is not eligible for this environment',
               'model-not-eligible'
             )
           }
@@ -975,7 +1044,7 @@ describe('team-deployment-gitops', () => {
       // is free for the valid one behind it.
       expect(await storedEntry(ineligible.id)).toMatchObject({
         status: 'checks-failed',
-        failureReason: 'Model has no team tier SKU in the catalogue'
+        failureReason: 'Model is not eligible for this environment'
       })
       expect((await storedEntry(valid.id)).status).toBe('requested')
       expect(orchestrator.requestDeployment).toHaveBeenCalledTimes(1)

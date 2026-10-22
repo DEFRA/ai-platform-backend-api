@@ -788,14 +788,14 @@ describe('#credentials routes', () => {
       'Second Model Requester'
     )
 
-    await requestActiveDeployment(teamId, requesterId, 'gpt-4-1-nano')
+    await requestActiveDeployment(teamId, requesterId, 'gpt-5-mini')
 
     const second = await server.inject({
       method: 'POST',
       url: '/v1/credentials',
       headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
       payload: {
-        modelSlug: 'gpt-4-1-nano',
+        modelSlug: 'gpt-5-mini',
         tier: 'team',
         teamId,
         environment: 'sandbox'
@@ -808,8 +808,8 @@ describe('#credentials routes', () => {
       first.result.credential._id.toString()
     )
     expect(second.result.credential.allowedDeployments.sort()).toEqual([
-      'gpt-4-1-nano',
-      'gpt-4o'
+      'gpt-4o',
+      'gpt-5-mini'
     ])
   })
 
@@ -889,14 +889,11 @@ describe('#credentials routes', () => {
         'Grants Requester'
       )
 
-      await requestActiveDeployment(teamId, requesterId, 'gpt-4-1-nano')
+      await requestActiveDeployment(teamId, requesterId, 'gpt-5-mini')
 
       const listed = await listedCredential(userId, credential._id.toString())
 
-      expect(listed.allowedDeployments.sort()).toEqual([
-        'gpt-4-1-nano',
-        'gpt-4o'
-      ])
+      expect(listed.allowedDeployments.sort()).toEqual(['gpt-4o', 'gpt-5-mini'])
     })
 
     test('no longer lists a model the team removed', async () => {

@@ -326,7 +326,7 @@ describe('team-deployment-service (GitOps)', () => {
           server.locker,
           {
             teamId,
-            modelSlugs: ['gpt-4o', 'gpt-4-1-nano'],
+            modelSlugs: ['gpt-4o', 'gpt-5-mini'],
             environment: 'sandbox',
             requestedBy: userId,
             idempotencyKey: randomUUID()
@@ -352,7 +352,7 @@ describe('team-deployment-service (GitOps)', () => {
         server.locker,
         {
           teamId,
-          modelSlugs: ['gpt-4o', 'gpt-4-1-nano'],
+          modelSlugs: ['gpt-4o', 'gpt-5-mini'],
           environment: 'sandbox',
           requestedBy: userId,
           idempotencyKey: randomUUID()
@@ -1186,7 +1186,7 @@ describe('team-deployment-service (GitOps)', () => {
       await requestOne(
         {
           teamId: submitted.teamId,
-          modelSlug: 'gpt-4-1-nano',
+          modelSlug: 'gpt-5-mini',
           environment: 'sandbox',
           requestedBy: submitted.userId,
           idempotencyKey: randomUUID()
@@ -1387,6 +1387,70 @@ describe('team-deployment-service (GitOps)', () => {
           action: 'teamDeployment.retry'
         })
       ).toBe(1)
+    })
+
+    test('records when a retry first reached deploying, keeping the times already recorded', async () => {
+      const orchestrator = fakeOrchestrator()
+      const { deployment } = await submitGithubDeployment(orchestrator)
+      const earlier = {
+        requested: '2026-10-21T10:40:00.000Z',
+        deployed: '2026-10-21T10:44:00.000Z'
+      }
+
+      await setEntry(deployment._id, {
+        status: 'deploy-failed',
+        statusTimes: earlier
+      })
+      await service.redispatchApply(
+        db,
+        { id: deployment._id, actorUserId: adminId, kind: 'retry' },
+        { registry: githubRegistry(orchestrator) }
+      )
+
+      const { statusTimes } = await storedEntry(deployment._id)
+
+      expect(statusTimes).toEqual({
+        ...earlier,
+        deploying: expect.stringMatching(/^\d{4}-\d{2}-\d{2}T/)
+      })
+
+      await setEntry(deployment._id, { status: 'deploy-failed' })
+      await service.redispatchApply(
+        db,
+        { id: deployment._id, actorUserId: adminId, kind: 'retry' },
+        { registry: githubRegistry(orchestrator) }
+      )
+
+      expect((await storedEntry(deployment._id)).statusTimes).toEqual(
+        statusTimes
+      )
+    })
+
+    test('puts the status times back too when GitHub refuses the retry', async () => {
+      const orchestrator = fakeOrchestrator({
+        requestApply: vi.fn(async () => {
+          throw new Error('GitHub unavailable')
+        })
+      })
+      const { deployment } = await submitGithubDeployment(orchestrator)
+      const earlier = {
+        requested: '2026-10-21T10:40:00.000Z',
+        deployed: '2026-10-21T10:44:00.000Z'
+      }
+
+      await setEntry(deployment._id, {
+        status: 'deploy-failed',
+        statusTimes: earlier
+      })
+      await expect(
+        service.redispatchApply(
+          db,
+          { id: deployment._id, actorUserId: adminId, kind: 'retry' },
+          { registry: githubRegistry(orchestrator) }
+        )
+      ).rejects.toMatchObject({ data: { code: 'upstream-unavailable' } })
+
+      expect((await storedEntry(deployment._id)).statusTimes).toEqual(earlier)
     })
 
     test('puts a failed deployment back when GitHub refuses its retry', async () => {

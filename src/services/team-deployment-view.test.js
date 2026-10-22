@@ -28,34 +28,117 @@ describe('buildProgressSteps', () => {
   const labels = [
     'Request recorded',
     'Team checked',
-    'Setting up access in Azure',
-    'Checking and preparing your client secret'
+    'Setting up GPT-4o in Azure',
+    'Preparing your client secret'
   ]
+  const T0 = '2026-10-21T10:40:00.000Z'
+  const T1 = '2026-10-21T10:41:00.000Z'
+  const T2 = '2026-10-21T10:42:00.000Z'
+  const T3 = '2026-10-21T10:43:00.000Z'
+  const T4 = '2026-10-21T10:44:00.000Z'
+  const T5 = '2026-10-21T10:50:00.000Z'
+  const statusTimes = {
+    requested: T0,
+    'pr-raised': T1,
+    merged: T2,
+    deploying: T3,
+    deployed: T3,
+    verified: T4,
+    active: T4
+  }
 
+  // `at` is when a done step finished, when the current one started, and
+  // null for one not reached.
   test.each([
-    ['requested', ['current', 'pending', 'pending', 'pending']],
-    ['pr-raised', ['done', 'current', 'pending', 'pending']],
-    ['merged', ['done', 'done', 'current', 'pending']],
-    ['deploying', ['done', 'done', 'current', 'pending']],
-    ['deployed', ['done', 'done', 'done', 'current']],
-    ['verified', ['done', 'done', 'done', 'current']],
-    ['active', ['done', 'done', 'done', 'done']]
-  ])('marks the steps for %s', (status, states) => {
-    const steps = buildProgressSteps(status)
+    ['requested', ['current', 'pending', 'pending', 'pending'], [T0]],
+    ['pr-raised', ['done', 'current', 'pending', 'pending'], [T1, T1]],
+    ['merged', ['done', 'done', 'current', 'pending'], [T1, T2, T2]],
+    ['deploying', ['done', 'done', 'current', 'pending'], [T1, T2, T2]],
+    ['deployed', ['done', 'done', 'done', 'current'], [T1, T2, T3, T3]],
+    ['verified', ['done', 'done', 'done', 'current'], [T1, T2, T3, T3]],
+    ['active', ['done', 'done', 'done', 'done'], [T1, T2, T3, T4]]
+  ])('marks the steps and times for %s', (status, states, times) => {
+    const steps = buildProgressSteps({ status, statusTimes }, 'GPT-4o')
 
     expect(steps.map(({ label }) => label)).toEqual(labels)
     expect(steps.map(({ state }) => state)).toEqual(states)
+    expect(steps.map(({ at }) => at)).toEqual(
+      [...times, null, null, null, null].slice(0, 4)
+    )
+  })
+
+  test('reads a step the entry skipped as instant, starting when the next did', () => {
+    const steps = buildProgressSteps(
+      {
+        status: 'deployed',
+        statusTimes: { requested: T0, merged: T2, deployed: T3 }
+      },
+      'GPT-4o'
+    )
+
+    expect(steps.map(({ at }) => at)).toEqual([T2, T2, T3, T3])
+  })
+
+  test('keeps completed steps in order across a retry that records deploying after deployed', () => {
+    const polled = {
+      requested: T0,
+      deployed: T4
+    }
+    const ats = (status, times) =>
+      buildProgressSteps({ status, statusTimes: times }, 'GPT-4o').map(
+        ({ at }) => at
+      )
+
+    // Polling skipped everything between requested and deployed.
+    const before = ats('deployed', polled)
+
+    expect(before).toEqual([T4, T4, T4, T4])
+    // The retry resumes at deploying, five minutes later.
+    expect(ats('deploying', { ...polled, deploying: T5 })).toEqual([
+      T4,
+      T4,
+      T4,
+      null
+    ])
+    expect(ats('deployed', { ...polled, deploying: T5 })).toEqual(before)
+  })
+
+  test('falls back to when the entry was created and activated for one from before times were recorded', () => {
+    const active = buildProgressSteps(
+      { status: 'active', createdAt: T0, activatedAt: T4 },
+      'GPT-4o'
+    )
+    const requested = buildProgressSteps(
+      { status: 'requested', createdAt: T0 },
+      'GPT-4o'
+    )
+
+    expect(active.map(({ at }) => at)).toEqual([T4, T4, T4, T4])
+    expect(requested.map(({ at }) => at)).toEqual([T0, null, null, null])
   })
 
   test.each(['checks-failed', 'deploy-failed', 'removing', 'removed'])(
     'has no steps for %s',
     (status) => {
-      expect(buildProgressSteps(status)).toBeNull()
+      expect(buildProgressSteps({ status }, 'GPT-4o')).toBeNull()
     }
   )
 })
 
 describe('toDeploymentView', () => {
+  test('names the model by its display name in the step label, the slug when there is none', () => {
+    const named = toDeploymentView(
+      doc,
+      entry({ status: 'requested' }),
+      undefined,
+      'GPT-4o'
+    )
+    const unnamed = toDeploymentView(doc, entry({ status: 'requested' }))
+
+    expect(named.progressSteps[2].label).toBe('Setting up GPT-4o in Azure')
+    expect(unnamed.progressSteps[2].label).toBe('Setting up gpt-4o in Azure')
+  })
+
   describe('resources', () => {
     test('lists the team’s resources by name and kind only', () => {
       const view = toDeploymentView(doc, entry({ gitops: { resources } }))

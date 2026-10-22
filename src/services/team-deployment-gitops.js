@@ -16,7 +16,8 @@ import {
   appRegistrationOf,
   auditDeployment,
   entryFilter,
-  findEntry
+  findEntry,
+  withStatusTime
 } from '#/services/team-deployment-entries.js'
 import {
   abandonOperation,
@@ -69,17 +70,22 @@ function setFields(prefix, fields) {
   )
 }
 
-// The entry fields a status result changes: its status and, on reaching it,
-// when it became active or why it failed.
+// The entry fields a status result changes: its status, when it reached it
+// (`statusTimes`, which the progress steps read) and, on reaching it, when it
+// became active or why it failed.
 function statusChangesOf(result, entry) {
   if (result.status === entry.status) {
     return {}
   }
 
-  const update = { status: result.status }
+  const at = new Date().toISOString()
+  const update = {
+    status: result.status,
+    statusTimes: withStatusTime(entry.statusTimes, result.status, at)
+  }
 
   if (result.status === 'active') {
-    update.activatedAt = new Date().toISOString()
+    update.activatedAt = at
   }
 
   if (TERMINAL_FAILURE_STATUSES.has(result.status)) {

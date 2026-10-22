@@ -17,6 +17,14 @@
     "skus": [
       {
         "name": "GlobalStandard",
+        "tiers": ["research"],
+        "regions": ["uksouth"],
+        "capacity": 250
+      },
+      {
+        "name": "DataZoneStandard",
+        "tiers": ["team"],
+        "regions": ["swedencentral"],
         "capacity": 250
       }
     ],
@@ -170,6 +178,8 @@
     "skus": [
       {
         "name": "GlobalStandard",
+        "tiers": ["research", "team"],
+        "regions": ["uksouth"],
         "capacity": 250
       }
     ],
@@ -179,7 +189,7 @@
       "status": "available",
       "retirementDate": null
     },
-    "tiers": ["research"],
+    "tiers": ["research", "team"],
     "environments": ["sandbox"],
     "description": "Mid-sized GPT-5 model balancing speed, cost and capability for everyday research tasks.",
     "useCases": [
@@ -328,6 +338,8 @@
     "skus": [
       {
         "name": "GlobalStandard",
+        "tiers": ["research", "team"],
+        "regions": ["uksouth"],
         "capacity": 250
       }
     ],

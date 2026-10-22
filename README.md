@@ -321,10 +321,15 @@ its document built then, once that one ends.
 `POST /v1/teams/{teamId}/deployments` takes `{modelSlugs: [...], environment}` (1 to 20 models) and
 returns `{deployments}` in the order asked: one entry and operation per model, the first in flight
 and the rest queued, so one that fails never holds back the others. The request is all or nothing up
-front (a model that is not eligible is refused as `403 model-not-eligible`, and one the team already
+front (a model a team cannot have in that environment is refused as `400 model-not-eligible`, and one the team already
 has as `409 deployment-exists` with `existing`; a model the team removed may be asked for again) and
 idempotent by `Idempotency-Key`: a replay returns its entries and finishes any a crashed attempt did
-not reach.
+not reach. A team can have a model when it is eligible, has a `team` SKU whose regions (else the
+model's) are all in the UK, and lists the environment ([`teamSkuOf` and `isTeamEligible`](src/services/catalogue-service.js));
+`GET /v1/models?tier=team` (optionally `&environment=`) lists only those, and the plain list is unchanged.
+Each deployment's `progressSteps` are `{label, state, at}`: the third label names the model ("Setting up
+GPT-4o in Azure"), and `at` is when a done step finished or the current one started (ISO time, from
+the entry's `statusTimes`), null for one not reached.
 Platform Admins
 (users whose `roles` include `platform-admin`; nothing assigns it yet) can
 `POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`.

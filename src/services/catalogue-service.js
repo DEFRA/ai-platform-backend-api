@@ -1,4 +1,4 @@
-import { invalidateModelsCache } from '#/services/models-service.js'
+import { invalidateModelsCache, listModels } from '#/services/models-service.js'
 
 // Pinned data-plane api-version per apiProfile, verified against the sandbox
 // gateway (docs/plans/implemented/02-research-tier.md in
@@ -8,6 +8,62 @@ import { invalidateModelsCache } from '#/services/models-service.js'
 // apiVersion even on a model explicitly marked apiProfile: 'responses'.
 const DEFAULT_API_VERSION_BY_PROFILE = { responses: '2025-03-01-preview' }
 const DEFAULT_API_VERSION = '2024-05-01-preview'
+
+const TEAM_TIER = 'team'
+const UK_REGION_PREFIX = 'uk'
+
+function isInUk(regions) {
+  return (
+    Array.isArray(regions) &&
+    regions.length > 0 &&
+    regions.every((region) => region.toLowerCase().startsWith(UK_REGION_PREFIX))
+  )
+}
+
+/**
+ * The SKU a team's deployment of a model uses (D4): the first one offered to
+ * the `team` tier whose regions are all in the UK. A SKU with no `regions`
+ * takes the model's. Undefined when the model has none, however the rest of
+ * the catalogue describes it.
+ * @param {{skus?: Array<{name: string, tiers?: string[], regions?: string[]}>, regions?: string[]}|null|undefined} model
+ * @returns {object|undefined}
+ */
+export function teamSkuOf(model) {
+  return model?.skus?.find(
+    (sku) =>
+      sku.tiers?.includes(TEAM_TIER) && isInUk(sku.regions ?? model.regions)
+  )
+}
+
+/**
+ * The one rule for whether a team can have a model (D4): it is eligible, has
+ * a UK team SKU (`teamSkuOf`) and, when an environment is named, lists that
+ * environment in its catalogue `environments`.
+ * @param {object|null|undefined} model
+ * @param {string} [environment]
+ * @returns {boolean}
+ */
+export function isTeamEligible(model, environment) {
+  return (
+    Boolean(model?.eligible) &&
+    teamSkuOf(model) !== undefined &&
+    (environment === undefined ||
+      Boolean(model.environments?.includes(environment)))
+  )
+}
+
+/**
+ * Lists the models a team can have, optionally for one environment and
+ * provider. The plain model list is unchanged, so a page can still say why a
+ * model is not offered to teams.
+ * @param {import('mongodb').Db} db
+ * @param {{provider?: string, environment?: string}} [filters]
+ */
+export async function listTeamModels(db, { provider, environment } = {}) {
+  const models = await listModels(db, { provider })
+
+  return models.filter((model) => isTeamEligible(model, environment))
+}
 
 function normalizeOffering(offering) {
   return {

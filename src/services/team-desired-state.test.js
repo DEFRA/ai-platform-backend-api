@@ -32,11 +32,11 @@ function schemaProblems(document) {
 const TEAM_MODEL = {
   slug: 'gpt-5-nano-desired',
   tiers: ['research', 'team'],
-  environments: ['sandbox', 'infradev'],
+  environments: ['sandbox', 'infradev', 'qa', 'preprod'],
   eligible: true,
   skus: [
     { name: 'GlobalStandard', capacity: 250, tiers: ['research'] },
-    { name: 'DataZoneStandard', tiers: ['team'], regions: ['swedencentral'] }
+    { name: 'DataZoneStandard', tiers: ['team'], regions: ['uksouth'] }
   ],
   capacityPolicy: {
     min: 1,
@@ -499,9 +499,63 @@ describe('#createTeamDesiredStateBuilder', () => {
     await expect(
       buildFor(null, { params: { modelSlug: 'research-only-desired' } })
     ).rejects.toMatchObject({
-      output: { statusCode: 403 },
+      output: { statusCode: 400 },
       data: { code: 'model-not-eligible' }
     })
+  })
+
+  test('refuses a model whose only team SKU is outside the UK', async () => {
+    await db.collection('models').insertOne({
+      ...TEAM_MODEL,
+      slug: 'sweden-only-desired',
+      skus: [
+        {
+          name: 'DataZoneStandard',
+          tiers: ['team'],
+          regions: ['swedencentral']
+        }
+      ]
+    })
+    invalidateModelsCache()
+
+    await expect(
+      buildFor(null, { params: { modelSlug: 'sweden-only-desired' } })
+    ).rejects.toMatchObject({
+      output: { statusCode: 400 },
+      data: { code: 'model-not-eligible' }
+    })
+  })
+
+  test('refuses a model its catalogue does not list for the environment', async () => {
+    await expect(
+      buildFor(null, { params: { environment: 'prod' } })
+    ).rejects.toMatchObject({
+      output: { statusCode: 400 },
+      data: { code: 'model-not-eligible' }
+    })
+  })
+
+  test('takes the UK team SKU when the model also has one elsewhere', async () => {
+    await db.collection('models').insertOne({
+      ...TEAM_MODEL,
+      slug: 'two-skus-desired',
+      skus: [
+        { name: 'GlobalStandard', tiers: ['team'], regions: ['swedencentral'] },
+        { name: 'DataZoneStandard', tiers: ['team'], regions: ['uksouth'] }
+      ]
+    })
+    invalidateModelsCache()
+
+    const { result } = await buildFor(null, {
+      params: { modelSlug: 'two-skus-desired' }
+    })
+
+    expect(result.document.deployments).toEqual([
+      expect.objectContaining({
+        slug: 'two-skus-desired',
+        sku: 'DataZoneStandard'
+      })
+    ])
   })
 
   test('builds nothing for a team id that is not a team', async () => {

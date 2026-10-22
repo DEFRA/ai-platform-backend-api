@@ -4,6 +4,7 @@ import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { config } from '#/config.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { findModelBySlug } from '#/services/models-service.js'
+import { isTeamEligible, teamSkuOf } from '#/services/catalogue-service.js'
 
 // WS6: builds the whole team file the submit workflow writes
 // (`ai-platform-infra/schemas/team.schema.json`). The file holds no resource
@@ -38,19 +39,18 @@ function teamFields(team) {
 }
 
 // The team tier's SKU and starting capacity for one catalogue model. A model
-// offered to the team tier with no team SKU is a catalogue error, and is
-// refused the same way an ineligible model is.
+// a team cannot have (the catalogue service's one rule: eligible, a UK team
+// SKU, listed for this environment) is refused as the request is.
 function deploymentOf(model, environment) {
-  const sku = model?.skus?.find((offer) => offer.tiers?.includes('team'))
-
-  if (!sku) {
+  if (!isTeamEligible(model, environment)) {
     throw boomWithCode(
-      Boom.forbidden,
-      'Model has no team tier SKU in the catalogue',
+      Boom.badRequest,
+      'Model is not eligible for this environment',
       'model-not-eligible'
     )
   }
 
+  const sku = teamSkuOf(model)
   const policy = model.capacityPolicy ?? {}
 
   return {

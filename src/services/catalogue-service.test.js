@@ -1,6 +1,84 @@
-import { syncCatalogue } from '#/services/catalogue-service.js'
+import {
+  isTeamEligible,
+  syncCatalogue,
+  teamSkuOf
+} from '#/services/catalogue-service.js'
 
 const OPENAI = { provider: 'openai', offering: 'azure-openai' }
+
+const UK_TEAM_SKU = { name: 'DataZoneStandard', tiers: ['team'] }
+
+function teamModel(fields = {}) {
+  return {
+    slug: 'rule-model',
+    eligible: true,
+    regions: ['uksouth'],
+    environments: ['dev', 'qa'],
+    skus: [UK_TEAM_SKU],
+    ...fields
+  }
+}
+
+describe('team eligibility rule (D4)', () => {
+  test('takes a SKU without regions from the model, which is in the UK', () => {
+    expect(teamSkuOf(teamModel())).toBe(UK_TEAM_SKU)
+    expect(isTeamEligible(teamModel(), 'dev')).toBe(true)
+  })
+
+  test('takes a SKU with its own regions over the model’s', () => {
+    const nano = teamModel({
+      skus: [{ ...UK_TEAM_SKU, regions: ['swedencentral'] }]
+    })
+
+    expect(teamSkuOf(nano)).toBeUndefined()
+    expect(isTeamEligible(nano, 'dev')).toBe(false)
+  })
+
+  test('needs every region of the SKU to be in the UK, in any case', () => {
+    const mixed = { ...UK_TEAM_SKU, regions: ['uksouth', 'swedencentral'] }
+    const upper = { ...UK_TEAM_SKU, regions: ['UKWest', 'uksouth'] }
+
+    expect(teamSkuOf(teamModel({ skus: [mixed] }))).toBeUndefined()
+    expect(teamSkuOf(teamModel({ skus: [upper] }))).toBe(upper)
+  })
+
+  test('picks the first UK team SKU among others', () => {
+    const elsewhere = { ...UK_TEAM_SKU, regions: ['swedencentral'] }
+    const research = { name: 'GlobalStandard', tiers: ['research'] }
+
+    expect(
+      teamSkuOf(teamModel({ skus: [research, elsewhere, UK_TEAM_SKU] }))
+    ).toBe(UK_TEAM_SKU)
+  })
+
+  test.each([
+    ['has no regions anywhere', { regions: undefined }],
+    ['has an empty regions list', { regions: [] }],
+    ['has no SKUs', { skus: undefined }],
+    [
+      'has no team SKU',
+      { skus: [{ name: 'GlobalStandard', tiers: ['research'] }] }
+    ],
+    ['has a SKU with no tiers', { skus: [{ name: 'GlobalStandard' }] }],
+    ['is not eligible', { eligible: false }]
+  ])('refuses a model that %s', (_why, fields) => {
+    expect(isTeamEligible(teamModel(fields), 'dev')).toBe(false)
+  })
+
+  test('refuses a model that does not exist', () => {
+    expect(isTeamEligible(null, 'dev')).toBe(false)
+    expect(teamSkuOf(undefined)).toBeUndefined()
+  })
+
+  test('needs the environment to be one the catalogue lists, when one is named', () => {
+    expect(isTeamEligible(teamModel(), 'qa')).toBe(true)
+    expect(isTeamEligible(teamModel(), 'prod')).toBe(false)
+    expect(isTeamEligible(teamModel({ environments: undefined }), 'dev')).toBe(
+      false
+    )
+    expect(isTeamEligible(teamModel({ environments: [] }))).toBe(true)
+  })
+})
 
 function stubSource(result) {
   return { fetchCatalogue: vi.fn().mockResolvedValue(result) }
