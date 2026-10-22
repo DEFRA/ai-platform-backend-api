@@ -328,9 +328,17 @@ not reach. One rule covers every tier: **no Global SKU (`name` starting `Global`
 only** (`ALLOWED_REGIONS`: UK South/West, Sweden Central, North/West Europe). A team can have a model
 when it is eligible, has a `team` SKU under that rule (regions from the SKU, else the model's) and lists
 the environment ([`teamSkuOf` and `isTeamEligible`](src/services/catalogue-service.js));
-research (on-your-own) credentials need the same of a `research` SKU (`researchSkuOf`, `isResearchEligible`),
-else `403 model-not-eligible`. `GET /v1/models?tier=team` (optionally `&environment=`) and `?tier=research`
-list only those; the plain list is unchanged.
+research (on-your-own) credentials need the same of a `research` SKU (`researchSkuOf`, `isResearchEligible`)
+**and** the model deployed in the research environment: an `active` deployment in that environment's
+platform-owned `environments/{RESEARCH_ENVIRONMENT}/research.json` on `ai-platform-tenants`, matched by `slug`
+([`research-deployments.js`](src/services/research-deployments.js); read through the tenant orchestrator,
+cached for `RESEARCH_DEPLOYMENTS_CACHE_MS`). Otherwise issuing is `403 model-not-eligible` (not offered to
+research) or `403 model-not-deployed` (offered, but not deployed there); a failed read of the file is
+`502 research-deployments-unavailable`, never an empty or stale answer. `GET /v1/models?tier=team` (optionally
+`&environment=`) and `?tier=research` list only those; the plain list is unchanged except that each model also
+carries a flat boolean `researchAvailable` (research-eligible **and** deployed), so a page need not work it out,
+and it too answers `502 research-deployments-unavailable` when the file cannot be read. In mock mode the
+orchestrator serves a `research.json` (only `gpt-4o` deployed, as in infradev) so local runs work.
 Each deployment's `progressSteps` are `{label, state, at}`: the third label names the model ("Setting up
 GPT-4o in Azure"), and `at` is when a done step finished or the current one started (ISO time, from
 the entry's `statusTimes`), null for one not reached.
@@ -387,6 +395,7 @@ credential keeps what it covered when it was revoked; a later model activation c
 | `TEAM_DEFAULT_REQUESTS_PER_MINUTE` | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                                                                             |
 | `AIP_ENVIRONMENTS`                 | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group, and research keys are issued into the entry named by `RESEARCH_ENVIRONMENT` |
 | `RESEARCH_ENVIRONMENT`             | `infradev`                      | The `AIP_ENVIRONMENTS` entry research keys are issued into; live mode refuses to start when it is missing or lacks `apimName` or `tenantsVault`                                                            |
+| `RESEARCH_DEPLOYMENTS_CACHE_MS`    | `60000`                         | How long the models deployed in that environment's `research.json` are cached, so listing models does not read GitHub per request (`0` turns the cache off)                                                |
 
 ```json
 {

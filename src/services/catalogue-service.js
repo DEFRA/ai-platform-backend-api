@@ -1,4 +1,5 @@
 import { invalidateModelsCache, listModels } from '#/services/models-service.js'
+import { readResearchDeployments } from '#/services/research-deployments.js'
 
 // Pinned data-plane api-version per apiProfile, verified against the sandbox
 // gateway (docs/plans/implemented/02-research-tier.md in
@@ -136,15 +137,53 @@ export async function listTeamModels(db, { provider, environment } = {}) {
 }
 
 /**
- * Lists the models research can have, optionally for one provider. The plain
- * model list is unchanged, so a page can still say why a model is not offered.
+ * Whether research can really use a model: it is research-eligible (the
+ * catalogue rule) and deployed in the research environment (`deployed`, from
+ * `readResearchDeployments`), so a key for it reaches a deployment that exists.
+ * @param {object|null|undefined} model
+ * @param {ReadonlySet<string>} deployed - the slugs deployed for research
+ * @returns {boolean}
+ */
+export function isResearchAvailable(model, deployed) {
+  return isResearchEligible(model) && deployed.has(model.slug)
+}
+
+/**
+ * Lists the models research can have, optionally for one provider: eligible
+ * in the catalogue and deployed in the research environment
+ * (`isResearchAvailable`). The plain model list is unchanged, so a page can
+ * still say why a model is not offered.
  * @param {import('mongodb').Db} db
  * @param {{provider?: string}} [filters]
+ * @throws {Error} `502 research-deployments-unavailable` when the deployed models cannot be read
  */
 export async function listResearchModels(db, { provider } = {}) {
-  const models = await listModels(db, { provider, tier: RESEARCH_TIER })
+  const [models, deployed] = await Promise.all([
+    listModels(db, { provider, tier: RESEARCH_TIER }),
+    readResearchDeployments()
+  ])
 
-  return models.filter(isResearchEligible)
+  return models.filter((model) => isResearchAvailable(model, deployed))
+}
+
+/**
+ * The plain model list, each model with a flat `researchAvailable` boolean:
+ * true only when `isResearchAvailable` (research-eligible and deployed in the
+ * research environment), so a page need not work it out itself.
+ * @param {import('mongodb').Db} db
+ * @param {{provider?: string, tier?: string, includeIneligible?: boolean}} [filters]
+ * @throws {Error} `502 research-deployments-unavailable` when the deployed models cannot be read
+ */
+export async function listModelsWithResearchAvailability(db, filters = {}) {
+  const [models, deployed] = await Promise.all([
+    listModels(db, filters),
+    readResearchDeployments()
+  ])
+
+  return models.map((model) => ({
+    ...model,
+    researchAvailable: isResearchAvailable(model, deployed)
+  }))
 }
 
 function normalizeOffering(offering) {

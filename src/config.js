@@ -157,6 +157,12 @@ export const config = convict({
       format: 'nat',
       default: 3,
       env: 'RESEARCH_RENEWAL_CAP'
+    },
+    deploymentsCacheMs: {
+      doc: 'How long in ms the models deployed in the research environment (read from its research.json on ai-platform-tenants) are cached, so listing models does not read GitHub per request. 0 turns the cache off',
+      format: 'nat',
+      default: 60000,
+      env: 'RESEARCH_DEPLOYMENTS_CACHE_MS'
     }
   },
   teamDeployment: {

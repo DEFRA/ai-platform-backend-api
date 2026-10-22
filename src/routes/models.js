@@ -1,8 +1,9 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
-import { listModels, findModelBySlug } from '#/services/models-service.js'
+import { findModelBySlug } from '#/services/models-service.js'
 import {
+  listModelsWithResearchAvailability,
   listResearchModels,
   listTeamModels
 } from '#/services/catalogue-service.js'
@@ -10,9 +11,13 @@ import {
 const TEAM_TIER = 'team'
 const RESEARCH_TIER = 'research'
 
-// `tier=team` and `tier=research` keep only the models that tier can really
-// use (no Global SKU, UK or EU regions only); any other query is the plain
-// list, so a page can still say why a model is not offered.
+// `tier=team` keeps only the models a team can really have (no Global SKU, UK
+// or EU regions only); `tier=research` only those research-eligible and
+// deployed in the research environment. Any other query is the plain list,
+// each model with `researchAvailable` (true only when it is research-eligible
+// and deployed in the research environment), so a page can still say why a
+// model is not offered. Both research lists answer `502
+// research-deployments-unavailable` when the deployed models cannot be read.
 function listForTier(db, { provider, tier, environment, includeIneligible }) {
   if (tier === TEAM_TIER) {
     return listTeamModels(db, { provider, environment })
@@ -22,7 +27,11 @@ function listForTier(db, { provider, tier, environment, includeIneligible }) {
     return listResearchModels(db, { provider })
   }
 
-  return listModels(db, { provider, tier, includeIneligible })
+  return listModelsWithResearchAvailability(db, {
+    provider,
+    tier,
+    includeIneligible
+  })
 }
 
 export const models = [

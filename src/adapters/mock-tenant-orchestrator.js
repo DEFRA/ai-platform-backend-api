@@ -1,4 +1,24 @@
+import { readFileSync } from 'node:fs'
+
 import { config } from '#/config.js'
+
+// The platform-owned research team file, `environments/{env}/research.json`,
+// served for any environment by getCurrentDocument; a copy of infradev's in
+// the GitOps fixtures.
+const RESEARCH_FILE_PATH = /^environments\/([^/]+)\/research\.json$/
+const researchFixture = JSON.parse(
+  readFileSync(
+    new URL(
+      '../common/fixtures/gitops/ai-platform-tenants/environments/infradev/research.json',
+      import.meta.url
+    ),
+    'utf8'
+  )
+)
+
+function researchDocument(environment) {
+  return { ...structuredClone(researchFixture), environment }
+}
 
 // Design C's real GitOps operation states, in order (see the GitOps
 // contract's operation-state table). The mock advances through these purely
@@ -90,8 +110,12 @@ export const mockTenantOrchestrator = {
   },
 
   // The mock keeps no files, so every team starts from nothing: a document
-  // built against it is always revision 1.
-  async getCurrentDocument() {
-    return { document: null }
+  // built against it is always revision 1. The one exception is the
+  // platform-owned research file, which it serves (only gpt-4o deployed, as in
+  // infradev) so research is usable in local development.
+  async getCurrentDocument({ path } = {}) {
+    const environment = RESEARCH_FILE_PATH.exec(path ?? '')?.[1]
+
+    return { document: environment ? researchDocument(environment) : null }
   }
 }

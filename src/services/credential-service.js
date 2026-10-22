@@ -4,6 +4,7 @@ import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { findModelBySlug } from '#/services/models-service.js'
 import { isResearchEligible } from '#/services/catalogue-service.js'
+import { readResearchDeployments } from '#/services/research-deployments.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
@@ -180,6 +181,11 @@ export async function writeSecretToVault(db, vault, credential, secret) {
  * returns the credential without a secret — this matches "the key is shown
  * once" from the spec, at the cost of not being able to replay the secret
  * itself on retry.
+ *
+ * Refused as `403 model-not-eligible` when the catalogue does not offer the
+ * model to research, `403 model-not-deployed` when it does but the research
+ * environment has not deployed it, and `502 research-deployments-unavailable`
+ * when the deployed models cannot be read.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, environment?: string}} params
@@ -373,6 +379,16 @@ async function issueCredentialForParams(
       Boom.forbidden,
       'Model is not eligible',
       'model-not-eligible'
+    )
+  }
+
+  // Eligible in the catalogue is not enough: a key for a model research has
+  // not deployed would not work.
+  if (!(await readResearchDeployments()).has(model.slug)) {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Model is not deployed for research',
+      'model-not-deployed'
     )
   }
 
