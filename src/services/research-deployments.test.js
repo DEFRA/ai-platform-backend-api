@@ -1,4 +1,5 @@
 import { Boom } from '#/common/helpers/boom-with-code.js'
+import { config } from '#/config.js'
 import { mockTenantOrchestrator } from '#/adapters/mock-tenant-orchestrator.js'
 import {
   clearResearchDeploymentsCache,
@@ -14,6 +15,24 @@ function registryServing(document) {
       getCurrentDocument: vi.fn(async () => ({ document }))
     }
   }
+}
+
+// A registry whose read stays pending until `finish` is called.
+function registryWithDeferredRead(document) {
+  let finish
+  const registry = {
+    key: 'test',
+    orchestrator: {
+      getCurrentDocument: vi.fn(
+        () =>
+          new Promise((resolve) => {
+            finish = () => resolve({ document })
+          })
+      )
+    }
+  }
+
+  return { registry, finish: () => finish() }
 }
 
 function researchFile(deployments) {
@@ -99,6 +118,58 @@ describe('#readResearchDeployments', () => {
       ])
 
       expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(1)
+    })
+
+    test('keeps sharing a slow read that outlasts the cache duration, counting the duration from when it succeeds', async () => {
+      vi.useFakeTimers()
+      const { registry, finish } = registryWithDeferredRead(
+        researchFile([{ slug: 'gpt-4o', status: 'active' }])
+      )
+
+      const first = readResearchDeployments({ registry })
+      vi.advanceTimersByTime(120_000)
+      const second = readResearchDeployments({ registry })
+      finish()
+
+      expect(await first).toEqual(new Set(['gpt-4o']))
+      expect(await second).toEqual(new Set(['gpt-4o']))
+      expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(1)
+
+      vi.advanceTimersByTime(59_999)
+      await readResearchDeployments({ registry })
+
+      expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(1)
+    })
+
+    describe('with the cache off', () => {
+      beforeEach(() => {
+        config.set('research.deploymentsCacheMs', 0)
+      })
+
+      afterEach(() => {
+        config.set('research.deploymentsCacheMs', 60000)
+      })
+
+      test('still shares a read made at the same time, and reads again once it has finished', async () => {
+        const { registry, finish } = registryWithDeferredRead(researchFile([]))
+
+        const first = readResearchDeployments({ registry })
+        const second = readResearchDeployments({ registry })
+        finish()
+        await Promise.all([first, second])
+
+        expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(
+          1
+        )
+
+        const third = readResearchDeployments({ registry })
+        finish()
+        await third
+
+        expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(
+          2
+        )
+      })
     })
 
     test('does not share a read between orchestrators', async () => {

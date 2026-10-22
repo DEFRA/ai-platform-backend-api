@@ -44,6 +44,32 @@ async function readDeployedSlugs(registry, path) {
 }
 
 /**
+ * Starts a read that every request shares until it settles: it stays in the
+ * cache without an expiry while pending, and only once it succeeds does
+ * `research.deploymentsCacheMs` start counting; a failed read leaves the cache.
+ */
+function startRead(registry, path) {
+  const entry = { registry, path, expiresAt: Infinity }
+
+  entry.slugs = readDeployedSlugs(registry, path).then(
+    (slugs) => {
+      entry.expiresAt = Date.now() + config.get('research.deploymentsCacheMs')
+
+      return slugs
+    },
+    (error) => {
+      if (cached === entry) {
+        cached = null
+      }
+
+      throw error
+    }
+  )
+
+  return entry
+}
+
+/**
  * The slugs of the models deployed in the research environment: those whose
  * deployment is `active` in its `research.json` on `ai-platform-tenants`. No
  * file means nothing is deployed, so an empty set. Cached for
@@ -63,25 +89,10 @@ export async function readResearchDeployments({
     cached.path !== path ||
     cached.expiresAt <= Date.now()
   ) {
-    cached = {
-      registry,
-      path,
-      expiresAt: Date.now() + config.get('research.deploymentsCacheMs'),
-      slugs: readDeployedSlugs(registry, path)
-    }
+    cached = startRead(registry, path)
   }
 
-  const entry = cached
-
-  try {
-    return await entry.slugs
-  } catch (error) {
-    if (cached === entry) {
-      cached = null
-    }
-
-    throw error
-  }
+  return cached.slugs
 }
 
 /**
