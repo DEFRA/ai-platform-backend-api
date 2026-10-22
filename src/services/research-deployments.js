@@ -84,8 +84,7 @@ export async function readResearchDeployments({
   const path = researchFilePath()
 
   if (
-    !cached ||
-    cached.registry !== registry ||
+    cached?.registry !== registry ||
     cached.path !== path ||
     cached.expiresAt <= Date.now()
   ) {
