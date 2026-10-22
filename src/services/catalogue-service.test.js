@@ -1,5 +1,9 @@
 import {
+  ALLOWED_REGIONS,
+  isGlobalSku,
+  isResearchEligible,
   isTeamEligible,
+  researchSkuOf,
   syncCatalogue,
   teamSkuOf
 } from '#/services/catalogue-service.js'
@@ -7,6 +11,7 @@ import {
 const OPENAI = { provider: 'openai', offering: 'azure-openai' }
 
 const UK_TEAM_SKU = { name: 'DataZoneStandard', tiers: ['team'] }
+const UK_RESEARCH_SKU = { name: 'Standard', tiers: ['research'] }
 
 function teamModel(fields = {}) {
   return {
@@ -19,35 +24,116 @@ function teamModel(fields = {}) {
   }
 }
 
-describe('team eligibility rule (D4)', () => {
+function researchModel(fields = {}) {
+  return {
+    slug: 'research-rule-model',
+    eligible: true,
+    regions: ['uksouth'],
+    tiers: ['research'],
+    skus: [UK_RESEARCH_SKU],
+    ...fields
+  }
+}
+
+describe('allowed regions and Global SKUs', () => {
+  test('allows only UK South/West, Sweden Central and EU North/West', () => {
+    expect(ALLOWED_REGIONS).toEqual([
+      'uksouth',
+      'ukwest',
+      'swedencentral',
+      'northeurope',
+      'westeurope'
+    ])
+  })
+
+  test.each(['GlobalStandard', 'globalbatch', 'GLOBALPROVISIONED'])(
+    'treats %s as a Global SKU',
+    (name) => {
+      expect(isGlobalSku({ name })).toBe(true)
+    }
+  )
+
+  test.each([
+    ['Standard', { name: 'Standard' }],
+    ['DataZoneStandard', { name: 'DataZoneStandard' }],
+    ['no name', {}],
+    ['no SKU', undefined]
+  ])('does not treat %s as a Global SKU', (_why, sku) => {
+    expect(isGlobalSku(sku)).toBe(false)
+  })
+})
+
+describe('team eligibility rule', () => {
   test('takes a SKU without regions from the model, which is in the UK', () => {
     expect(teamSkuOf(teamModel())).toBe(UK_TEAM_SKU)
     expect(isTeamEligible(teamModel(), 'dev')).toBe(true)
   })
 
+  test.each([
+    'uksouth',
+    'ukwest',
+    'swedencentral',
+    'northeurope',
+    'westeurope'
+  ])(
+    'allows a team SKU in %s (Sweden Central and the EU included)',
+    (region) => {
+      const sku = { ...UK_TEAM_SKU, regions: [region] }
+
+      expect(teamSkuOf(teamModel({ skus: [sku] }))).toBe(sku)
+      expect(isTeamEligible(teamModel({ skus: [sku] }), 'dev')).toBe(true)
+    }
+  )
+
+  test.each(['eastus', 'eastus2', 'westus', 'australiaeast', 'francecentral'])(
+    'refuses a team SKU in %s, which is not an allowed region',
+    (region) => {
+      const sku = { ...UK_TEAM_SKU, regions: [region] }
+
+      expect(teamSkuOf(teamModel({ skus: [sku] }))).toBeUndefined()
+      expect(isTeamEligible(teamModel({ skus: [sku] }), 'dev')).toBe(false)
+    }
+  )
+
   test('takes a SKU with its own regions over the model’s', () => {
-    const nano = teamModel({
+    const elsewhere = teamModel({
+      regions: ['uksouth'],
+      skus: [{ ...UK_TEAM_SKU, regions: ['eastus'] }]
+    })
+    const sweden = teamModel({
+      regions: ['eastus'],
       skus: [{ ...UK_TEAM_SKU, regions: ['swedencentral'] }]
     })
 
-    expect(teamSkuOf(nano)).toBeUndefined()
-    expect(isTeamEligible(nano, 'dev')).toBe(false)
+    expect(teamSkuOf(elsewhere)).toBeUndefined()
+    expect(isTeamEligible(sweden, 'dev')).toBe(true)
   })
 
-  test('needs every region of the SKU to be in the UK, in any case', () => {
-    const mixed = { ...UK_TEAM_SKU, regions: ['uksouth', 'swedencentral'] }
-    const upper = { ...UK_TEAM_SKU, regions: ['UKWest', 'uksouth'] }
+  test('needs every region of the SKU to be allowed, in any case', () => {
+    const mixed = { ...UK_TEAM_SKU, regions: ['uksouth', 'eastus'] }
+    const upper = { ...UK_TEAM_SKU, regions: ['UKWest', 'SwedenCentral'] }
 
     expect(teamSkuOf(teamModel({ skus: [mixed] }))).toBeUndefined()
     expect(teamSkuOf(teamModel({ skus: [upper] }))).toBe(upper)
   })
 
-  test('picks the first UK team SKU among others', () => {
-    const elsewhere = { ...UK_TEAM_SKU, regions: ['swedencentral'] }
-    const research = { name: 'GlobalStandard', tiers: ['research'] }
+  test('never takes a Global SKU, whatever its regions', () => {
+    const global = { name: 'GlobalStandard', tiers: ['team'] }
+    const globalUk = { ...global, regions: ['uksouth'] }
+    const lower = { name: 'globalstandard', tiers: ['team'] }
+
+    expect(teamSkuOf(teamModel({ skus: [global] }))).toBeUndefined()
+    expect(isTeamEligible(teamModel({ skus: [globalUk] }), 'dev')).toBe(false)
+    expect(isTeamEligible(teamModel({ skus: [lower] }), 'dev')).toBe(false)
+  })
+
+  test('picks the first usable team SKU among others', () => {
+    const elsewhere = { ...UK_TEAM_SKU, regions: ['eastus'] }
+    const global = { name: 'GlobalStandard', tiers: ['team'] }
+    const research = { name: 'Standard', tiers: ['research'] }
 
     expect(
-      teamSkuOf(teamModel({ skus: [research, elsewhere, UK_TEAM_SKU] }))
+      teamSkuOf(teamModel({ skus: [research, global, elsewhere, UK_TEAM_SKU] }))
     ).toBe(UK_TEAM_SKU)
   })
 
@@ -55,11 +141,12 @@ describe('team eligibility rule (D4)', () => {
     ['has no regions anywhere', { regions: undefined }],
     ['has an empty regions list', { regions: [] }],
     ['has no SKUs', { skus: undefined }],
+    ['has no team SKU', { skus: [{ name: 'Standard', tiers: ['research'] }] }],
     [
-      'has no team SKU',
-      { skus: [{ name: 'GlobalStandard', tiers: ['research'] }] }
+      'has only a Global team SKU',
+      { skus: [{ name: 'GlobalStandard', tiers: ['team'] }] }
     ],
-    ['has a SKU with no tiers', { skus: [{ name: 'GlobalStandard' }] }],
+    ['has a SKU with no tiers', { skus: [{ name: 'Standard' }] }],
     ['is not eligible', { eligible: false }]
   ])('refuses a model that %s', (_why, fields) => {
     expect(isTeamEligible(teamModel(fields), 'dev')).toBe(false)
@@ -77,6 +164,85 @@ describe('team eligibility rule (D4)', () => {
       false
     )
     expect(isTeamEligible(teamModel({ environments: [] }))).toBe(true)
+  })
+})
+
+describe('research eligibility rule', () => {
+  test('takes a research SKU in an allowed region', () => {
+    expect(researchSkuOf(researchModel())).toBe(UK_RESEARCH_SKU)
+    expect(isResearchEligible(researchModel())).toBe(true)
+  })
+
+  test('still works with an allowed DataZoneStandard SKU in Sweden Central', () => {
+    const sku = {
+      name: 'DataZoneStandard',
+      tiers: ['research', 'team'],
+      regions: ['swedencentral']
+    }
+
+    expect(researchSkuOf(researchModel({ skus: [sku] }))).toBe(sku)
+    expect(isResearchEligible(researchModel({ skus: [sku] }))).toBe(true)
+  })
+
+  test.each(['northeurope', 'westeurope', 'ukwest'])(
+    'allows a research SKU in %s',
+    (region) => {
+      const sku = { ...UK_RESEARCH_SKU, regions: [region] }
+
+      expect(isResearchEligible(researchModel({ skus: [sku] }))).toBe(true)
+    }
+  )
+
+  test('refuses a model whose only research SKU is GlobalStandard', () => {
+    const global = { name: 'GlobalStandard', tiers: ['research'] }
+
+    expect(researchSkuOf(researchModel({ skus: [global] }))).toBeUndefined()
+    expect(isResearchEligible(researchModel({ skus: [global] }))).toBe(false)
+  })
+
+  test('uses the allowed SKU when a Global one is also offered', () => {
+    const global = { name: 'GlobalStandard', tiers: ['research'] }
+    const dataZone = {
+      name: 'DataZoneStandard',
+      tiers: ['research', 'team'],
+      regions: ['swedencentral']
+    }
+
+    expect(researchSkuOf(researchModel({ skus: [global, dataZone] }))).toBe(
+      dataZone
+    )
+  })
+
+  test.each([
+    [
+      'a SKU in East US',
+      { skus: [{ ...UK_RESEARCH_SKU, regions: ['eastus'] }] }
+    ],
+    ['a model in a US region', { regions: ['westus'] }],
+    ['no regions anywhere', { regions: undefined }],
+    ['no research SKU', { skus: [UK_TEAM_SKU] }],
+    ['no SKUs', { skus: undefined }],
+    ['the research tier missing from `tiers`', { tiers: ['team'] }],
+    ['no `tiers`', { tiers: undefined }],
+    ['the eligible flag off', { eligible: false }]
+  ])('refuses a model with %s', (_why, fields) => {
+    expect(isResearchEligible(researchModel(fields))).toBe(false)
+  })
+
+  test('refuses a model that does not exist', () => {
+    expect(isResearchEligible(null)).toBe(false)
+    expect(researchSkuOf(undefined)).toBeUndefined()
+  })
+
+  test('a Global SKU never makes a team model eligible, even beside a research SKU', () => {
+    const model = teamModel({
+      skus: [
+        { name: 'GlobalStandard', tiers: ['research', 'team'] },
+        UK_RESEARCH_SKU
+      ]
+    })
+
+    expect(isTeamEligible(model, 'dev')).toBe(false)
   })
 })
 

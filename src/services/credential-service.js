@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb'
 import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { findModelBySlug } from '#/services/models-service.js'
+import { isResearchEligible } from '#/services/catalogue-service.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
@@ -367,7 +368,7 @@ async function issueCredentialForParams(
 
   const model = await findModelBySlug(db, modelSlug)
 
-  if (!model || !model.eligible || !model.tiers?.includes('research')) {
+  if (!isResearchEligible(model)) {
     throw boomWithCode(
       Boom.forbidden,
       'Model is not eligible',

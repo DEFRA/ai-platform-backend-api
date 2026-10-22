@@ -203,6 +203,73 @@ describe('#credentials routes', () => {
     expect(result.code).toBe('model-not-eligible')
   })
 
+  describe('research eligibility (no Global, UK or EU only)', () => {
+    async function insertResearchModel(slug, skus) {
+      const gpt4o = await server.db
+        .collection('models')
+        .findOne({ slug: 'gpt-4o' }, { projection: { _id: 0 } })
+
+      await server.db
+        .collection('models')
+        .insertOne({ ...gpt4o, slug, tiers: ['research'], skus })
+
+      const { invalidateModelsCache } =
+        await import('#/services/models-service.js')
+
+      invalidateModelsCache()
+    }
+
+    function issue(modelSlug) {
+      return server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: {
+          'x-user-id': `research-rule-${randomUUID()}`,
+          'idempotency-key': randomUUID()
+        },
+        payload: { modelSlug }
+      })
+    }
+
+    test.each([
+      [
+        'GlobalStandard only',
+        [{ name: 'GlobalStandard', tiers: ['research'], regions: ['uksouth'] }]
+      ],
+      [
+        'a SKU in East US only',
+        [{ name: 'Standard', tiers: ['research'], regions: ['eastus'] }]
+      ],
+      ['no SKU listing research', [{ name: 'Standard', tiers: ['team'] }]]
+    ])('POST /v1/credentials refuses a model with %s', async (label, skus) => {
+      const slug = `research-refused-${randomUUID().slice(0, 8)}`
+
+      await insertResearchModel(slug, skus)
+
+      const { result, statusCode } = await issue(slug)
+
+      expect(statusCode).toBe(403)
+      expect(result.code).toBe('model-not-eligible')
+    })
+
+    test('POST /v1/credentials still issues for an allowed DataZoneStandard SKU in Sweden Central', async () => {
+      const slug = `research-sweden-${randomUUID().slice(0, 8)}`
+
+      await insertResearchModel(slug, [
+        { name: 'GlobalStandard', tiers: ['research'] },
+        {
+          name: 'DataZoneStandard',
+          tiers: ['research', 'team'],
+          regions: ['swedencentral']
+        }
+      ])
+
+      const { statusCode } = await issue(slug)
+
+      expect(statusCode).toBe(201)
+    })
+  })
+
   test('POST /v1/credentials persists an optional purpose', async () => {
     const { result, statusCode } = await server.inject({
       method: 'POST',

@@ -13,6 +13,7 @@ function wait(ms) {
 
 describe('#team-deployments routes', () => {
   let server
+  let invalidateModelsCache
 
   beforeAll(async () => {
     // Short mock stage duration so the "being set up" progression can be polled
@@ -22,6 +23,7 @@ describe('#team-deployments routes', () => {
     // Dynamic import needed due to config being updated by vitest-mongodb
     const { createServer } = await import('#/server.js')
 
+    ;({ invalidateModelsCache } = await import('#/services/models-service.js'))
     server = await createServer()
     await server.initialize()
   })
@@ -207,7 +209,7 @@ describe('#team-deployments routes', () => {
     expect(result.modelSlugs).toEqual(['gpt-5-nano'])
   })
 
-  describe('team eligibility (D4)', () => {
+  describe('team eligibility', () => {
     async function memberOf(teamId, label, role) {
       await signIn(label)
       await server.db.collection('teamMembers').insertOne({
@@ -228,11 +230,77 @@ describe('#team-deployments routes', () => {
       ['a team admin', 'admin'],
       ['a team member', 'user']
     ])(
-      'refuses GPT-4.1 nano (its team SKU is only in swedencentral) for %s, writing nothing',
+      'refuses a model whose team SKU is in East US for %s, writing nothing',
       async (_who, role) => {
         const owner = `eligibility-owner-${role}`
         const teamId = await createTeam(owner)
         const label = `eligibility-${role}`
+        const slug = `gpt-4o-east-us-${role}`
+        const gpt4o = await server.db
+          .collection('models')
+          .findOne({ slug: 'gpt-4o' }, { projection: { _id: 0 } })
+
+        await memberOf(teamId, label, role)
+        await server.db.collection('models').insertOne({
+          ...gpt4o,
+          slug,
+          skus: [{ name: 'Standard', tiers: ['team'], regions: ['eastus'] }]
+        })
+        invalidateModelsCache()
+
+        const { result, statusCode } = await requestModel(teamId, label, slug)
+
+        expect(statusCode).toBe(400)
+        expect(result).toMatchObject({
+          code: 'model-not-eligible',
+          message: 'Model is not eligible for this environment',
+          modelSlugs: [slug]
+        })
+        expect(await storedDeployments(teamId)).toBeNull()
+      }
+    )
+
+    test.each([
+      ['a team admin', 'admin'],
+      ['a team member', 'user']
+    ])(
+      'refuses a model whose only team SKU is GlobalStandard for %s, writing nothing',
+      async (_who, role) => {
+        const owner = `eligibility-global-owner-${role}`
+        const teamId = await createTeam(owner)
+        const label = `eligibility-global-${role}`
+        const slug = `gpt-4o-global-${role}`
+        const gpt4o = await server.db
+          .collection('models')
+          .findOne({ slug: 'gpt-4o' }, { projection: { _id: 0 } })
+
+        await memberOf(teamId, label, role)
+        await server.db.collection('models').insertOne({
+          ...gpt4o,
+          slug,
+          skus: [
+            { name: 'GlobalStandard', tiers: ['team'], regions: ['uksouth'] }
+          ]
+        })
+        invalidateModelsCache()
+
+        const { result, statusCode } = await requestModel(teamId, label, slug)
+
+        expect(statusCode).toBe(400)
+        expect(result.code).toBe('model-not-eligible')
+        expect(await storedDeployments(teamId)).toBeNull()
+      }
+    )
+
+    test.each([
+      ['a team admin', 'admin'],
+      ['a team member', 'user']
+    ])(
+      'offers GPT-4.1 nano (team SKU in Sweden Central) to %s',
+      async (_who, role) => {
+        const owner = `eligibility-nano-owner-${role}`
+        const teamId = await createTeam(owner)
+        const label = `eligibility-nano-${role}`
 
         await memberOf(teamId, label, role)
 
@@ -242,13 +310,8 @@ describe('#team-deployments routes', () => {
           'gpt-4-1-nano'
         )
 
-        expect(statusCode).toBe(400)
-        expect(result).toMatchObject({
-          code: 'model-not-eligible',
-          message: 'Model is not eligible for this environment',
-          modelSlugs: ['gpt-4-1-nano']
-        })
-        expect(await storedDeployments(teamId)).toBeNull()
+        expect(statusCode).toBe(201)
+        expect(result.deployment.modelSlug).toBe('gpt-4-1-nano')
       }
     )
 

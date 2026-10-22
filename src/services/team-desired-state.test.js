@@ -35,7 +35,7 @@ const TEAM_MODEL = {
   environments: ['sandbox', 'infradev', 'qa', 'preprod'],
   eligible: true,
   skus: [
-    { name: 'GlobalStandard', capacity: 250, tiers: ['research'] },
+    { name: 'Standard', capacity: 250, tiers: ['research'] },
     { name: 'DataZoneStandard', tiers: ['team'], regions: ['uksouth'] }
   ],
   capacityPolicy: {
@@ -504,7 +504,45 @@ describe('#createTeamDesiredStateBuilder', () => {
     })
   })
 
-  test('refuses a model whose only team SKU is outside the UK', async () => {
+  test('refuses a model whose only team SKU is outside the allowed regions', async () => {
+    await db.collection('models').insertOne({
+      ...TEAM_MODEL,
+      slug: 'east-us-only-desired',
+      skus: [
+        {
+          name: 'DataZoneStandard',
+          tiers: ['team'],
+          regions: ['eastus']
+        }
+      ]
+    })
+    invalidateModelsCache()
+
+    await expect(
+      buildFor(null, { params: { modelSlug: 'east-us-only-desired' } })
+    ).rejects.toMatchObject({
+      output: { statusCode: 400 },
+      data: { code: 'model-not-eligible' }
+    })
+  })
+
+  test('refuses a model whose only team SKU is Global', async () => {
+    await db.collection('models').insertOne({
+      ...TEAM_MODEL,
+      slug: 'global-only-desired',
+      skus: [{ name: 'GlobalStandard', tiers: ['team'], regions: ['uksouth'] }]
+    })
+    invalidateModelsCache()
+
+    await expect(
+      buildFor(null, { params: { modelSlug: 'global-only-desired' } })
+    ).rejects.toMatchObject({
+      output: { statusCode: 400 },
+      data: { code: 'model-not-eligible' }
+    })
+  })
+
+  test('builds for a model whose team SKU is in Sweden Central', async () => {
     await db.collection('models').insertOne({
       ...TEAM_MODEL,
       slug: 'sweden-only-desired',
@@ -518,12 +556,16 @@ describe('#createTeamDesiredStateBuilder', () => {
     })
     invalidateModelsCache()
 
-    await expect(
-      buildFor(null, { params: { modelSlug: 'sweden-only-desired' } })
-    ).rejects.toMatchObject({
-      output: { statusCode: 400 },
-      data: { code: 'model-not-eligible' }
+    const { result } = await buildFor(null, {
+      params: { modelSlug: 'sweden-only-desired' }
     })
+
+    expect(result.document.deployments).toEqual([
+      expect.objectContaining({
+        slug: 'sweden-only-desired',
+        sku: 'DataZoneStandard'
+      })
+    ])
   })
 
   test('refuses a model its catalogue does not list for the environment', async () => {
@@ -535,12 +577,13 @@ describe('#createTeamDesiredStateBuilder', () => {
     })
   })
 
-  test('takes the UK team SKU when the model also has one elsewhere', async () => {
+  test('takes the allowed team SKU when the model also has Global and out-of-region ones', async () => {
     await db.collection('models').insertOne({
       ...TEAM_MODEL,
       slug: 'two-skus-desired',
       skus: [
-        { name: 'GlobalStandard', tiers: ['team'], regions: ['swedencentral'] },
+        { name: 'GlobalStandard', tiers: ['team'], regions: ['uksouth'] },
+        { name: 'Standard', tiers: ['team'], regions: ['eastus'] },
         { name: 'DataZoneStandard', tiers: ['team'], regions: ['uksouth'] }
       ]
     })

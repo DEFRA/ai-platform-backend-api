@@ -2,9 +2,28 @@ import Joi from 'joi'
 import Boom from '@hapi/boom'
 
 import { listModels, findModelBySlug } from '#/services/models-service.js'
-import { listTeamModels } from '#/services/catalogue-service.js'
+import {
+  listResearchModels,
+  listTeamModels
+} from '#/services/catalogue-service.js'
 
 const TEAM_TIER = 'team'
+const RESEARCH_TIER = 'research'
+
+// `tier=team` and `tier=research` keep only the models that tier can really
+// use (no Global SKU, UK or EU regions only); any other query is the plain
+// list, so a page can still say why a model is not offered.
+function listForTier(db, { provider, tier, environment, includeIneligible }) {
+  if (tier === TEAM_TIER) {
+    return listTeamModels(db, { provider, environment })
+  }
+
+  if (tier === RESEARCH_TIER) {
+    return listResearchModels(db, { provider })
+  }
+
+  return listModels(db, { provider, tier, includeIneligible })
+}
 
 export const models = [
   {
@@ -16,7 +35,7 @@ export const models = [
           provider: Joi.string().trim().lowercase(),
           tier: Joi.string().trim().lowercase(),
           // Only for `tier=team`, where it keeps the models a team can have
-          // in that environment (D4).
+          // in that environment.
           environment: Joi.string()
             .trim()
             .lowercase()
@@ -28,10 +47,12 @@ export const models = [
     },
     handler: async (request, h) => {
       const { provider, tier, environment, includeIneligible } = request.query
-      const items =
-        tier === TEAM_TIER
-          ? await listTeamModels(request.db, { provider, environment })
-          : await listModels(request.db, { provider, tier, includeIneligible })
+      const items = await listForTier(request.db, {
+        provider,
+        tier,
+        environment,
+        includeIneligible
+      })
 
       return h.response({ items })
     }
