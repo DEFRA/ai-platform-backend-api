@@ -1,5 +1,14 @@
 import { invalidateModelsCache, listModels } from '#/services/models-service.js'
-import { readResearchDeployments } from '#/services/research-deployments.js'
+
+// Loaded on first use, not at import: research-deployments reads the config,
+// and a test file that imports this module must be able to import the server
+// (and so the config) after its in-memory MongoDB has set its address.
+async function readResearchDeployments() {
+  const { readResearchDeployments: read } =
+    await import('#/services/research-deployments.js')
+
+  return read()
+}
 
 // Pinned data-plane api-version per apiProfile, verified against the sandbox
 // gateway (docs/plans/implemented/02-research-tier.md in

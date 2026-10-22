@@ -1,3 +1,5 @@
+import { vi } from 'vitest'
+
 import { mockTenantOrchestrator } from '#/adapters/mock-tenant-orchestrator.js'
 import { clearResearchDeploymentsCache } from '#/services/research-deployments.js'
 

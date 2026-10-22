@@ -357,6 +357,26 @@ async function issueAndActivate(
   return { credential, secret: issued.secret, vaultWritten }
 }
 
+// Eligible in the catalogue is not enough: a key for a model research has not
+// deployed would not work.
+async function assertResearchModelUsable(model) {
+  if (!isResearchEligible(model)) {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Model is not eligible',
+      'model-not-eligible'
+    )
+  }
+
+  if (!(await readResearchDeployments()).has(model.slug)) {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Model is not deployed for research',
+      'model-not-deployed'
+    )
+  }
+}
+
 async function issueCredentialForParams(
   db,
   locker,
@@ -374,23 +394,7 @@ async function issueCredentialForParams(
 
   const model = await findModelBySlug(db, modelSlug)
 
-  if (!isResearchEligible(model)) {
-    throw boomWithCode(
-      Boom.forbidden,
-      'Model is not eligible',
-      'model-not-eligible'
-    )
-  }
-
-  // Eligible in the catalogue is not enough: a key for a model research has
-  // not deployed would not work.
-  if (!(await readResearchDeployments()).has(model.slug)) {
-    throw boomWithCode(
-      Boom.forbidden,
-      'Model is not deployed for research',
-      'model-not-deployed'
-    )
-  }
+  await assertResearchModelUsable(model)
 
   const { issuerKey, issuer } = resolveIssuer(registry, model, 'research')
 
