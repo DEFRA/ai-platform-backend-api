@@ -4,26 +4,38 @@ import { ObjectId } from 'mongodb'
 
 const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 
+// The research models these tests issue keys for; the mock research file
+// deploys only gpt-4o.
+const DEPLOYED_FOR_RESEARCH = ['gpt-4o', 'gpt-5-nano', 'gpt-5-mini']
+
 function wait(ms) {
   return new Promise((resolve) => setTimeout(resolve, ms))
 }
 
 describe('#credentials routes', () => {
   let server
+  let deployInResearch
+  let failResearchRead
+  let restoreResearchDeployments
 
   beforeAll(async () => {
     // Short mock stage duration so a team deployment can reach `active` in real
     // time within a test without waiting on the production default.
     vi.stubEnv('TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS', '30')
 
-    // Dynamic import needed due to config being updated by vitest-mongodb
+    // Dynamic imports needed due to config being updated by vitest-mongodb
+    // and the env stub above (config snapshots the env on first import)
+    ;({ deployInResearch, failResearchRead, restoreResearchDeployments } =
+      await import('#/common/test-helpers/research-deployments.js'))
     const { createServer } = await import('#/server.js')
 
     server = await createServer()
     await server.initialize()
+    deployInResearch(DEPLOYED_FOR_RESEARCH)
   })
 
   afterAll(async () => {
+    restoreResearchDeployments()
     await server.stop({ timeout: 0 })
     vi.unstubAllEnvs()
   })
@@ -263,10 +275,47 @@ describe('#credentials routes', () => {
           regions: ['swedencentral']
         }
       ])
+      deployInResearch([...DEPLOYED_FOR_RESEARCH, slug])
 
       const { statusCode } = await issue(slug)
 
       expect(statusCode).toBe(201)
+    })
+
+    test('POST /v1/credentials refuses a catalogue-eligible model research has not deployed, creating no credential', async () => {
+      const userId = `research-undeployed-${randomUUID()}`
+
+      const { result, statusCode } = await server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
+        payload: { modelSlug: 'gpt-4-1-nano' }
+      })
+
+      expect(statusCode).toBe(403)
+      expect(result.code).toBe('model-not-deployed')
+      expect(
+        await server.db.collection('credentials').countDocuments({ userId })
+      ).toBe(0)
+    })
+
+    test('POST /v1/credentials refuses with 502 when the deployed models cannot be read', async () => {
+      failResearchRead()
+
+      const { result, statusCode } = await server.inject({
+        method: 'POST',
+        url: '/v1/credentials',
+        headers: {
+          'x-user-id': `research-unreadable-${randomUUID()}`,
+          'idempotency-key': randomUUID()
+        },
+        payload: { modelSlug: 'gpt-4o' }
+      })
+
+      deployInResearch(DEPLOYED_FOR_RESEARCH)
+
+      expect(statusCode).toBe(502)
+      expect(result.code).toBe('research-deployments-unavailable')
     })
   })
 

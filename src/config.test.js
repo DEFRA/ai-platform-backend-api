@@ -111,6 +111,16 @@ describe('#config research environment', () => {
     vi.unstubAllEnvs()
   })
 
+  test('caches the research deployments for a minute by default, configurable', async () => {
+    const { config } = await loadConfig({})
+    const { config: tuned } = await loadConfig({
+      RESEARCH_DEPLOYMENTS_CACHE_MS: '5000'
+    })
+
+    expect(config.get('research.deploymentsCacheMs')).toBe(60000)
+    expect(tuned.get('research.deploymentsCacheMs')).toBe(5000)
+  })
+
   test('defaults to infradev', async () => {
     const { config } = await loadConfig({})
 

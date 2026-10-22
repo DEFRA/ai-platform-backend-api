@@ -47,4 +47,30 @@ describe('mockTenantOrchestrator', () => {
     expect(status.status).toBe('deploy-failed')
     expect(status).not.toHaveProperty('failure')
   })
+
+  test('serves the research file for any environment, with only gpt-4o deployed', async () => {
+    const { document } = await mockTenantOrchestrator.getCurrentDocument({
+      path: 'environments/sandbox/research.json'
+    })
+
+    expect(document).toMatchObject({
+      environment: 'sandbox',
+      team: { slug: 'research' },
+      deployments: [{ slug: 'gpt-4o', status: 'active' }],
+      gateway: { allowedDeployments: ['gpt-4o'] }
+    })
+  })
+
+  test('serves nothing for any other file, so a team still starts at revision 1', async () => {
+    const { document } = await mockTenantOrchestrator.getCurrentDocument({
+      path: 'environments/infradev/alpha.json'
+    })
+
+    expect(document).toBeNull()
+    await expect(
+      mockTenantOrchestrator.getCurrentDocument({
+        path: 'environments/infradev/research.json.bak'
+      })
+    ).resolves.toEqual({ document: null })
+  })
 })

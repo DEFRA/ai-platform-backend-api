@@ -15,8 +15,12 @@ let teamCredentialNeedsRetry
 let credentialIssuerRegistry
 let createCredentialIssuerRegistry
 let createCredentialVaultRegistry
+let deployInResearch
+let restoreResearchDeployments
 
 async function loadCredentialService() {
+  ;({ deployInResearch, restoreResearchDeployments } =
+    await import('#/common/test-helpers/research-deployments.js'))
   ;({
     issueCredential,
     rotateCredential,
@@ -65,6 +69,10 @@ describe('#credential-service vault wiring', () => {
     await server.initialize()
     db = server.db
     locker = server.locker
+  })
+
+  afterEach(() => {
+    restoreResearchDeployments()
   })
 
   afterAll(async () => {
@@ -197,6 +205,7 @@ describe('#credential-service vault wiring', () => {
       gateway: 'aws-apigw'
     })
     const userId = `gateway-off-user-${randomUUID()}`
+    deployInResearch(['gpt-4o', 'other-gateway-not-enabled-model'])
     const liveRegistry = createCredentialIssuerRegistry(
       { mock: credentialIssuerRegistry.forCredential({}).issuer },
       'live'
@@ -220,6 +229,51 @@ describe('#credential-service vault wiring', () => {
     })
 
     expect(await db.collection('credentials').findOne({ userId })).toBeNull()
+  })
+
+  test('issueCredential refuses a catalogue-eligible model research has not deployed, calling neither the gateway nor the vault', async () => {
+    const userId = `not-deployed-user-${randomUUID()}`
+    const vault = stubVault()
+    const registry = { forModel: vi.fn(), forCredential: vi.fn() }
+
+    await expect(
+      issueCredential(
+        db,
+        locker,
+        {
+          userId,
+          modelSlug: 'gpt-4-1-nano',
+          idempotencyKey: randomUUID()
+        },
+        registry,
+        vault
+      )
+    ).rejects.toMatchObject({
+      output: { statusCode: 403 },
+      data: { code: 'model-not-deployed' }
+    })
+
+    expect(registry.forModel).not.toHaveBeenCalled()
+    expect(vault.put).not.toHaveBeenCalled()
+    expect(await db.collection('credentials').findOne({ userId })).toBeNull()
+  })
+
+  test('issueCredential refuses a model that is not eligible as model-not-eligible, even when deployed', async () => {
+    deployInResearch(['gpt-4o', 'text-embedding-ada-002'])
+
+    await expect(
+      issueCredential(
+        db,
+        locker,
+        {
+          userId: `ineligible-user-${randomUUID()}`,
+          modelSlug: 'text-embedding-ada-002',
+          idempotencyKey: randomUUID()
+        },
+        credentialIssuerRegistry,
+        stubVault()
+      )
+    ).rejects.toMatchObject({ data: { code: 'model-not-eligible' } })
   })
 
   test('rotateCredential writes the rotated secret to the vault', async () => {

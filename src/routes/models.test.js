@@ -1,14 +1,23 @@
 describe('#models routes', () => {
   let server
   let invalidateModelsCache
+  let deployInResearch
+  let failResearchRead
+  let restoreResearchDeployments
 
   beforeAll(async () => {
     // Dynamic import needed due to config being updated by vitest-mongodb
     const { createServer } = await import('#/server.js')
 
     ;({ invalidateModelsCache } = await import('#/services/models-service.js'))
+    ;({ deployInResearch, failResearchRead, restoreResearchDeployments } =
+      await import('#/common/test-helpers/research-deployments.js'))
     server = await createServer()
     await server.initialize()
+  })
+
+  afterEach(() => {
+    restoreResearchDeployments()
   })
 
   afterAll(async () => {
@@ -162,14 +171,35 @@ describe('#models routes', () => {
       return { statusCode, slugs: result.items?.map((item) => item.slug) }
     }
 
-    test('offers models with an allowed research SKU, and not ineligible ones', async () => {
+    test('offers only the research-eligible models research has deployed (just gpt-4o in the mock research file), not ineligible ones', async () => {
       const { statusCode, slugs } = await researchSlugs()
 
       expect(statusCode).toBe(200)
-      expect(slugs).toEqual(
-        expect.arrayContaining(['gpt-4o', 'gpt-5-nano', 'gpt-4-1-nano'])
-      )
+      expect(slugs).toEqual(['gpt-4o'])
+    })
+
+    test('offers a catalogue-eligible model once research deploys it, and never an ineligible one', async () => {
+      deployInResearch(['gpt-4o', 'gpt-5-nano', 'text-embedding-ada-002'])
+
+      const { slugs } = await researchSlugs()
+
+      expect(slugs).toEqual(expect.arrayContaining(['gpt-4o', 'gpt-5-nano']))
+      expect(slugs).not.toContain('gpt-4-1-nano')
       expect(slugs).not.toContain('text-embedding-ada-002')
+    })
+
+    test('refuses with 502 research-deployments-unavailable when the research file cannot be read', async () => {
+      failResearchRead()
+
+      const { result, statusCode } = await server.inject({
+        method: 'GET',
+        url: '/v1/models?tier=research'
+      })
+      const plain = await server.inject({ method: 'GET', url: '/v1/models' })
+
+      expect(statusCode).toBe(502)
+      expect(result.code).toBe('research-deployments-unavailable')
+      expect(plain.statusCode).toBe(502)
     })
 
     test('leaves out a GlobalStandard-only model, but keeps it in the plain list', async () => {
@@ -196,12 +226,16 @@ describe('#models routes', () => {
         }
       ])
       invalidateModelsCache()
+      deployInResearch([
+        'gpt-4o',
+        'research-global-only',
+        'research-east-us-only'
+      ])
 
       const research = await researchSlugs()
       const plain = await researchSlugs('includeIneligible=true')
 
-      expect(research.slugs).not.toContain('research-global-only')
-      expect(research.slugs).not.toContain('research-east-us-only')
+      expect(research.slugs).toEqual(['gpt-4o'])
       expect(plain.slugs).toContain('research-global-only')
     })
 
@@ -209,6 +243,48 @@ describe('#models routes', () => {
       const { slugs } = await researchSlugs('tier=research&provider=nobody')
 
       expect(slugs).toEqual([])
+    })
+  })
+
+  describe('researchAvailable in the plain list', () => {
+    async function availability() {
+      const { result } = await server.inject({
+        method: 'GET',
+        url: '/v1/models?includeIneligible=true'
+      })
+
+      return Object.fromEntries(
+        result.items.map((item) => [item.slug, item.researchAvailable])
+      )
+    }
+
+    test('is true only for a research-eligible model research has deployed', async () => {
+      deployInResearch(['gpt-4o', 'text-embedding-ada-002'])
+
+      const flags = await availability()
+
+      expect(flags['gpt-4o']).toBe(true)
+      // eligible in the catalogue, not deployed
+      expect(flags['gpt-4-1-nano']).toBe(false)
+      expect(flags['gpt-5-nano']).toBe(false)
+      // deployed, not eligible
+      expect(flags['text-embedding-ada-002']).toBe(false)
+    })
+
+    test('is a boolean on every model and leaves the other fields alone', async () => {
+      const { result } = await server.inject({
+        method: 'GET',
+        url: '/v1/models'
+      })
+
+      expect(
+        result.items.every(
+          (item) => typeof item.researchAvailable === 'boolean'
+        )
+      ).toBe(true)
+      expect(result.items.find((item) => item.slug === 'gpt-4o')).toMatchObject(
+        { eligible: true, tiers: ['research', 'team'] }
+      )
     })
   })
 

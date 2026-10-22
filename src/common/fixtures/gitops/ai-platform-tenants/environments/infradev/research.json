@@ -1,0 +1,32 @@
+{
+  "deployments": [
+    {
+      "capacity": 1,
+      "deploymentName": "gpt-4o",
+      "sku": "Standard",
+      "slug": "gpt-4o",
+      "status": "active"
+    }
+  ],
+  "environment": "infradev",
+  "gateway": {
+    "allowedDeployments": [
+      "gpt-4o"
+    ],
+    "credentialType": "subscription-key",
+    "limits": {
+      "requestsPerMinute": 60,
+      "tokensPerMinute": 1000
+    }
+  },
+  "operationId": "9d179e11005dabca53734b6f",
+  "revision": 1,
+  "schemaVersion": 1,
+  "status": "active",
+  "team": {
+    "serviceCode": "AIP",
+    "slug": "research"
+  },
+  "updatedAt": "2026-10-20T13:41:37.923Z",
+  "updatedBy": "github:4375643"
+}
