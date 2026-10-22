@@ -147,11 +147,16 @@ git config --global core.autocrlf false
 > A team carries an immutable `slug`, derived from its name on `POST /v1/teams` and made unique with a
 > numbered suffix when two names derive the same one. It names the team's GitOps file
 > (`environments/{env}/{slug}.json`), its gateway API path (`/{slug}`) and its model deployments
-> (`{slug}-{model}`), so it is never regenerated when a team is renamed.
+> (`{slug}-{model}`), so it is never regenerated when a team is renamed. Every `/v1/teams/{id}/...` route
+> takes the team's slug or its id, and `GET /v1/teams/{id}` also lists `environments`: each environment
+> the team has a tenant file in, with its gateway `limits`. A team's first request in a new environment
+> copies the limits of its first environment.
 
 > [!IMPORTANT]
 > A team also carries a three-character `serviceCode` (`^[A-Z0-9]{3}$`, stored upper case), required
-> on `POST /v1/teams` and changeable by an admin with `PATCH /v1/teams/{id}`. It attributes the
+> on `POST /v1/teams` and changeable by an admin with `PATCH /v1/teams/{id}`, which also takes a
+> `description` (trimmed, at most 500 characters, may be empty). Adding a member takes a `role`
+> (`admin` or `user`, default `user`), admins only. The service code attributes the
 > team's AI use to its service for chargeback and reaches Azure as a resource tag. Every change goes
 > through the `ServiceCodeVerifier` port, whose only adapter today is the mock
 > (`SERVICE_CODE_KNOWN_CODES`, empty by default), so `verified` stays `false` until an authoritative

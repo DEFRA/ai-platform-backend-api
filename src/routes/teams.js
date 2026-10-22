@@ -5,7 +5,7 @@ import {
   createTeam,
   listTeamsForUser,
   findTeamById,
-  setServiceCode,
+  updateTeam,
   addMember,
   removeMember,
   setMemberRole
@@ -17,6 +17,16 @@ const serviceCodeField = Joi.string()
   .trim()
   .uppercase()
   .pattern(/^[A-Z0-9]{3}$/)
+
+// Trimmed and optional; empty clears it.
+const MAX_DESCRIPTION_LENGTH = 500
+const MAX_EMAIL_LENGTH = 254
+const descriptionField = Joi.string()
+  .trim()
+  .max(MAX_DESCRIPTION_LENGTH)
+  .allow('')
+
+const memberRoleField = Joi.string().valid('admin', 'user')
 
 const userIdHeader = Joi.object({
   'x-user-id': Joi.string().required()
@@ -44,7 +54,7 @@ export const teams = [
         payload: Joi.object({
           name: Joi.string().trim().min(3).max(60).required(),
           serviceCode: serviceCodeField.required(),
-          description: Joi.string().trim().max(500).allow('').optional()
+          description: descriptionField.optional()
         }).unknown(false)
       }
     },
@@ -112,15 +122,19 @@ export const teams = [
         headers: userIdHeader,
         params: idParam,
         payload: Joi.object({
-          serviceCode: serviceCodeField.required()
-        }).unknown(false)
+          serviceCode: serviceCodeField,
+          description: descriptionField
+        })
+          .or('serviceCode', 'description')
+          .unknown(false)
       }
     },
     handler: async (request, h) => {
-      const { team } = await setServiceCode(request.db, {
+      const { team } = await updateTeam(request.db, {
         teamId: request.params.id,
         actorUserId: request.headers['x-user-id'],
-        serviceCode: request.payload.serviceCode
+        serviceCode: request.payload.serviceCode,
+        description: request.payload.description
       })
 
       return h.response({ team })
@@ -134,7 +148,8 @@ export const teams = [
         headers: idempotentHeaders,
         params: idParam,
         payload: Joi.object({
-          email: Joi.string().email().max(254).required()
+          email: Joi.string().email().max(MAX_EMAIL_LENGTH).required(),
+          role: memberRoleField.default('user')
         }).unknown(false)
       }
     },
@@ -143,7 +158,8 @@ export const teams = [
         teamId: request.params.id,
         actorUserId: request.headers['x-user-id'],
         idempotencyKey: request.headers['idempotency-key'],
-        email: request.payload.email
+        email: request.payload.email,
+        role: request.payload.role
       })
 
       return h
@@ -160,7 +176,7 @@ export const teams = [
         headers: userIdHeader,
         params: memberIdParam,
         payload: Joi.object({
-          role: Joi.string().valid('admin', 'user').required()
+          role: memberRoleField.required()
         }).unknown(false)
       }
     },

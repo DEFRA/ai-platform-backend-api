@@ -961,4 +961,578 @@ describe('#teams routes', () => {
       expect(statusCode).toBe(400)
     })
   })
+
+  describe('team details, member roles, slugs and limits', () => {
+    // A team whose creator (the label, as x-user-id) is its admin.
+    async function newTeam(label) {
+      const created = await server.inject({
+        method: 'POST',
+        url: '/v1/teams',
+        headers: postHeaders(label),
+        payload: {
+          name: `Dt ${label} ${randomUUID().slice(0, 6)}`,
+          serviceCode: 'ABC'
+        }
+      })
+
+      return {
+        teamId: created.result.team._id.toString(),
+        slug: created.result.team.slug
+      }
+    }
+
+    // Invites the email, then signs them in so they are an active member;
+    // returns their user id, which is their x-user-id.
+    async function activeMember(team, adminLabel, email, role) {
+      await server.inject({
+        method: 'POST',
+        url: `/v1/teams/${team.teamId}/members`,
+        headers: postHeaders(adminLabel),
+        payload: role ? { email, role } : { email }
+      })
+      const signedIn = await server.inject({
+        method: 'POST',
+        url: '/v1/users',
+        payload: {
+          oid: randomUUID(),
+          tid: ENTRA_TENANT_ID,
+          email,
+          displayName: 'Details Member'
+        }
+      })
+
+      return signedIn.result.user._id.toString()
+    }
+
+    function patch(team, userId, payload, by = 'id') {
+      return server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${by === 'slug' ? team.slug : team.teamId}`,
+        headers: { 'x-user-id': userId },
+        payload
+      })
+    }
+
+    describe('PATCH /v1/teams/{id} description', () => {
+      test('lets an admin set it, trimmed, by id or by slug', async () => {
+        const team = await newTeam('details-1')
+
+        const byId = await patch(team, 'details-1', {
+          description: '  Tracks flood risk  '
+        })
+        const bySlug = await patch(
+          team,
+          'details-1',
+          { description: '  Flood risk models  ' },
+          'slug'
+        )
+
+        expect(byId.statusCode).toBe(200)
+        expect(byId.result.team.description).toBe('Tracks flood risk')
+        expect(bySlug.statusCode).toBe(200)
+        expect(bySlug.result.team.description).toBe('Flood risk models')
+        expect(bySlug.result.team.serviceCode).toBe('ABC')
+      })
+
+      test.each([
+        ['empty', ''],
+        ['only spaces', '   ']
+      ])('may be %s, which clears it', async (_, description) => {
+        const team = await newTeam(`details-empty-${description.length}`)
+
+        await patch(team, `details-empty-${description.length}`, {
+          description: 'Something'
+        })
+        const { result, statusCode } = await patch(
+          team,
+          `details-empty-${description.length}`,
+          { description }
+        )
+
+        expect(statusCode).toBe(200)
+        expect(result.team.description).toBeNull()
+      })
+
+      test('allows 500 characters once trimmed and refuses 501', async () => {
+        const team = await newTeam('details-2')
+
+        const atLimit = await patch(team, 'details-2', {
+          description: ` ${'a'.repeat(500)} `
+        })
+        const overLimit = await patch(team, 'details-2', {
+          description: 'a'.repeat(501)
+        })
+
+        expect(atLimit.statusCode).toBe(200)
+        expect(atLimit.result.team.description).toHaveLength(500)
+        expect(overLimit.statusCode).toBe(400)
+      })
+
+      test('changes the service code and the description together', async () => {
+        const team = await newTeam('details-3')
+
+        const { result, statusCode } = await patch(team, 'details-3', {
+          serviceCode: 'xyz',
+          description: 'Both'
+        })
+
+        expect(statusCode).toBe(200)
+        expect(result.team).toMatchObject({
+          serviceCode: 'XYZ',
+          description: 'Both'
+        })
+
+        const audit = await server.db
+          .collection('auditEvents')
+          .find({ resourceId: team.teamId })
+          .toArray()
+
+        expect(audit.map((event) => event.action)).toEqual(
+          expect.arrayContaining(['team.setServiceCode', 'team.setDescription'])
+        )
+      })
+
+      test.each([
+        ['an unknown key', { description: 'Fine', name: 'Renamed' }],
+        ['nothing to change', {}],
+        ['a description that is not text', { description: 42 }]
+      ])('refuses %s', async (_, payload) => {
+        const team = await newTeam('details-4')
+
+        const { statusCode } = await patch(team, 'details-4', payload)
+
+        expect(statusCode).toBe(400)
+      })
+
+      test('refuses a member who is not an admin, by id and by slug', async () => {
+        const team = await newTeam('details-5')
+        const memberId = await activeMember(
+          team,
+          'details-5',
+          'details.five.member@defra.gov.uk'
+        )
+
+        const byId = await patch(team, memberId, { description: 'Mine now' })
+        const bySlug = await patch(
+          team,
+          memberId,
+          { description: 'Mine now' },
+          'slug'
+        )
+        const stored = await server.db
+          .collection('teams')
+          .findOne({ slug: team.slug })
+
+        expect(byId.statusCode).toBe(403)
+        expect(byId.result.code).toBe('admin-required')
+        expect(bySlug.statusCode).toBe(403)
+        expect(stored.description).toBeNull()
+      })
+
+      test('is not found for someone outside the team, and for an unknown slug', async () => {
+        const team = await newTeam('details-6')
+
+        const stranger = await patch(
+          team,
+          'details-stranger',
+          { description: 'Mine now' },
+          'slug'
+        )
+        const unknown = await server.inject({
+          method: 'PATCH',
+          url: '/v1/teams/no-such-team',
+          headers: { 'x-user-id': 'details-6' },
+          payload: { description: 'Nobody home' }
+        })
+
+        expect(stranger.statusCode).toBe(404)
+        expect(unknown.statusCode).toBe(404)
+      })
+    })
+
+    describe('POST /v1/teams/{id}/members role', () => {
+      function invite(team, userId, payload, by = 'id') {
+        return server.inject({
+          method: 'POST',
+          url: `/v1/teams/${by === 'slug' ? team.slug : team.teamId}/members`,
+          headers: postHeaders(userId),
+          payload
+        })
+      }
+
+      test('defaults to user', async () => {
+        const team = await newTeam('role-default')
+
+        const { result, statusCode } = await invite(team, 'role-default', {
+          email: 'role.default@defra.gov.uk'
+        })
+
+        expect(statusCode).toBe(201)
+        expect(result.member.role).toBe('user')
+      })
+
+      test.each([['admin'], ['user']])(
+        'lets an admin invite someone as %s, by slug',
+        async (role) => {
+          const label = `role-${role}`
+          const team = await newTeam(label)
+
+          const { result, statusCode, headers } = await invite(
+            team,
+            label,
+            { email: `role.${role}@defra.gov.uk`, role },
+            'slug'
+          )
+
+          expect(statusCode).toBe(201)
+          expect(result.member.role).toBe(role)
+          expect(headers.location).toBe(`/v1/teams/${team.slug}/members`)
+        }
+      )
+
+      test('makes an invited admin an active admin once they sign in', async () => {
+        const team = await newTeam('role-signin')
+        const adminId = await activeMember(
+          team,
+          'role-signin',
+          'role.signin@defra.gov.uk',
+          'admin'
+        )
+
+        const { statusCode } = await patch(team, adminId, {
+          description: 'Set by the invited admin'
+        })
+
+        expect(statusCode).toBe(200)
+      })
+
+      test.each([
+        ['a role it does not know', { role: 'owner' }],
+        ['an unknown key', { role: 'user', name: 'Someone' }]
+      ])('refuses %s', async (_, extra) => {
+        const team = await newTeam('role-bad')
+
+        const { statusCode } = await invite(team, 'role-bad', {
+          email: 'role.bad@defra.gov.uk',
+          ...extra
+        })
+
+        expect(statusCode).toBe(400)
+      })
+
+      test('refuses a member who is not an admin, even to add a user', async () => {
+        const team = await newTeam('role-member')
+        const memberId = await activeMember(
+          team,
+          'role-member',
+          'role.member@defra.gov.uk'
+        )
+
+        const asAdmin = await invite(
+          team,
+          memberId,
+          { email: 'role.sneaky@defra.gov.uk', role: 'admin' },
+          'slug'
+        )
+        const asUser = await invite(team, memberId, {
+          email: 'role.sneaky2@defra.gov.uk'
+        })
+
+        expect(asAdmin.statusCode).toBe(403)
+        expect(asAdmin.result.code).toBe('admin-required')
+        expect(asUser.statusCode).toBe(403)
+      })
+
+      test('is not found for someone outside the team, and for an unknown slug', async () => {
+        const team = await newTeam('role-stranger')
+
+        const stranger = await invite(
+          team,
+          'role-outsider',
+          { email: 'role.outsider@defra.gov.uk', role: 'admin' },
+          'slug'
+        )
+        const unknown = await invite(
+          { slug: 'no-such-team' },
+          'role-stranger',
+          { email: 'role.nobody@defra.gov.uk' },
+          'slug'
+        )
+
+        expect(stranger.statusCode).toBe(404)
+        expect(unknown.statusCode).toBe(404)
+      })
+    })
+
+    describe('a team addressed by slug', () => {
+      test('resolves a slug of 24 hex characters when no team has that id', async () => {
+        const hexName = 'abcdefabcdefabcdefabcdef'
+        const created = await server.inject({
+          method: 'POST',
+          url: '/v1/teams',
+          headers: postHeaders('slug-hex'),
+          payload: { name: hexName, serviceCode: 'ABC' }
+        })
+        const bySlug = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${hexName}`,
+          headers: { 'x-user-id': 'slug-hex' }
+        })
+        const deployments = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${hexName}/deployments`,
+          headers: { 'x-user-id': 'slug-hex' }
+        })
+
+        expect(created.result.team.slug).toBe(hexName)
+        expect(bySlug.statusCode).toBe(200)
+        expect(bySlug.result.team._id.toString()).toBe(
+          created.result.team._id.toString()
+        )
+        expect(deployments.statusCode).toBe(200)
+      })
+
+      test('gives a team with that id precedence over another team with that slug', async () => {
+        const team = await newTeam('slug-id-wins')
+
+        await server.db.collection('teams').insertOne({
+          name: `Decoy ${team.teamId}`,
+          normalisedName: `decoy-${team.teamId}`,
+          slug: team.teamId,
+          createdBy: 'slug-decoy',
+          idempotencyKey: randomUUID()
+        })
+
+        const byId = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${team.teamId}`,
+          headers: { 'x-user-id': 'slug-id-wins' }
+        })
+
+        expect(byId.statusCode).toBe(200)
+        expect(byId.result.team._id.toString()).toBe(team.teamId)
+      })
+
+      test('reads, changes and removes members the same as by id', async () => {
+        const team = await newTeam('slug-1')
+        const memberId = await activeMember(
+          team,
+          'slug-1',
+          'slug.one.member@defra.gov.uk'
+        )
+        const bySlug = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${team.slug}`,
+          headers: { 'x-user-id': memberId }
+        })
+        const byId = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${team.teamId}`,
+          headers: { 'x-user-id': memberId }
+        })
+
+        expect(bySlug.statusCode).toBe(200)
+        expect(bySlug.result.team._id.toString()).toBe(team.teamId)
+        expect(bySlug.result.members).toHaveLength(2)
+        expect(byId.result.members).toHaveLength(2)
+
+        const memberRecord = bySlug.result.members.find(
+          (member) => member.userId === memberId
+        )
+        const promoted = await server.inject({
+          method: 'PATCH',
+          url: `/v1/teams/${team.slug}/members/${memberRecord._id}`,
+          headers: { 'x-user-id': 'slug-1' },
+          payload: { role: 'admin' }
+        })
+        const removed = await server.inject({
+          method: 'DELETE',
+          url: `/v1/teams/${team.slug}/members/${memberRecord._id}`,
+          headers: { 'x-user-id': 'slug-1' }
+        })
+
+        expect(promoted.statusCode).toBe(200)
+        expect(promoted.result.member.role).toBe('admin')
+        expect(removed.statusCode).toBe(204)
+      })
+
+      test('keeps a member who is not an admin from changing or removing members', async () => {
+        const team = await newTeam('slug-2')
+        const memberId = await activeMember(
+          team,
+          'slug-2',
+          'slug.two.member@defra.gov.uk'
+        )
+        const members = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${team.slug}`,
+          headers: { 'x-user-id': memberId }
+        })
+        const adminRecord = members.result.members.find(
+          (member) => member.role === 'admin'
+        )
+
+        const changed = await server.inject({
+          method: 'PATCH',
+          url: `/v1/teams/${team.slug}/members/${adminRecord._id}`,
+          headers: { 'x-user-id': memberId },
+          payload: { role: 'user' }
+        })
+        const removed = await server.inject({
+          method: 'DELETE',
+          url: `/v1/teams/${team.slug}/members/${adminRecord._id}`,
+          headers: { 'x-user-id': memberId }
+        })
+
+        expect(changed.statusCode).toBe(403)
+        expect(removed.statusCode).toBe(403)
+      })
+
+      test('is not found for someone outside the team, and for an unknown slug', async () => {
+        const team = await newTeam('slug-3')
+
+        const stranger = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${team.slug}`,
+          headers: { 'x-user-id': 'slug-outsider' }
+        })
+        const strangerRemoves = await server.inject({
+          method: 'DELETE',
+          url: `/v1/teams/${team.slug}/members/507f1f77bcf86cd799439011`,
+          headers: { 'x-user-id': 'slug-outsider' }
+        })
+        const unknown = await server.inject({
+          method: 'GET',
+          url: '/v1/teams/no-such-team',
+          headers: { 'x-user-id': 'slug-3' }
+        })
+        const notASlug = await server.inject({
+          method: 'GET',
+          url: '/v1/teams/Not%20A%20Slug',
+          headers: { 'x-user-id': 'slug-3' }
+        })
+
+        expect(stranger.statusCode).toBe(404)
+        expect(strangerRemoves.statusCode).toBe(404)
+        expect(unknown.statusCode).toBe(404)
+        expect(notASlug.statusCode).toBe(404)
+      })
+    })
+
+    describe('GET /v1/teams/{id} environments', () => {
+      let config
+      let mockTenantOrchestrator
+      let configuredEnvironments
+
+      beforeAll(async () => {
+        ;({ config } = await import('#/config.js'))
+        ;({ mockTenantOrchestrator } =
+          await import('#/adapters/mock-tenant-orchestrator.js'))
+        configuredEnvironments = config.get('teamDeployment.environments')
+      })
+
+      afterEach(() => {
+        config.set('teamDeployment.environments', configuredEnvironments)
+        vi.restoreAllMocks()
+      })
+
+      // The tenant files `main` holds, by path.
+      function tenantFiles(files) {
+        vi.spyOn(
+          mockTenantOrchestrator,
+          'getCurrentDocument'
+        ).mockImplementation(async ({ path }) => ({
+          document: files[path] ?? null
+        }))
+      }
+
+      function fileWithLimits(limits) {
+        return { gateway: { credentialType: 'oauth', limits } }
+      }
+
+      function getTeam(team, userId, by = 'slug') {
+        return server.inject({
+          method: 'GET',
+          url: `/v1/teams/${by === 'slug' ? team.slug : team.teamId}`,
+          headers: { 'x-user-id': userId }
+        })
+      }
+
+      test('lists each environment the team has a file in, with its own limits, in environment order', async () => {
+        const team = await newTeam('env-1')
+        const memberId = await activeMember(
+          team,
+          'env-1',
+          'env.one.member@defra.gov.uk'
+        )
+
+        config.set('teamDeployment.environments', [
+          'infradev',
+          'qa',
+          'preprod',
+          'prod'
+        ])
+        tenantFiles({
+          [`environments/qa/${team.slug}.json`]: fileWithLimits({
+            requestsPerMinute: 120,
+            tokensPerMinute: 5000
+          }),
+          [`environments/infradev/${team.slug}.json`]: fileWithLimits({
+            requestsPerMinute: 60,
+            tokensPerMinute: 1000
+          })
+        })
+
+        const asAdmin = await getTeam(team, 'env-1')
+        const asMember = await getTeam(team, memberId, 'id')
+
+        const expected = [
+          {
+            environment: 'infradev',
+            limits: { requestsPerMinute: 60, tokensPerMinute: 1000 }
+          },
+          {
+            environment: 'qa',
+            limits: { requestsPerMinute: 120, tokensPerMinute: 5000 }
+          }
+        ]
+
+        expect(asAdmin.statusCode).toBe(200)
+        expect(asAdmin.result.environments).toEqual(expected)
+        expect(asMember.result.environments).toEqual(expected)
+      })
+
+      test('is empty for a team with no file in any environment', async () => {
+        const team = await newTeam('env-2')
+
+        const { result } = await getTeam(team, 'env-2')
+
+        expect(result.environments).toEqual([])
+      })
+
+      test('is refused as upstream-unavailable when a file cannot be read, not as an empty list', async () => {
+        const team = await newTeam('env-4')
+
+        vi.spyOn(
+          mockTenantOrchestrator,
+          'getCurrentDocument'
+        ).mockRejectedValue(new Error('GitHub is down'))
+
+        const { statusCode, result } = await getTeam(team, 'env-4')
+
+        expect(statusCode).toBe(502)
+        expect(result.code).toBe('upstream-unavailable')
+      })
+
+      test('does not read the files for someone outside the team', async () => {
+        const team = await newTeam('env-3')
+        tenantFiles({})
+
+        const { statusCode } = await getTeam(team, 'env-outsider')
+
+        expect(statusCode).toBe(404)
+        expect(mockTenantOrchestrator.getCurrentDocument).not.toHaveBeenCalled()
+      })
+    })
+  })
 })

@@ -25,6 +25,7 @@ import {
   submissionRequest
 } from '#/services/team-deployment-submission.js'
 import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
+import { resolveTeamId } from '#/services/team-service.js'
 import { toDeploymentView } from '#/services/team-deployment-view.js'
 
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
@@ -48,22 +49,25 @@ const NEVER_APPLIED = new Set([QUEUED, 'checks-failed'])
  * (`409 team-file-busy`), so no two operations race on one file.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, id: string, requestedBy: string, traceParent?: string}} params
+ * @param {{teamId: string, id: string, requestedBy: string, traceParent?: string}} params - `teamId` is the team's id or slug
  * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, buildDesiredState?: Function}} [deps]
  * @returns {Promise<object|null>} The deployment view, or null for a non-member or unknown entry.
  */
 export async function removeDeployment(
   db,
   locker,
-  { teamId, id, requestedBy, traceParent },
+  { teamId: teamRef, id, requestedBy, traceParent },
   {
     registry = tenantOrchestratorRegistry,
     buildDesiredState = teamDesiredStateBuilder
   } = {}
 ) {
-  const membership = await db
-    .collection('teamMembers')
-    .findOne({ teamId, userId: requestedBy, status: 'active' })
+  const teamId = await resolveTeamId(db, teamRef)
+  const membership = teamId
+    ? await db
+        .collection('teamMembers')
+        .findOne({ teamId, userId: requestedBy, status: 'active' })
+    : null
 
   if (!membership) {
     return null

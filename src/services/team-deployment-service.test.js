@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 import { readFileSync } from 'node:fs'
 
+import { ObjectId } from 'mongodb'
+
 const alpha = JSON.parse(
   readFileSync(
     new URL(
@@ -92,8 +94,14 @@ describe('team-deployment-service (GitOps)', () => {
   })
 
   async function joinTeam(userId) {
-    const teamId = `gitops-team-${randomUUID()}`
+    const teamObjectId = new ObjectId()
+    const teamId = teamObjectId.toString()
 
+    await db.collection('teams').insertOne({
+      _id: teamObjectId,
+      slug: `team-${teamId}`,
+      normalisedName: `team-${teamId}`
+    })
     await db
       .collection('teamMembers')
       .insertOne({ teamId, userId, role: 'admin', status: 'active' })
@@ -194,6 +202,11 @@ describe('team-deployment-service (GitOps)', () => {
     test('fails with desired-state-unavailable and records nothing when the team has no file to build', async () => {
       const orchestrator = fakeOrchestrator()
       const { teamId, userId } = await signedInMember()
+
+      // The team's record has no slug, so there is no file to build.
+      await db
+        .collection('teams')
+        .updateOne({ _id: new ObjectId(teamId) }, { $set: { slug: '' } })
 
       await expect(
         requestOne(

@@ -30,6 +30,7 @@ import {
 } from '#/services/team-deployment-submission.js'
 import { settleGitopsStep } from '#/services/team-deployment-gitops-steps.js'
 import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
+import { resolveTeamId } from '#/services/team-service.js'
 import { toDeploymentView } from '#/services/team-deployment-view.js'
 
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
@@ -86,14 +87,21 @@ function requireTeamEnvironment(environment) {
  * `403 entra-identity-required`.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, modelSlugs: string[], environment: string, requestedBy: string, idempotencyKey: string, traceParent?: string}} params
+ * @param {{teamId: string, modelSlugs: string[], environment: string, requestedBy: string, idempotencyKey: string, traceParent?: string}} params - `teamId` is the team's id or slug
  * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, buildDesiredState?: Function}} [deps]
  * @returns {Promise<object[]>} One view per model, in the order asked.
  */
 export async function requestDeployments(
   db,
   locker,
-  { teamId, modelSlugs, environment, requestedBy, idempotencyKey, traceParent },
+  {
+    teamId: teamRef,
+    modelSlugs,
+    environment,
+    requestedBy,
+    idempotencyKey,
+    traceParent
+  },
   {
     registry = tenantOrchestratorRegistry,
     buildDesiredState = teamDesiredStateBuilder
@@ -101,9 +109,12 @@ export async function requestDeployments(
 ) {
   requireTeamEnvironment(environment)
 
-  const membership = await db
-    .collection('teamMembers')
-    .findOne({ teamId, userId: requestedBy, status: 'active' })
+  const teamId = await resolveTeamId(db, teamRef)
+  const membership = teamId
+    ? await db
+        .collection('teamMembers')
+        .findOne({ teamId, userId: requestedBy, status: 'active' })
+    : null
 
   if (!membership) {
     throw Boom.notFound()
@@ -412,13 +423,20 @@ async function recordSubmitRun(db, { teamId, environment }, entry, submitted) {
  * its status first. Returns null (not a 403) for a non-member so existence
  * isn't disclosed.
  * @param {import('mongodb').Db} db
- * @param {{id: string, teamId: string, userId: string}} params
+ * @param {{id: string, teamId: string, userId: string}} params - `teamId` is the team's id or slug
  * @param {{registry?: object, logger?: import('pino').Logger}} [deps]
  */
-export async function getDeployment(db, { id, teamId, userId }, deps = {}) {
-  const membership = await db
-    .collection('teamMembers')
-    .findOne({ teamId, userId, status: 'active' })
+export async function getDeployment(
+  db,
+  { id, teamId: teamRef, userId },
+  deps = {}
+) {
+  const teamId = await resolveTeamId(db, teamRef)
+  const membership = teamId
+    ? await db
+        .collection('teamMembers')
+        .findOne({ teamId, userId, status: 'active' })
+    : null
 
   if (!membership) {
     return null
@@ -446,17 +464,20 @@ export async function getDeployment(db, { id, teamId, userId }, deps = {}) {
  * away or signs back in later. Throws 404 for a non-member so existence
  * isn't disclosed.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, userId: string}} params
+ * @param {{teamId: string, userId: string}} params - `teamId` is the team's id or slug
  * @param {{registry?: object, logger?: import('pino').Logger}} [deps]
  */
 export async function listDeploymentsForTeam(
   db,
-  { teamId, userId },
+  { teamId: teamRef, userId },
   deps = {}
 ) {
-  const membership = await db
-    .collection('teamMembers')
-    .findOne({ teamId, userId, status: 'active' })
+  const teamId = await resolveTeamId(db, teamRef)
+  const membership = teamId
+    ? await db
+        .collection('teamMembers')
+        .findOne({ teamId, userId, status: 'active' })
+    : null
 
   if (!membership) {
     throw Boom.notFound()

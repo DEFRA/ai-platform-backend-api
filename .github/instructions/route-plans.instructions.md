@@ -26,7 +26,7 @@ blocked or deferred.
 
 Cross-repo context:
 
-- [ai-platform-frontend/docs/flat-design-updates/v1/ui-flow-three-routes.md](../../../ai-platform-frontend/docs/flat-design-updates/v1/ui-flow-three-routes.md): the source UI flow (route paths, API contract, known gaps).
+- [ai-platform-frontend/docs/flat-design-updates/v3/build-plan.md](../../../ai-platform-frontend/docs/flat-design-updates/v3/build-plan.md): the source UI flow (route paths, API contract, known gaps).
 - [ai-platform-discovery-docs/docs/iac-baseline-plan.md](../../../ai-platform-discovery-docs/docs/iac-baseline-plan.md): the IaC baseline behind B15 and B16.
 - [ai-platform-discovery-docs/src/content/design-orchestration.md](../../../ai-platform-discovery-docs/src/content/design-orchestration.md): design C. Every backend action is either the slow GitOps path (`TenantOrchestrator`) or the fast direct API path (`CredentialIssuer`); this split is why "connect to a dedicated team model" uses two ports.
 - The matching frontend work: [ai-platform-frontend route-plans.instructions.md](../../../ai-platform-frontend/.github/instructions/route-plans.instructions.md).

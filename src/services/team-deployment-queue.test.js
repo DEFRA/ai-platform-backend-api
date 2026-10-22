@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { ObjectId } from 'mongodb'
+
 const SUBMIT_RUN_URL =
   'https://github.com/DEFRA/ai-platform-tenants/actions/runs/1001'
 
@@ -81,10 +83,16 @@ describe('team deployment queue', () => {
       roles: ['research-user']
     })
     const userId = insertedId.toString()
-    const teamId = `queue-team-${randomUUID()}`
+    const teamObjectId = new ObjectId()
+    const teamId = teamObjectId.toString()
     const orchestrator = fakeOrchestrator()
     const buildDesiredState = fakeBuilder()
 
+    await db.collection('teams').insertOne({
+      _id: teamObjectId,
+      slug: `queue-${teamId}`,
+      normalisedName: `queue-${teamId}`
+    })
     await db
       .collection('teamMembers')
       .insertOne({ teamId, userId, role: 'admin', status: 'active' })
