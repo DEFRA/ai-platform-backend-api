@@ -85,26 +85,31 @@ describe('#pollTeamDeployments', () => {
     vi.doUnmock('#/services/team-deployment-gitops.js')
   })
 
-  test('sweeps GitHub-mode team deployments with the scheduler logger', async () => {
+  test('sweeps GitHub-mode team deployments, then recovers missing team credentials, with the scheduler lock manager and logger', async () => {
     const sweepGitopsDeployments = vi
       .fn()
       .mockResolvedValue({ polled: 2, transitioned: 1, abandoned: 0 })
+    const recoverTeamCredentials = vi.fn().mockResolvedValue(1)
 
     vi.doMock('#/services/team-deployment-gitops.js', () => ({
-      sweepGitopsDeployments
+      sweepGitopsDeployments,
+      recoverTeamCredentials
     }))
 
     const { pollTeamDeployments } =
       await import('#/services/maintenance-service.js')
     const db = {}
+    const locker = {}
     const logger = { error: vi.fn() }
 
-    await expect(pollTeamDeployments(db, logger)).resolves.toEqual({
+    await expect(pollTeamDeployments(db, locker, logger)).resolves.toEqual({
       polled: 2,
       transitioned: 1,
-      abandoned: 0
+      abandoned: 0,
+      credentials: 1
     })
-    expect(sweepGitopsDeployments).toHaveBeenCalledWith(db, { logger })
+    expect(sweepGitopsDeployments).toHaveBeenCalledWith(db, { locker, logger })
+    expect(recoverTeamCredentials).toHaveBeenCalledWith(db, { locker, logger })
   })
 })
 

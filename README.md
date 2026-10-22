@@ -287,7 +287,7 @@ minted it, and its renew/rotate/revoke/reveal use that issuer and its matching v
 tiers on the mock issuer and vault even in `live` mode, e.g. `MOCK_TIERS=team` to demo the team
 tier without a real team gateway while the research tier uses the real gateways. Research
 credentials are time-bound APIM subscription keys. The team tier is OAuth only (a client secret or
-a federated credential, local development included; `credentialType` accepts only `oauth`), and no
+a federated credential, local development included), and no
 gateway issues team OAuth credentials yet, so in `live` mode it needs `MOCK_TIERS=team` and is
 otherwise refused with `501 gateway-not-enabled`.
 
@@ -353,10 +353,23 @@ if the removal failed; a model that never reached `main` is marked `removed` at 
 deployment still being set up is refused with `409 deployment-in-progress`, and one whose team file
 another operation holds with `409 team-file-busy`.
 
-A team's credential (one per team per environment) covers whatever the team's gateway grants there:
-its `allowedDeployments` is read from the team's deployments on every response, never stored, so a
-removed model leaves the credential at once. A revoked credential keeps what it covered when it was
-revoked.
+A team's credential (one per team per environment) is created when the team's first model in that
+environment turns `active`, under the lock `team-credential:{teamId}:{environment}`: its secret goes
+straight to the vault and is never returned, and `POST /v1/credentials` no longer issues team
+credentials (only `tier: research`; `team` is refused with `400`). A later model in the same
+environment reuses it, and a different environment gets its own. If creating it fails (for example
+no gateway issues team credentials in `live` mode without `MOCK_TIERS=team`, or the vault write
+fails) the activation stands and the failure is logged and audited against the deployment
+(`teamDeployment.credential`). The maintenance sweep, and any later poll of an active deployment,
+retries (at most once per poll interval, serialised with revocation under the credential's own lock)
+while the team has no active credential and its latest attempt is unfinished, missing, or was revoked
+before the newest activation (a revocation after it is left alone); an unfinished attempt's document
+is reused, never duplicated. Any team member
+can see the credential (`GET /v1/credentials`, `keyHint` only); only a team admin can reveal its
+secret with a reason (`POST /v1/credentials/{id}/reveal`), rotate or revoke it. It covers
+whatever the team's gateway grants there: its `allowedDeployments` is read from the team's deployments
+on every response, never stored, so a removed model leaves the credential at once. A revoked
+credential keeps what it covered when it was revoked; a later model activation creates a new one.
 
 | Variable                           | Default                         | Purpose                                                                                                                                                                                                    |
 | :--------------------------------- | :------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |

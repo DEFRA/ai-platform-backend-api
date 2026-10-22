@@ -6,23 +6,32 @@ import { AZURE_APIM } from '#/adapters/gateway-keys.js'
 import {
   writeSecretToVault,
   externalGatewaySubscriptionIdOf,
-  environmentOf
+  environmentOf,
+  credentialLockName
 } from '#/services/credential-service.js'
-import { sweepGitopsDeployments } from '#/services/team-deployment-gitops.js'
-import { requireLock } from '#/common/helpers/mongo-lock.js'
+import {
+  recoverTeamCredentials,
+  sweepGitopsDeployments
+} from '#/services/team-deployment-gitops.js'
+import { requireLock, acquireLock } from '#/common/helpers/mongo-lock.js'
 
 const PENDING_RECONCILE_AFTER_MS = 10 * 60 * 1000
 
 /**
  * Polls every non-terminal GitHub-mode team deployment so operations nobody
  * is watching still progress through the GitOps states, with an audit event
- * per transition and the D14 failure policy applied.
+ * per transition and the D14 failure policy applied, then creates any team
+ * credential still missing for an active deployment (`credentials`).
  * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker - a model reaching `active` creates its team's credential under it
  * @param {import('pino').Logger} [logger]
- * @returns {Promise<{polled: number, transitioned: number, abandoned: number}>}
+ * @returns {Promise<{polled: number, transitioned: number, abandoned: number, credentials: number}>}
  */
-export async function pollTeamDeployments(db, logger) {
-  return sweepGitopsDeployments(db, { logger })
+export async function pollTeamDeployments(db, locker, logger) {
+  const swept = await sweepGitopsDeployments(db, { locker, logger })
+  const credentials = await recoverTeamCredentials(db, { locker, logger })
+
+  return { ...swept, credentials }
 }
 
 /**
@@ -48,7 +57,7 @@ export async function expireCredentials(
   let suspended = 0
 
   for (const credential of dueCredentials) {
-    const lock = await requireLock(locker, `credential:${credential._id}`)
+    const lock = await requireLock(locker, credentialLockName(credential._id))
 
     try {
       // Suspend in APIM before marking expired in Mongo - if suspend fails,
@@ -139,11 +148,13 @@ export async function flagStraySubscriptions(
  * already-created subscription and reads back the same key, rather than
  * minting a new one, so no secret has to be parked anywhere in the meantime.
  * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker - a credential being issued, rotated or revoked holds `credential:{id}`, and is left to its next run
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function reconcilePendingCredentials(
   db,
+  locker,
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
@@ -158,6 +169,7 @@ export async function reconcilePendingCredentials(
 
   const vaultReconciled = await reconcileUnwrittenVaultSecrets(
     db,
+    locker,
     registry,
     vault
   )
@@ -165,24 +177,50 @@ export async function reconcilePendingCredentials(
   return { reconciled: modifiedCount, vaultReconciled }
 }
 
+const RECONCILABLE_STATUSES = ['active', 'expired']
+
 /**
- * Retries the vault write for every credential flagged `vaultState:
- * 'unwritten'`. Leaves the flag in place (to retry again next run) for any
- * credential whose issuer call or vault write still fails.
+ * Retries the vault write for every active or expired credential flagged
+ * `vaultState: 'unwritten'` (a revoked one is never reissued). Leaves the
+ * flag in place (to retry again next run) for any
+ * credential whose issuer call or vault write still fails. Each credential
+ * is read again under its `credential:{id}` lock, the one issuing, rotating
+ * and revoking hold, so a credential whose issuance is still running (it is
+ * marked from the moment it is active until its secret is stored) is never
+ * reissued over a write that is about to succeed.
  * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} registry
  * @param {import('#/adapters/credential-vault.js').CredentialVault} vault
  */
-async function reconcileUnwrittenVaultSecrets(db, registry, vault) {
+async function reconcileUnwrittenVaultSecrets(db, locker, registry, vault) {
   const unwritten = await db
     .collection('credentials')
-    .find({ vaultState: 'unwritten' })
+    .find({ vaultState: 'unwritten', status: { $in: RECONCILABLE_STATUSES } })
     .toArray()
 
   let reconciled = 0
 
-  for (const credential of unwritten) {
+  for (const found of unwritten) {
+    const lock = await acquireLock(locker, credentialLockName(found._id))
+
+    if (!lock) {
+      continue
+    }
+
     try {
+      // Read again under the lock: a revocation that finished first leaves
+      // the marker in place, and a revoked credential is never reissued.
+      const credential = await db.collection('credentials').findOne({
+        _id: found._id,
+        vaultState: 'unwritten',
+        status: { $in: RECONCILABLE_STATUSES }
+      })
+
+      if (!credential) {
+        continue
+      }
+
       const { issuer } = registry.forCredential(credential)
       const reissued = await issuer.issue({
         userId: credential.userId,
@@ -197,6 +235,8 @@ async function reconcileUnwrittenVaultSecrets(db, registry, vault) {
       }
     } catch {
       // issuer call failed - leave vaultState: 'unwritten', retried next run
+    } finally {
+      await lock.free()
     }
   }
 

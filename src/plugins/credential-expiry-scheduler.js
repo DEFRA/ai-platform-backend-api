@@ -36,11 +36,9 @@ export const credentialExpiryScheduler = {
             server.logger
           )
           const { reconciled, vaultReconciled } =
-            await reconcilePendingCredentials(server.db)
-          const { polled, transitioned, abandoned } = await pollTeamDeployments(
-            server.db,
-            server.logger
-          )
+            await reconcilePendingCredentials(server.db, server.locker)
+          const { polled, transitioned, abandoned, credentials } =
+            await pollTeamDeployments(server.db, server.locker, server.logger)
           const straySubscriptions = await flagStraySubscriptions(server.logger)
           const result = {
             expired,
@@ -50,6 +48,7 @@ export const credentialExpiryScheduler = {
             polled,
             transitioned,
             abandoned,
+            credentials,
             straySubscriptions
           }
 
@@ -64,6 +63,7 @@ export const credentialExpiryScheduler = {
             vaultReconciled,
             transitioned,
             abandoned,
+            credentials,
             straySubscriptions
           ].some(Boolean)
 

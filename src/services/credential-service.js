@@ -10,14 +10,13 @@ import {
   requireLock,
   acquireLockWithRetry
 } from '#/common/helpers/mongo-lock.js'
-import {
-  findActiveDeployment,
-  grantedModelSlugs
-} from '#/services/team-deployment-gateway.js'
+import { grantedModelSlugs } from '#/services/team-deployment-gateway.js'
 import { getMemberRole } from '#/services/team-service.js'
 
 // The team tier is OAuth only - a client secret or a federated credential,
 // local development included. Research credentials are subscription keys.
+// A team's one credential per environment is created when its first model
+// there turns active (`ensureTeamCredential`), never by a request.
 const TEAM_CREDENTIAL_TYPE = 'oauth'
 
 // Research credentials issued before `environment` was persisted were all
@@ -171,17 +170,10 @@ export async function writeSecretToVault(db, vault, credential, secret) {
 }
 
 /**
- * Issues a Research or Team tier credential, or replays the result of a
- * prior call with the same Idempotency-Key. A Team tier request must carry
- * an explicit `teamId` (never derived from `users.teamId`, which is a
- * single-team field incompatible with the many-to-many `teamMembers`
- * model) and only proceeds once that team's model deployment is `active`;
- * the credential is shared across the whole team per environment (one doc
- * per team+environment, not per member and not per model) and covers
- * whatever the team's gateway grants there, read from the team's
- * deployments rather than copied - a team already holding an active
- * credential for this environment gets that same credential back rather
- * than a fresh one.
+ * Issues a research credential (a personal subscription key), or replays the
+ * result of a prior call with the same Idempotency-Key. A team's credential
+ * is never issued here: it is created when the team's first deployment in
+ * an environment turns `active` (`ensureTeamCredential`).
  *
  * Note: the secret is never persisted, so a replayed idempotent request
  * returns the credential without a secret — this matches "the key is shown
@@ -189,8 +181,9 @@ export async function writeSecretToVault(db, vault, credential, secret) {
  * itself on retry.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, tier?: 'research'|'team', teamId?: string, environment?: string, credentialType?: 'oauth'}} params
+ * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, environment?: string}} params
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function issueCredential(
   db,
@@ -199,42 +192,26 @@ export async function issueCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const { tier = 'research', teamId, userId, modelSlug } = params
-  const environment = resolveIssueEnvironment(tier, params.environment)
+  const { userId, modelSlug } = params
+  const environment = resolveIssueEnvironment(params.environment)
 
-  if (tier !== 'team') {
-    // Guards the check-for-reusable-pending/failed-doc-then-write below
-    // (see issueCredentialForParams) from the same interleaving race the
-    // team-tier lock below prevents - without it, two concurrent requests
-    // for the same user+model could both reuse and overwrite one shared
-    // document with two different attempts' results.
-    const lock = await acquireLockWithRetry(
-      locker,
-      `research-credential:${userId}:${modelSlug}`
-    )
-
-    try {
-      return await issueCredentialForParams(
-        db,
-        { ...params, environment },
-        registry,
-        vault
-      )
-    } finally {
-      await lock.free()
-    }
-  }
-
-  // A team shares one credential per environment, so the
-  // check-for-active-then-insert below must not interleave with another
-  // member's request or both would create an active credential.
+  // Guards the check-for-reusable-pending/failed-doc-then-write below
+  // (see issueCredentialForParams): without it, two concurrent requests
+  // for the same user+model could both reuse and overwrite one shared
+  // document with two different attempts' results.
   const lock = await acquireLockWithRetry(
     locker,
-    `team-credential:${teamId}:${environment}`
+    `research-credential:${userId}:${modelSlug}`
   )
 
   try {
-    return await issueCredentialForParams(db, params, registry, vault)
+    return await issueCredentialForParams(
+      db,
+      locker,
+      { ...params, environment },
+      registry,
+      vault
+    )
   } finally {
     await lock.free()
   }
@@ -243,17 +220,11 @@ export async function issueCredential(
 /**
  * A research key is issued into the configured research environment; naming a
  * different one is refused, so a caller can never aim the portal's API
- * Management role at an instance this deployment was not set up for. A team
- * credential's environment is the team deployment's, passed through.
- * @param {'research'|'team'} tier
+ * Management role at an instance this deployment was not set up for.
  * @param {string|undefined} requested
- * @returns {string|undefined}
+ * @returns {string}
  */
-function resolveIssueEnvironment(tier, requested) {
-  if (tier === 'team') {
-    return requested
-  }
-
+function resolveIssueEnvironment(requested) {
   const researchEnvironment = config.get('research.environment')
 
   if (requested && requested !== researchEnvironment) {
@@ -267,46 +238,13 @@ function resolveIssueEnvironment(tier, requested) {
   return researchEnvironment
 }
 
-async function issueCredentialForParams(
-  db,
-  {
-    userId,
-    modelSlug,
-    purpose,
-    idempotencyKey,
-    tier = 'research',
-    teamId,
-    environment
-  },
-  registry = credentialIssuerRegistry,
-  vault = credentialVault
-) {
-  const existing = await db
-    .collection('credentials')
-    .findOne({ userId, idempotencyKey })
-
-  if (existing) {
-    return {
-      credential: await withTeamGrants(db, existing),
-      secret: undefined,
-      replay: true
-    }
-  }
-
-  const model = await findModelBySlug(db, modelSlug)
-
-  if (!model || !model.eligible || !model.tiers?.includes(tier)) {
-    throw boomWithCode(
-      Boom.forbidden,
-      'Model is not eligible',
-      'model-not-eligible'
-    )
-  }
-
-  let resolvedIssuer
-
+/**
+ * The gateway issuer for a model, with an issuer that is not enabled here
+ * reported as `501 gateway-not-enabled`.
+ */
+function resolveIssuer(registry, model, tier) {
   try {
-    resolvedIssuer = registry.forModel(model, tier)
+    return registry.forModel(model, tier)
   } catch (error) {
     if (error.code === 'gateway-not-enabled') {
       throw boomWithCode(
@@ -318,134 +256,22 @@ async function issueCredentialForParams(
 
     throw error
   }
+}
 
-  const { issuerKey, issuer } = resolvedIssuer
-
-  let resolvedTeamId = null
-
-  if (tier === 'team') {
-    const membership = await db
-      .collection('teamMembers')
-      .findOne({ teamId, userId, status: 'active' })
-
-    if (!membership) {
-      throw Boom.notFound()
-    }
-
-    const deployment = await findActiveDeployment(db, {
-      teamId,
-      modelSlug,
-      environment
-    })
-
-    if (!deployment) {
-      throw boomWithCode(
-        Boom.conflict,
-        'The team deployment for this model is not ready yet',
-        'deployment-not-ready'
-      )
-    }
-
-    // Only an OAuth credential is the team's; the tier has issued nothing
-    // else since it became OAuth only (14 October 2026). The team's one
-    // credential covers whatever its gateway grants, so a second model
-    // needs nothing added to it: the deployment reaching `active` already
-    // granted the model.
-    const activeTeamCredential = await db.collection('credentials').findOne({
-      teamId,
-      environment,
-      tier: 'team',
-      credentialType: TEAM_CREDENTIAL_TYPE,
-      status: 'active'
-    })
-
-    if (activeTeamCredential) {
-      return {
-        credential: await withTeamGrants(db, activeTeamCredential),
-        secret: undefined,
-        replay: true
-      }
-    }
-
-    resolvedTeamId = teamId
-  } else {
-    const existingCredential = await db.collection('credentials').findOne({
-      userId,
-      modelSlug,
-      ...researchEnvironmentFilter(environment),
-      status: { $in: ['active', 'expired'] }
-    })
-
-    if (existingCredential?.status === 'active') {
-      throw boomWithCode(
-        Boom.conflict,
-        'An active credential already exists for this model',
-        'active-credential-exists'
-      )
-    }
-
-    // An expired credential's APIM subscription id is deterministic
-    // (sidFor()), so re-issuing would silently reactivate that same
-    // subscription under a brand-new credential document/vault secret
-    // instead of renewing the existing one - renew() is the correct way
-    // to bring it back without fragmenting Key Vault state.
-    if (existingCredential?.status === 'expired') {
-      throw boomWithCode(
-        Boom.conflict,
-        'Your credential for this model has expired. Renew it instead of requesting a new one.',
-        'credential-expired-use-renew'
-      )
-    }
-
-    resolvedTeamId = await findTeamIdForUser(db, userId)
-  }
-
-  const now = new Date().toISOString()
-  const pending = {
-    userId,
-    teamId: resolvedTeamId,
-    modelSlug: tier === 'team' ? null : modelSlug,
-    ...(tier === 'team' && { credentialType: TEAM_CREDENTIAL_TYPE }),
-    tier,
-    environment: environment || null,
-    purpose: purpose || null,
-    type: 'apim-subscription',
-    status: 'pending',
-    idempotencyKey,
-    issuerKey,
-    // Catalogue snapshot at issue time, so "which cloud/gateway is this
-    // credential for" needs no join. A team credential spans several models,
-    // so only the research tier records a single provider/offering.
-    // `gateway` is what the catalogue said at issue time; `issuerKey` is which
-    // issuer actually minted it - they differ in `mock` mode or a `mockTiers` tier.
-    provider: tier === 'team' ? null : (model.provider ?? null),
-    offering: tier === 'team' ? null : (model.offering ?? null),
-    cloud: model.hosting?.cloud ?? null,
-    gateway: model.gateway ?? null,
-    createdAt: now,
-    renewalCount: 0
-  }
-
-  // A research-tier retry after a failed (or crash-abandoned pending)
-  // attempt reuses that same document instead of inserting a new one -
-  // otherwise every retry of the same model request leaves behind another
-  // permanent 'failed' row, so /manage's "Keys you can use" table fills up
-  // with duplicate entries for one logical request (none of which can be
-  // usefully renewed or revoked, since they were never actually issued).
-  const reusableCredential =
-    tier === 'research'
-      ? await db.collection('credentials').findOne({
-          userId,
-          modelSlug,
-          tier: 'research',
-          ...researchEnvironmentFilter(environment),
-          status: { $in: ['pending', 'failed'] }
-        })
-      : null
-
+/**
+ * Writes the pending document (or resets the one being retried), asks the
+ * issuer for the secret, then activates the document, puts the secret in the
+ * vault and audits it. A failing issuer leaves the document `failed`. The
+ * caller decides who sees the secret.
+ */
+async function issueAndActivate(
+  db,
+  vault,
+  { issuer, pending, reusable, insertId, issueParams, expiresAt }
+) {
   let insertedId
-  if (reusableCredential) {
-    insertedId = reusableCredential._id
+  if (reusable) {
+    insertedId = reusable._id
     await db
       .collection('credentials')
       .updateOne(
@@ -453,18 +279,14 @@ async function issueCredentialForParams(
         { $set: pending, $unset: { failureReason: '' } }
       )
   } else {
-    ;({ insertedId } = await db.collection('credentials').insertOne(pending))
+    ;({ insertedId } = await db
+      .collection('credentials')
+      .insertOne(insertId ? { _id: insertId, ...pending } : pending))
   }
 
   let issued
   try {
-    issued = await issuer.issue({
-      userId,
-      modelSlug,
-      tier,
-      teamId: resolvedTeamId,
-      environment: environment || null
-    })
+    issued = await issuer.issue(issueParams)
   } catch {
     await db
       .collection('credentials')
@@ -473,7 +295,7 @@ async function issueCredentialForParams(
         { $set: { status: 'failed', failureReason: 'issuer-error' } }
       )
     await recordAuditEvent(db, {
-      actorUserId: userId,
+      actorUserId: pending.userId,
       action: 'credential.issue',
       resource: 'credential',
       resourceId: insertedId.toString(),
@@ -488,37 +310,462 @@ async function issueCredentialForParams(
     )
   }
 
+  // `vaultState: unwritten` is stored with the activation and cleared once
+  // the secret is in the vault, so a stop between the two leaves a marker
+  // for `reconcilePendingCredentials`, never an active credential whose
+  // secret is nowhere.
   const active = {
     status: 'active',
     externalGatewaySubscriptionId: issued.externalId,
     keyHint: issued.keyHint,
-    activatedAt: now,
-    // Team credentials are shared indefinitely across the team and never
-    // renewed (see `renewCredential`'s tier guard) - only research-tier
-    // personal credentials expire.
-    expiresAt: tier === 'team' ? null : issued.expiresAt
+    activatedAt: pending.createdAt,
+    expiresAt: expiresAt === undefined ? issued.expiresAt : expiresAt,
+    vaultState: 'unwritten'
   }
 
   await db
     .collection('credentials')
     .updateOne({ _id: insertedId }, { $set: active })
 
-  const activeCredential = { _id: insertedId, ...pending, ...active }
+  const unsettled = { _id: insertedId, ...pending, ...active }
 
-  await writeSecretToVault(db, vault, activeCredential, issued.secret)
+  const vaultWritten = await writeSecretToVault(
+    db,
+    vault,
+    unsettled,
+    issued.secret
+  )
+  const credential = vaultWritten
+    ? { ...unsettled, vaultState: undefined }
+    : unsettled
 
   await recordAuditEvent(db, {
-    actorUserId: userId,
+    actorUserId: pending.userId,
     action: 'credential.issue',
     resource: 'credential',
     resourceId: insertedId.toString(),
     outcome: 'success'
   })
 
-  return {
-    credential: await withTeamGrants(db, activeCredential),
-    secret: issued.secret
+  return { credential, secret: issued.secret, vaultWritten }
+}
+
+async function issueCredentialForParams(
+  db,
+  locker,
+  { userId, modelSlug, purpose, idempotencyKey, environment },
+  registry = credentialIssuerRegistry,
+  vault = credentialVault
+) {
+  const existing = await db
+    .collection('credentials')
+    .findOne({ userId, idempotencyKey })
+
+  if (existing) {
+    return { credential: existing, secret: undefined, replay: true }
   }
+
+  const model = await findModelBySlug(db, modelSlug)
+
+  if (!model || !model.eligible || !model.tiers?.includes('research')) {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Model is not eligible',
+      'model-not-eligible'
+    )
+  }
+
+  const { issuerKey, issuer } = resolveIssuer(registry, model, 'research')
+
+  const existingCredential = await db.collection('credentials').findOne({
+    userId,
+    modelSlug,
+    ...researchEnvironmentFilter(environment),
+    status: { $in: ['active', 'expired'] }
+  })
+
+  if (existingCredential?.status === 'active') {
+    throw boomWithCode(
+      Boom.conflict,
+      'An active credential already exists for this model',
+      'active-credential-exists'
+    )
+  }
+
+  // An expired credential's APIM subscription id is deterministic
+  // (sidFor()), so re-issuing would silently reactivate that same
+  // subscription under a brand-new credential document/vault secret
+  // instead of renewing the existing one - renew() is the correct way
+  // to bring it back without fragmenting Key Vault state.
+  if (existingCredential?.status === 'expired') {
+    throw boomWithCode(
+      Boom.conflict,
+      'Your credential for this model has expired. Renew it instead of requesting a new one.',
+      'credential-expired-use-renew'
+    )
+  }
+
+  const pending = {
+    userId,
+    teamId: await findTeamIdForUser(db, userId),
+    modelSlug,
+    tier: 'research',
+    environment,
+    purpose: purpose || null,
+    type: 'apim-subscription',
+    status: 'pending',
+    idempotencyKey,
+    issuerKey,
+    // Catalogue snapshot at issue time, so "which cloud/gateway is this
+    // credential for" needs no join. `gateway` is what the catalogue said at
+    // issue time; `issuerKey` is which issuer actually minted it - they
+    // differ in `mock` mode or a `mockTiers` tier.
+    provider: model.provider ?? null,
+    offering: model.offering ?? null,
+    cloud: model.hosting?.cloud ?? null,
+    gateway: model.gateway ?? null,
+    createdAt: new Date().toISOString(),
+    renewalCount: 0
+  }
+
+  // A retry after a failed (or crash-abandoned pending) attempt reuses that
+  // same document instead of inserting a new one - otherwise every retry of
+  // the same model request leaves behind another permanent 'failed' row, so
+  // /manage's "Keys you can use" table fills up with duplicate entries for
+  // one logical request (none of which can be usefully renewed or revoked,
+  // since they were never actually issued).
+  const unfinished = await db.collection('credentials').findOne({
+    userId,
+    modelSlug,
+    tier: 'research',
+    ...researchEnvironmentFilter(environment),
+    status: { $in: ['pending', 'failed'] }
+  })
+
+  // Held from before the row exists until its secret is stored, so neither a
+  // revocation nor a reconciliation of the vault marker can act on a
+  // credential still being issued.
+  return withCredentialRow(
+    db,
+    locker,
+    unfinished,
+    async ({ reusable, rowId }) => {
+      const { credential, secret } = await issueAndActivate(db, vault, {
+        issuer,
+        pending,
+        reusable,
+        insertId: rowId,
+        issueParams: {
+          userId,
+          modelSlug,
+          tier: 'research',
+          teamId: pending.teamId,
+          environment
+        }
+      })
+
+      return { credential, secret }
+    }
+  )
+}
+
+const TEAM_CREDENTIAL_FILTER = {
+  tier: 'team',
+  credentialType: TEAM_CREDENTIAL_TYPE
+}
+
+/**
+ * Makes sure a team has its credential for an environment once one of its
+ * models is `active` there: nothing happens if it already holds an active
+ * one (the model is already covered, because coverage is the team's live
+ * grants - see `withTeamGrants`), otherwise the credential is created and
+ * its secret goes straight to the vault. The secret is never returned or
+ * persisted; an admin reveals it with `revealCredential`. Runs under the
+ * lock the team's credential has always had, so concurrent activations
+ * create one credential. An attempt that did not finish - failed, abandoned
+ * `pending` after a crash, or one that failed before an issuer was even
+ * resolved (recorded as a `failed` document with its reason) - is reused
+ * rather than left beside a second row.
+ * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
+ * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string, activatedAt?: string|null, retryAfterMs?: number}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner and the audit actor (an unfinished attempt keeps its own). `activatedAt` is when that activation happened: an admin's revocation made after it is respected, checked again inside the lock. `retryAfterMs` marks a retry from a poll rather than the activation itself (see `teamCredentialNeedsRetry`), so polls that raced for the lock cannot repeat an attempt that has just failed
+ * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
+ * @returns {Promise<{credential: object|null, created: boolean, vaultWritten?: boolean}>} `credential` is null when nothing was owed any longer; `vaultWritten` is false when the credential was created but its secret is not in the vault yet (reconciliation retries it)
+ */
+export async function ensureTeamCredential(
+  db,
+  locker,
+  {
+    teamId,
+    environment,
+    modelSlug,
+    requestedBy,
+    operationId,
+    retryAfterMs,
+    activatedAt
+  },
+  registry = credentialIssuerRegistry,
+  vault = credentialVault
+) {
+  const lock = await acquireLockWithRetry(
+    locker,
+    `team-credential:${teamId}:${environment}`
+  )
+
+  try {
+    const scope = { teamId, environment, ...TEAM_CREDENTIAL_FILTER }
+    const active = await db
+      .collection('credentials')
+      .findOne({ ...scope, status: 'active' })
+
+    if (active) {
+      return { credential: active, created: false }
+    }
+
+    // The newest attempt that did not finish, if any.
+    const unfinished = await db
+      .collection('credentials')
+      .findOne(
+        { ...scope, status: { $in: UNFINISHED_STATUSES } },
+        { sort: { createdAt: -1 } }
+      )
+
+    return await withCredentialRow(
+      db,
+      locker,
+      unfinished,
+      async ({ reusable, rowId }) => {
+        const owed = await teamCredentialOwed(
+          db,
+          { teamId, environment },
+          { retryAfterMs, activatedAt }
+        )
+
+        if (!owed) {
+          return { credential: null, created: false }
+        }
+
+        return attemptTeamCredential(
+          db,
+          vault,
+          registry,
+          { reusable, rowId },
+          { teamId, environment, modelSlug, requestedBy, operationId }
+        )
+      }
+    )
+  } finally {
+    await lock.free()
+  }
+}
+
+const UNFINISHED_STATUSES = ['pending', 'failed']
+
+/**
+ * The lock every action on one credential row takes (issuing, renewing,
+ * rotating, revoking, expiring, reconciling its vault secret). Named from the
+ * id's canonical hex form, so a request that spells the same id in upper case
+ * contends for the same lock.
+ * @param {string|import('mongodb').ObjectId} id
+ * @returns {string}
+ */
+export function credentialLockName(id) {
+  return `credential:${ObjectId.isValid(id) ? new ObjectId(id).toHexString() : id}`
+}
+
+// Whether the credential is still owed, read inside the lock: a retry from a
+// poll is owed by `teamCredentialNeedsRetry`; the activation itself is owed
+// unless an admin revoked the team's latest credential after it, which
+// `activatedAt` tells apart from a revocation that came first.
+async function teamCredentialOwed(
+  db,
+  team,
+  { retryAfterMs, activatedAt = null }
+) {
+  if (retryAfterMs !== undefined) {
+    return teamCredentialNeedsRetry(db, team, { retryAfterMs, activatedAt })
+  }
+
+  const [latest] = await db
+    .collection('credentials')
+    .find(
+      { ...team, ...TEAM_CREDENTIAL_FILTER },
+      { projection: { status: 1, revokedAt: 1 } }
+    )
+    .sort({ createdAt: -1 })
+    .toArray()
+  const revokedAfterActivation =
+    latest?.status === 'revoked' &&
+    activatedAt !== null &&
+    Boolean(latest.revokedAt) &&
+    latest.revokedAt >= activatedAt
+
+  return !revokedAfterActivation
+}
+
+// Runs `work` holding the lock `revokeCredential` takes on the credential
+// row (`credential:{id}`), so an admin cannot revoke a row while it is being
+// issued and have the issuance write `active` over the revocation. A row
+// being retried is locked, then read again: if it has been revoked since it
+// was found, a fresh row is made instead, and that row's id is locked before
+// the row exists, so it is never visible unlocked.
+async function withCredentialRow(db, locker, unfinished, work) {
+  const rowId = unfinished?._id ?? new ObjectId()
+  const lock = await requireLock(locker, credentialLockName(rowId))
+
+  try {
+    const reusable = unfinished
+      ? await db.collection('credentials').findOne({
+          _id: rowId,
+          status: { $in: UNFINISHED_STATUSES }
+        })
+      : null
+
+    if (!unfinished || reusable) {
+      return await work({ reusable, rowId })
+    }
+
+    const freshId = new ObjectId()
+    const freshLock = await requireLock(locker, credentialLockName(freshId))
+
+    try {
+      return await work({ reusable: null, rowId: freshId })
+    } finally {
+      await freshLock.free()
+    }
+  } finally {
+    await lock.free()
+  }
+}
+
+// One attempt at the credential, on the unfinished document if there is one
+// (which keeps its owner and idempotency key, so reusing it can never clash
+// with another row's): resolves the issuer, then issues, activates and puts
+// the secret in the vault. An attempt that fails before an issuer is
+// resolved is recorded.
+async function attemptTeamCredential(
+  db,
+  vault,
+  registry,
+  { reusable, rowId },
+  { teamId, environment, modelSlug, requestedBy, operationId }
+) {
+  const model = await findModelBySlug(db, modelSlug)
+  const userId = reusable?.userId ?? requestedBy
+  const pending = {
+    userId,
+    teamId,
+    modelSlug: null,
+    credentialType: TEAM_CREDENTIAL_TYPE,
+    tier: 'team',
+    environment,
+    purpose: null,
+    type: 'apim-subscription',
+    status: 'pending',
+    idempotencyKey:
+      reusable?.idempotencyKey ?? `team-activation:${operationId}`,
+    issuerKey: null,
+    // A team credential spans several models, so it records no single
+    // provider/offering, only the cloud and gateway of the model that
+    // created it.
+    provider: null,
+    offering: null,
+    cloud: model?.hosting?.cloud ?? null,
+    gateway: model?.gateway ?? null,
+    createdAt: new Date().toISOString(),
+    renewalCount: 0
+  }
+
+  let resolved
+  try {
+    resolved = resolveIssuer(registry, model, 'team')
+  } catch (error) {
+    await recordUnissued(db, { reusable, rowId }, pending, error)
+    throw error
+  }
+
+  // Shared indefinitely across the team and never renewed (see
+  // `renewCredential`'s tier guard), so it has no expiry.
+  const { credential, vaultWritten } = await issueAndActivate(db, vault, {
+    issuer: resolved.issuer,
+    pending: { ...pending, issuerKey: resolved.issuerKey },
+    reusable,
+    insertId: rowId,
+    issueParams: { userId, modelSlug, tier: 'team', teamId, environment },
+    expiresAt: null
+  })
+
+  return { credential, created: true, vaultWritten }
+}
+
+// Keeps a record that an attempt never reached an issuer, so the activation
+// can be retried later without recreating a credential an admin revoked.
+async function recordUnissued(db, { reusable, rowId }, pending, error) {
+  const failed = {
+    ...pending,
+    status: 'failed',
+    failureReason: error.data?.code ?? 'issuer-unavailable'
+  }
+
+  if (reusable) {
+    await db
+      .collection('credentials')
+      .updateOne({ _id: reusable._id }, { $set: failed })
+  } else {
+    await db.collection('credentials').insertOne({ _id: rowId, ...failed })
+  }
+}
+
+/**
+ * Whether a team's credential for an environment still needs creating even
+ * though one of its models is active there: nothing is active and either no
+ * attempt has been recorded, or the latest one did not finish (`failed`, or
+ * `pending` after a crash) at least `retryAfterMs` ago, or the latest one was
+ * revoked before the newest activation (`activatedAt`), whose own issuance
+ * therefore never started. Only the latest attempt counts, so an old failure
+ * never undoes a later revocation, and a credential an admin revoked after
+ * the last activation is not recreated by a poll, only by a later activation.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, environment: string}} team
+ * @param {{retryAfterMs?: number, activatedAt?: string|null}} [options] - `retryAfterMs`: how long after an attempt a retry waits, so a persistent failure is not retried on every poll; `activatedAt`: when the team's newest active deployment activated
+ * @returns {Promise<boolean>}
+ */
+export async function teamCredentialNeedsRetry(
+  db,
+  { teamId, environment },
+  { retryAfterMs = 0, activatedAt = null } = {}
+) {
+  const attempts = await db
+    .collection('credentials')
+    .find(
+      { teamId, environment, ...TEAM_CREDENTIAL_FILTER },
+      { projection: { status: 1, createdAt: 1, revokedAt: 1 } }
+    )
+    .sort({ createdAt: -1 })
+    .toArray()
+  const cutoff = new Date(Date.now() - retryAfterMs).toISOString()
+
+  if (attempts.some(({ status }) => status === 'active')) {
+    return false
+  }
+
+  const [latest] = attempts
+
+  if (latest === undefined) {
+    return true
+  }
+
+  if (UNFINISHED_STATUSES.includes(latest.status)) {
+    return latest.createdAt <= cutoff
+  }
+
+  return (
+    latest.status === 'revoked' &&
+    activatedAt !== null &&
+    Boolean(latest.revokedAt) &&
+    latest.revokedAt < activatedAt
+  )
 }
 
 /**
@@ -753,7 +1000,7 @@ export async function renewCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const lock = await requireLock(locker, `credential:${id}`)
+  const lock = await requireLock(locker, credentialLockName(id))
 
   try {
     const credential = await findCredentialForUser(db, { id, userId })
@@ -867,7 +1114,7 @@ export async function rotateCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const lock = await requireLock(locker, `credential:${id}`)
+  const lock = await requireLock(locker, credentialLockName(id))
 
   try {
     const credential = await loadCredentialForAction(db, { id, userId })
@@ -939,7 +1186,7 @@ export async function revokeCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const lock = await requireLock(locker, `credential:${id}`)
+  const lock = await requireLock(locker, credentialLockName(id))
 
   try {
     const credential = await loadCredentialForAction(db, { id, userId })

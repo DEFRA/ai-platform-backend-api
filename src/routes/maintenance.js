@@ -32,7 +32,8 @@ export const maintenance = {
       request.logger
     )
     const { reconciled, vaultReconciled } = await reconcilePendingCredentials(
-      request.db
+      request.db,
+      request.locker
     )
 
     const straySubscriptions = await flagStraySubscriptions(request.logger)

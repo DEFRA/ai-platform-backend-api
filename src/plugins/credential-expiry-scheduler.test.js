@@ -17,9 +17,12 @@ describe('#credentialExpiryScheduler', () => {
       reconcilePendingCredentials: vi
         .fn()
         .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
-      pollTeamDeployments: vi
-        .fn()
-        .mockResolvedValue({ polled: 2, transitioned: 1, abandoned: 0 }),
+      pollTeamDeployments: vi.fn().mockResolvedValue({
+        polled: 2,
+        transitioned: 1,
+        abandoned: 0,
+        credentials: 0
+      }),
       flagStraySubscriptions: vi.fn().mockResolvedValue(1)
     }))
 
@@ -56,6 +59,7 @@ describe('#credentialExpiryScheduler', () => {
       polled: 2,
       transitioned: 1,
       abandoned: 0,
+      credentials: 0,
       straySubscriptions: 1
     }
 
@@ -65,8 +69,15 @@ describe('#credentialExpiryScheduler', () => {
       undefined,
       server.logger
     )
-    expect(reconcilePendingCredentials).toHaveBeenCalledWith(server.db)
-    expect(pollTeamDeployments).toHaveBeenCalledWith(server.db, server.logger)
+    expect(reconcilePendingCredentials).toHaveBeenCalledWith(
+      server.db,
+      server.locker
+    )
+    expect(pollTeamDeployments).toHaveBeenCalledWith(
+      server.db,
+      server.locker,
+      server.logger
+    )
     expect(flagStraySubscriptions).toHaveBeenCalledWith(server.logger)
     expect(server.logger.debug).toHaveBeenCalledWith(
       result,
@@ -90,9 +101,12 @@ describe('#credentialExpiryScheduler', () => {
       reconcilePendingCredentials: vi
         .fn()
         .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
-      pollTeamDeployments: vi
-        .fn()
-        .mockResolvedValue({ polled: 3, transitioned: 0, abandoned: 0 }),
+      pollTeamDeployments: vi.fn().mockResolvedValue({
+        polled: 3,
+        transitioned: 0,
+        abandoned: 0,
+        credentials: 0
+      }),
       flagStraySubscriptions: vi.fn().mockResolvedValue(0)
     }))
 
@@ -115,6 +129,46 @@ describe('#credentialExpiryScheduler', () => {
     )
     expect(server.logger.info).not.toHaveBeenCalledWith(
       expect.anything(),
+      'Credential expiry sweep completed'
+    )
+  })
+
+  test('logs at info when the only change is a team credential created for an active deployment', async () => {
+    vi.useFakeTimers()
+    vi.stubEnv('MAINTENANCE_SCHEDULER_ENABLED', 'true')
+    vi.stubEnv('MAINTENANCE_SCHEDULER_INTERVAL_MS', '1000')
+
+    vi.doMock('#/services/maintenance-service.js', () => ({
+      expireCredentials: vi
+        .fn()
+        .mockResolvedValue({ expired: 0, suspended: 0 }),
+      reconcilePendingCredentials: vi
+        .fn()
+        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
+      pollTeamDeployments: vi.fn().mockResolvedValue({
+        polled: 0,
+        transitioned: 0,
+        abandoned: 0,
+        credentials: 2
+      }),
+      flagStraySubscriptions: vi.fn().mockResolvedValue(0)
+    }))
+
+    const { credentialExpiryScheduler } =
+      await import('#/plugins/credential-expiry-scheduler.js')
+
+    const server = {
+      db: {},
+      locker: {},
+      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
+      events: { on: vi.fn() }
+    }
+
+    credentialExpiryScheduler.plugin.register(server)
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(server.logger.info).toHaveBeenCalledWith(
+      expect.objectContaining({ credentials: 2 }),
       'Credential expiry sweep completed'
     )
   })

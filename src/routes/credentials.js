@@ -31,29 +31,15 @@ export const credentials = [
           modelSlug: Joi.string()
             .pattern(/^[a-z0-9-]+$/)
             .required(),
-          tier: Joi.string().valid('research', 'team').default('research'),
-          teamId: Joi.string().when('tier', {
-            is: 'team',
-            then: Joi.required(),
-            otherwise: Joi.forbidden()
-          }),
-          // Any registry-shaped name; a team's is the one its deployment is
-          // in, and a research key defaults to the configured research
-          // environment (the service refuses any other).
+          // Only a personal research key is issued by request. A team's
+          // credential is created when its first model in an environment
+          // turns active, so `team` is refused here.
+          tier: Joi.string().valid('research').default('research'),
+          // Any registry-shaped name; a research key defaults to the
+          // configured research environment (the service refuses any other).
           environment: Joi.string()
             .pattern(/^[a-z][a-z0-9]{1,15}$/)
-            .when('tier', {
-              is: 'team',
-              then: Joi.required(),
-              otherwise: Joi.optional()
-            }),
-          // The team tier is OAuth only (a client secret or a federated
-          // credential); research credentials are subscription keys.
-          credentialType: Joi.string().when('tier', {
-            is: 'team',
-            then: Joi.valid('oauth').default('oauth'),
-            otherwise: Joi.forbidden()
-          }),
+            .optional(),
           purpose: Joi.string().trim().max(500).allow('').optional()
         }).unknown(false)
       }
@@ -61,22 +47,12 @@ export const credentials = [
     handler: async (request, h) => {
       const userId = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
-      const { modelSlug, tier, teamId, environment, credentialType, purpose } =
-        request.payload
+      const { modelSlug, environment, purpose } = request.payload
 
       const { credential, secret, replay } = await issueCredential(
         request.db,
         request.locker,
-        {
-          userId,
-          modelSlug,
-          tier,
-          teamId,
-          environment,
-          credentialType,
-          purpose,
-          idempotencyKey
-        }
+        { userId, modelSlug, environment, purpose, idempotencyKey }
       )
 
       const response = h.response({ credential, secret })
