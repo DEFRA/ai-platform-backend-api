@@ -50,3 +50,6 @@ without being asked and add what is missing:
    accepted and nothing is claimed as deployed unless it is.
 4. If nothing needs changing, say "build status checked, no change" in your summary rather than
    skipping the check.
+5. Keep the mirror: every story not fully built in `build-stories.md#status` has a row with the same state in
+   `ai-platform-frontend/docs/plans/remaining.md` "At a glance"; a story you finish moves to `implemented/` there, in
+   its own pull request (see the mirror bullet in the frontend's `.github/copilot-instructions.md`).
