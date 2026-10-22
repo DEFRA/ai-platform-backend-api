@@ -10,34 +10,104 @@ const DEFAULT_API_VERSION_BY_PROFILE = { responses: '2025-03-01-preview' }
 const DEFAULT_API_VERSION = '2024-05-01-preview'
 
 const TEAM_TIER = 'team'
-const UK_REGION_PREFIX = 'uk'
+const RESEARCH_TIER = 'research'
+const GLOBAL_SKU_PREFIX = 'global'
 
-function isInUk(regions) {
+/**
+ * The only regions a model may be deployed in, for every tier: UK South/West,
+ * Sweden Central and EU North/West. The platform has no Global deployments,
+ * so no other region (US, Asia, ...) is ever allowed. Compared
+ * case-insensitively.
+ * @type {readonly string[]}
+ */
+export const ALLOWED_REGIONS = Object.freeze([
+  'uksouth',
+  'ukwest',
+  'swedencentral',
+  'northeurope',
+  'westeurope'
+])
+
+/**
+ * Whether a SKU is a Global deployment type (e.g. `GlobalStandard`,
+ * `GlobalBatch`), whose data may be processed anywhere. Never usable by any
+ * tier.
+ * @param {{name?: string}|null|undefined} sku
+ * @returns {boolean}
+ */
+export function isGlobalSku(sku) {
+  return String(sku?.name ?? '')
+    .toLowerCase()
+    .startsWith(GLOBAL_SKU_PREFIX)
+}
+
+function inAllowedRegions(regions) {
   return (
     Array.isArray(regions) &&
     regions.length > 0 &&
-    regions.every((region) => region.toLowerCase().startsWith(UK_REGION_PREFIX))
+    regions.every((region) =>
+      ALLOWED_REGIONS.includes(String(region).toLowerCase())
+    )
   )
 }
 
 /**
- * The SKU a team's deployment of a model uses (D4): the first one offered to
- * the `team` tier whose regions are all in the UK. A SKU with no `regions`
- * takes the model's. Undefined when the model has none, however the rest of
- * the catalogue describes it.
+ * The one rule for whether a tier can use a SKU of a model (single source of
+ * truth for team and research): the SKU lists the tier, is not Global, and
+ * every region it is offered in (`sku.regions`, else the model's) is in
+ * `ALLOWED_REGIONS`, with at least one.
+ * @param {{skus?: Array<{name: string, tiers?: string[], regions?: string[]}>, regions?: string[]}|null|undefined} model
+ * @param {string} tier
+ * @returns {object|undefined} the first usable SKU
+ */
+function usableSkuOf(model, tier) {
+  return model?.skus?.find(
+    (sku) =>
+      sku.tiers?.includes(tier) &&
+      !isGlobalSku(sku) &&
+      inAllowedRegions(sku.regions ?? model.regions)
+  )
+}
+
+/**
+ * The SKU a team's deployment of a model uses: the first one offered to the
+ * `team` tier that is not Global and is only in `ALLOWED_REGIONS`. A SKU with
+ * no `regions` takes the model's. Undefined when the model has none, however
+ * the rest of the catalogue describes it.
  * @param {{skus?: Array<{name: string, tiers?: string[], regions?: string[]}>, regions?: string[]}|null|undefined} model
  * @returns {object|undefined}
  */
 export function teamSkuOf(model) {
-  return model?.skus?.find(
-    (sku) =>
-      sku.tiers?.includes(TEAM_TIER) && isInUk(sku.regions ?? model.regions)
+  return usableSkuOf(model, TEAM_TIER)
+}
+
+/**
+ * The SKU a research (on-your-own) credential for a model uses: as
+ * `teamSkuOf`, for the `research` tier.
+ * @param {{skus?: Array<{name: string, tiers?: string[], regions?: string[]}>, regions?: string[]}|null|undefined} model
+ * @returns {object|undefined}
+ */
+export function researchSkuOf(model) {
+  return usableSkuOf(model, RESEARCH_TIER)
+}
+
+/**
+ * Whether research can have a model: it is eligible, lists `research` in its
+ * `tiers` and has a usable research SKU (`researchSkuOf`).
+ * @param {object|null|undefined} model
+ * @returns {boolean}
+ */
+export function isResearchEligible(model) {
+  return (
+    Boolean(model?.eligible) &&
+    Boolean(model.tiers?.includes(RESEARCH_TIER)) &&
+    researchSkuOf(model) !== undefined
   )
 }
 
 /**
- * The one rule for whether a team can have a model (D4): it is eligible, has
- * a UK team SKU (`teamSkuOf`) and, when an environment is named, lists that
+ * The one rule for whether a team can have a model: it is eligible, has a
+ * usable team SKU (`teamSkuOf`) and, when an environment is named, lists that
  * environment in its catalogue `environments`.
  * @param {object|null|undefined} model
  * @param {string} [environment]
@@ -63,6 +133,18 @@ export async function listTeamModels(db, { provider, environment } = {}) {
   const models = await listModels(db, { provider })
 
   return models.filter((model) => isTeamEligible(model, environment))
+}
+
+/**
+ * Lists the models research can have, optionally for one provider. The plain
+ * model list is unchanged, so a page can still say why a model is not offered.
+ * @param {import('mongodb').Db} db
+ * @param {{provider?: string}} [filters]
+ */
+export async function listResearchModels(db, { provider } = {}) {
+  const models = await listModels(db, { provider, tier: RESEARCH_TIER })
+
+  return models.filter(isResearchEligible)
 }
 
 function normalizeOffering(offering) {

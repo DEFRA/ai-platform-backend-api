@@ -1,10 +1,12 @@
 describe('#models routes', () => {
   let server
+  let invalidateModelsCache
 
   beforeAll(async () => {
     // Dynamic import needed due to config being updated by vitest-mongodb
     const { createServer } = await import('#/server.js')
 
+    ;({ invalidateModelsCache } = await import('#/services/models-service.js'))
     server = await createServer()
     await server.initialize()
   })
@@ -69,7 +71,7 @@ describe('#models routes', () => {
     expect(model.eligible).toBe(false)
   })
 
-  describe('tier=team (D4)', () => {
+  describe('tier=team', () => {
     async function slugsOf(query) {
       const { result, statusCode } = await server.inject({
         method: 'GET',
@@ -79,12 +81,39 @@ describe('#models routes', () => {
       return { statusCode, slugs: result.items?.map((item) => item.slug) }
     }
 
-    test('offers GPT-4o and leaves out GPT-4.1 nano, whose team SKU is only in swedencentral', async () => {
+    test('offers GPT-4o and GPT-4.1 nano, whose team SKU is in swedencentral', async () => {
       const { statusCode, slugs } = await slugsOf('tier=team')
 
       expect(statusCode).toBe(200)
       expect(slugs).toContain('gpt-4o')
-      expect(slugs).not.toContain('gpt-4-1-nano')
+      expect(slugs).toContain('gpt-4-1-nano')
+    })
+
+    test('leaves out a model whose only team SKU is in an unallowed region or Global', async () => {
+      const gpt4o = await server.db
+        .collection('models')
+        .findOne({ slug: 'gpt-4o' }, { projection: { _id: 0 } })
+
+      await server.db.collection('models').insertMany([
+        {
+          ...gpt4o,
+          slug: 'team-east-us-only',
+          skus: [{ name: 'Standard', tiers: ['team'], regions: ['eastus'] }]
+        },
+        {
+          ...gpt4o,
+          slug: 'team-global-only',
+          skus: [
+            { name: 'GlobalStandard', tiers: ['team'], regions: ['uksouth'] }
+          ]
+        }
+      ])
+      invalidateModelsCache()
+
+      const { slugs } = await slugsOf('tier=team')
+
+      expect(slugs).not.toContain('team-east-us-only')
+      expect(slugs).not.toContain('team-global-only')
     })
 
     test('leaves out models without a team SKU and ineligible ones', async () => {
@@ -115,11 +144,71 @@ describe('#models routes', () => {
       ).toBe(400)
     })
 
-    test('leaves the unfiltered list unchanged, so GPT-4.1 nano can be explained', async () => {
+    test('leaves the unfiltered list unchanged, so a model that is not offered can be explained', async () => {
       const { slugs } = await slugsOf('')
 
       expect(slugs).toContain('gpt-4-1-nano')
       expect(slugs).toContain('gpt-4o')
+    })
+  })
+
+  describe('tier=research', () => {
+    async function researchSlugs(query = 'tier=research') {
+      const { result, statusCode } = await server.inject({
+        method: 'GET',
+        url: `/v1/models?${query}`
+      })
+
+      return { statusCode, slugs: result.items?.map((item) => item.slug) }
+    }
+
+    test('offers models with an allowed research SKU, and not ineligible ones', async () => {
+      const { statusCode, slugs } = await researchSlugs()
+
+      expect(statusCode).toBe(200)
+      expect(slugs).toEqual(
+        expect.arrayContaining(['gpt-4o', 'gpt-5-nano', 'gpt-4-1-nano'])
+      )
+      expect(slugs).not.toContain('text-embedding-ada-002')
+    })
+
+    test('leaves out a GlobalStandard-only model, but keeps it in the plain list', async () => {
+      const gpt4o = await server.db
+        .collection('models')
+        .findOne({ slug: 'gpt-4o' }, { projection: { _id: 0 } })
+
+      await server.db.collection('models').insertMany([
+        {
+          ...gpt4o,
+          slug: 'research-global-only',
+          skus: [
+            {
+              name: 'GlobalStandard',
+              tiers: ['research'],
+              regions: ['uksouth']
+            }
+          ]
+        },
+        {
+          ...gpt4o,
+          slug: 'research-east-us-only',
+          skus: [{ name: 'Standard', tiers: ['research'], regions: ['eastus'] }]
+        }
+      ])
+      invalidateModelsCache()
+
+      const research = await researchSlugs()
+      const plain = await researchSlugs('includeIneligible=true')
+
+      expect(research.slugs).not.toContain('research-global-only')
+      expect(research.slugs).not.toContain('research-east-us-only')
+      expect(plain.slugs).toContain('research-global-only')
+    })
+
+    test('filters by provider as well', async () => {
+      const { slugs } = await researchSlugs('tier=research&provider=nobody')
+
+      expect(slugs).toEqual([])
     })
   })
 

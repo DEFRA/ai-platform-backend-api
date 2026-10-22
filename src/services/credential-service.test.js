@@ -192,6 +192,8 @@ describe('#credential-service vault wiring', () => {
       slug: 'other-gateway-not-enabled-model',
       eligible: true,
       tiers: ['research'],
+      regions: ['uksouth'],
+      skus: [{ name: 'Standard', tiers: ['research'] }],
       gateway: 'aws-apigw'
     })
     const userId = `gateway-off-user-${randomUUID()}`

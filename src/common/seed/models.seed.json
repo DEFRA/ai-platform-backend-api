@@ -11,19 +11,13 @@
     "apiProfile": "chat-completions",
     "apiVersion": "2024-05-01-preview",
     "endpoint": "https://mock-gateway.ai-platform.defra.gov.uk/openai/gpt-4-1-nano",
-    "region": "uksouth",
-    "regions": ["uksouth"],
-    "dataZone": "uk",
+    "region": "swedencentral",
+    "regions": ["swedencentral"],
+    "dataZone": "eu",
     "skus": [
       {
-        "name": "GlobalStandard",
-        "tiers": ["research"],
-        "regions": ["uksouth"],
-        "capacity": 250
-      },
-      {
         "name": "DataZoneStandard",
-        "tiers": ["team"],
+        "tiers": ["research", "team"],
         "regions": ["swedencentral"],
         "capacity": 250
       }
@@ -75,7 +69,8 @@
     "dataZone": "uk",
     "skus": [
       {
-        "name": "GlobalStandard",
+        "name": "Standard",
+        "tiers": ["research"],
         "capacity": 250
       }
     ],
@@ -126,7 +121,8 @@
     "dataZone": "uk",
     "skus": [
       {
-        "name": "GlobalStandard",
+        "name": "Standard",
+        "tiers": ["research"],
         "capacity": 250
       }
     ],
@@ -177,7 +173,7 @@
     "dataZone": "uk",
     "skus": [
       {
-        "name": "GlobalStandard",
+        "name": "Standard",
         "tiers": ["research", "team"],
         "regions": ["uksouth"],
         "capacity": 250
@@ -281,7 +277,8 @@
     "dataZone": "uk",
     "skus": [
       {
-        "name": "GlobalStandard",
+        "name": "Standard",
+        "tiers": ["research"],
         "capacity": 15000
       }
     ],
@@ -337,7 +334,7 @@
     "dataZone": "uk",
     "skus": [
       {
-        "name": "GlobalStandard",
+        "name": "Standard",
         "tiers": ["research", "team"],
         "regions": ["uksouth"],
         "capacity": 250
@@ -395,7 +392,8 @@
     "dataZone": "uk",
     "skus": [
       {
-        "name": "GlobalStandard",
+        "name": "Standard",
+        "tiers": ["research"],
         "capacity": 14875
       }
     ],

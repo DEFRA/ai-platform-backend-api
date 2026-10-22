@@ -324,9 +324,13 @@ and the rest queued, so one that fails never holds back the others. The request 
 front (a model a team cannot have in that environment is refused as `400 model-not-eligible`, and one the team already
 has as `409 deployment-exists` with `existing`; a model the team removed may be asked for again) and
 idempotent by `Idempotency-Key`: a replay returns its entries and finishes any a crashed attempt did
-not reach. A team can have a model when it is eligible, has a `team` SKU whose regions (else the
-model's) are all in the UK, and lists the environment ([`teamSkuOf` and `isTeamEligible`](src/services/catalogue-service.js));
-`GET /v1/models?tier=team` (optionally `&environment=`) lists only those, and the plain list is unchanged.
+not reach. One rule covers every tier: **no Global SKU (`name` starting `Global`), UK or EU regions
+only** (`ALLOWED_REGIONS`: UK South/West, Sweden Central, North/West Europe). A team can have a model
+when it is eligible, has a `team` SKU under that rule (regions from the SKU, else the model's) and lists
+the environment ([`teamSkuOf` and `isTeamEligible`](src/services/catalogue-service.js));
+research (on-your-own) credentials need the same of a `research` SKU (`researchSkuOf`, `isResearchEligible`),
+else `403 model-not-eligible`. `GET /v1/models?tier=team` (optionally `&environment=`) and `?tier=research`
+list only those; the plain list is unchanged.
 Each deployment's `progressSteps` are `{label, state, at}`: the third label names the model ("Setting up
 GPT-4o in Azure"), and `at` is when a done step finished or the current one started (ISO time, from
 the entry's `statusTimes`), null for one not reached.

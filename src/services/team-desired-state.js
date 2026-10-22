@@ -39,8 +39,9 @@ function teamFields(team) {
 }
 
 // The team tier's SKU and starting capacity for one catalogue model. A model
-// a team cannot have (the catalogue service's one rule: eligible, a UK team
-// SKU, listed for this environment) is refused as the request is.
+// a team cannot have (the catalogue service's one rule: eligible, a non-Global
+// team SKU in UK or EU regions, listed for this environment) is refused as the
+// request is.
 function deploymentOf(model, environment) {
   if (!isTeamEligible(model, environment)) {
     throw boomWithCode(
