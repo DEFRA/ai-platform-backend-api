@@ -397,6 +397,30 @@ describe('team-deployment-stall', () => {
       })
     })
 
+    test('a stale snapshot cannot report a different attempt than the one stored', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const snapshot = entryAt('deploying', '2020-01-01T00:00:00Z')
+      const doc = await insertDocument({
+        ...snapshot,
+        gitops: {
+          ...snapshot.gitops,
+          applyRetry: {
+            claimedAt: new Date().toISOString(),
+            dispatchedAt: new Date().toISOString()
+          }
+        }
+      })
+
+      const raised = await stall.reportStall(db, doc, snapshot, {
+        stallWarnAfterMs: AFTER_MS,
+        logger
+      })
+
+      expect(raised).toBe(false)
+      expect(logger.warn).not.toHaveBeenCalled()
+      expect((await stored(doc)).gitops.stalled).toBeUndefined()
+    })
+
     test('a stale snapshot cannot replace a stall whose audit is still pending', async () => {
       const logger = { warn: vi.fn(), error: vi.fn() }
       const pending = {

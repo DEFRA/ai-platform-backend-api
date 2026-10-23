@@ -18,12 +18,15 @@ function waitingSince(entry) {
     entry.gitops?.applyRetry?.claimedAt,
     entry.gitops?.applyRetry?.dispatchedAt
   ].filter((time) => Number.isFinite(Date.parse(time)))
+  const latest = Math.max(...times.map((time) => Date.parse(time)))
 
-  return times.length > 0
-    ? times.reduce((latest, time) =>
-        Date.parse(time) > Date.parse(latest) ? time : latest
-      )
-    : null
+  return times.find((time) => Date.parse(time) === latest) ?? null
+}
+
+function reportedAlready(entry, since) {
+  const stalled = entry.gitops?.stalled
+
+  return stalled?.status === entry.status && stalled.since === since
 }
 
 /**
@@ -36,14 +39,13 @@ function waitingSince(entry) {
  */
 export function looksStalled(entry, afterMs, now = Date.now()) {
   const since = waitingSince(entry)
-  const stalled = entry.gitops?.stalled
 
   return (
     afterMs > 0 &&
     WAITING_ON_APPLY.has(entry.status) &&
     Boolean(entry.gitops) &&
     since !== null &&
-    !(stalled?.status === entry.status && stalled.since === since) &&
+    !reportedAlready(entry, since) &&
     now - Date.parse(since) >= afterMs
   )
 }
@@ -128,6 +130,11 @@ async function raiseStall(db, doc, entry, settings) {
     entry,
     {
       status: entry.status,
+      // The attempt this snapshot describes: a retry dispatched since changes
+      // these, so an outdated snapshot never reports a different attempt.
+      'gitops.applyRetry.claimedAt': entry.gitops.applyRetry?.claimedAt ?? null,
+      'gitops.applyRetry.dispatchedAt':
+        entry.gitops.applyRetry?.dispatchedAt ?? null,
       // Not the stall already recorded for this very wait.
       $or: [
         { 'gitops.stalled.status': { $ne: entry.status } },

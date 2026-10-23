@@ -196,6 +196,38 @@ describe('team-deployment-gitops', () => {
       expect((await storedEntry(entry.id)).gitops.stalled.audited).toBe(true)
     })
 
+    test('does not report the fresh D14 retry of an overdue deployment as stalled', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({
+        status: 'deploying',
+        statusTimes: { deploying: anHourAgo() },
+        gitops: { mergeSha: 'merge-sha' }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(failedApply(entry))
+      orchestrator.requestApply.mockResolvedValue({ runId: 2002, runUrl: null })
+
+      await refresh(orchestrator, doc, entry, {
+        logger,
+        stallWarnAfterMs: 60000
+      })
+
+      expect(orchestrator.requestApply).toHaveBeenCalledTimes(1)
+      expect((await storedEntry(entry.id)).gitops.stalled).toBeUndefined()
+      expect(
+        logger.warn.mock.calls.filter(([, message]) =>
+          message.includes('looks stalled')
+        )
+      ).toHaveLength(0)
+      expect(
+        (await auditEvents(entry)).filter(
+          (event) => event.action === 'teamDeployment.stalled'
+        )
+      ).toHaveLength(0)
+    })
+
     test('says nothing about a deployment still inside the deadline', async () => {
       const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
       const entry = githubEntry({
