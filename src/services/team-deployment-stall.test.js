@@ -152,6 +152,48 @@ describe('team-deployment-stall', () => {
       })
     })
 
+    test('keeps the warning and retries the audit event when recording it fails', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const entry = entryAt('deploying', '2020-01-01T00:00:00Z')
+      const doc = await insertDocument(entry)
+      const settings = { stallWarnAfterMs: AFTER_MS, logger }
+      let failed = false
+      const flakyDb = {
+        collection(name) {
+          if (name !== 'auditEvents') {
+            return db.collection(name)
+          }
+
+          return {
+            async insertOne(event) {
+              if (!failed) {
+                failed = true
+                throw new Error('audit store unavailable')
+              }
+
+              return db.collection(name).insertOne(event)
+            }
+          }
+        }
+      }
+      const eventsFor = () =>
+        db.collection('auditEvents').find({ resourceId: entry.id }).toArray()
+
+      expect(await stall.reportStall(flakyDb, doc, entry, settings)).toBe(true)
+      expect(logger.warn).toHaveBeenCalledTimes(1)
+      expect(logger.error).toHaveBeenCalledTimes(1)
+      expect(await eventsFor()).toHaveLength(0)
+      expect((await stored(doc)).gitops.stalled.audited).toBe(false)
+
+      const reloaded = await stored(doc)
+
+      expect(await stall.reportStall(db, doc, reloaded, settings)).toBe(false)
+      expect(await stall.reportStall(db, doc, reloaded, settings)).toBe(false)
+      expect(logger.warn).toHaveBeenCalledTimes(1)
+      expect(await eventsFor()).toHaveLength(1)
+      expect((await stored(doc)).gitops.stalled.audited).toBe(true)
+    })
+
     test('does nothing for a deployment inside the deadline', async () => {
       const logger = { warn: vi.fn() }
       const entry = entryAt('deploying', new Date().toISOString())

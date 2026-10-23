@@ -835,6 +835,37 @@ describe('#createGithubTenantOrchestrator', () => {
       )
     })
 
+    test('does not warn when a newer apply does not name the operation but an older one does', async () => {
+      const logger = { warn: vi.fn() }
+
+      replyWithDeployments([
+        github.deployment({
+          id: 502,
+          sha: 'later-sha',
+          created_at: '2026-10-13T11:00:00Z'
+        }),
+        github.deployment({ id: 501 })
+      ])
+      nock(GITHUB_API)
+        .get(`${TENANTS}/compare/merge-sha...later-sha`)
+        .query({ per_page: 1 })
+        .reply(200, github.comparison('ahead'))
+      replyWithStatus(
+        502,
+        github.deploymentStatus({ state: 'success', runId: 2003 })
+      )
+      replyWithStatus(501, github.deploymentStatus({ state: 'inactive' }))
+      replyWithRunReport(2003, github.runReport({ operations: [] }))
+      replyWithRunReport(2002, github.runReport())
+
+      const status = await createOrchestrator({ logger }).getDeploymentStatus(
+        mergedEntry()
+      )
+
+      expect(status).toMatchObject({ status: 'deployed', applyRunId: 2002 })
+      expect(logger.warn).not.toHaveBeenCalled()
+    })
+
     test('does not warn when the report names the operation', async () => {
       const logger = { warn: vi.fn() }
 

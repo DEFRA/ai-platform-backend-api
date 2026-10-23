@@ -333,7 +333,7 @@ function warnUnmatchedApply({ logger, warned }, operationId, run, report) {
     remember(warned, key, true)
     logger.warn(
       { operationId, applyRunId: run.id, reason },
-      'A successful apply could not be tied to the deployment, so it stays deploying'
+      'A successful apply could not be tied to the deployment'
     )
   }
 }
@@ -344,6 +344,7 @@ function warnUnmatchedApply({ logger, warned }, operationId, run, report) {
 async function deployedState(reads, entry, observed, links) {
   const { operationId, environment, gitops } = entry
   const slug = slugOf(gitops.path)
+  const unmatched = []
 
   for (const { latest, run } of observed) {
     if (SUCCEEDED_DEPLOYMENT_STATES.has(latest?.state) && run) {
@@ -362,8 +363,14 @@ async function deployedState(reads, entry, observed, links) {
         }
       }
 
-      warnUnmatchedApply(reads, operationId, run, report)
+      unmatched.push({ run, report })
     }
+  }
+
+  // Only once no apply matched: a newer apply of another team's change is
+  // expected not to name this operation.
+  for (const { run, report } of unmatched) {
+    warnUnmatchedApply(reads, operationId, run, report)
   }
 
   return null

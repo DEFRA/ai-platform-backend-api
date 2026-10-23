@@ -28,12 +28,69 @@ export function looksStalled(entry, afterMs, now = Date.now()) {
   )
 }
 
+// Atomically sets fields on the entry while it still has the status read and
+// `matching` holds, so overlapping polls act once. Whether this call won.
+async function claim(db, doc, entry, matching, fields) {
+  const { matchedCount } = await db.collection('teamDeployments').updateOne(
+    {
+      _id: doc._id,
+      deployments: {
+        $elemMatch: { id: entry.id, status: entry.status, ...matching }
+      }
+    },
+    { $set: entryFields(fields) }
+  )
+
+  return matchedCount === 1
+}
+
+// A stall warned about whose audit event is still owed: the insert failed.
+function auditOwed(entry) {
+  const stalled = entry.gitops?.stalled
+
+  return stalled?.status === entry.status && stalled.audited === false
+}
+
+// Delivers the audit event of a stall once. A failed insert never fails the
+// poll or hides the warning: it is logged and retried on a later poll.
+async function deliverAudit(db, doc, entry, since, logger) {
+  const owed = { 'gitops.stalled.audited': false }
+
+  if (
+    !(await claim(db, doc, entry, owed, { 'gitops.stalled.audited': true }))
+  ) {
+    return
+  }
+
+  try {
+    await auditDeployment(db, entry, {
+      action: 'teamDeployment.stalled',
+      outcome: 'failure',
+      code: 'stalled',
+      reason: `${entry.status} since ${since}`
+    })
+  } catch {
+    logger?.error(
+      { operationId: entry.operationId, status: entry.status },
+      'The stalled deployment audit event could not be recorded, retrying on a later poll'
+    )
+    await claim(
+      db,
+      doc,
+      entry,
+      { 'gitops.stalled.audited': true },
+      { 'gitops.stalled.audited': false }
+    ).catch(() => false)
+  }
+}
+
 /**
  * Warns, and audits, once per status when a deployment has sat at `merged`
  * or `deploying` for too long. It records `gitops.stalled` atomically while
- * the entry still has the status read, so overlapping polls warn once, and
- * never changes the deployment's status. Logs carry the operation ID,
- * status, run ID and the time only.
+ * the entry still has the status read, so overlapping polls warn once, warns
+ * before it audits, and retries an audit event that failed to record without
+ * warning again. It never changes the deployment's status or fails the
+ * poll. Logs carry the operation ID, status, run ID and the time only.
  * @param {import('mongodb').Db} db
  * @param {{_id: import('mongodb').ObjectId, environment: string}} doc
  * @param {{id: string, operationId: string, status: string, statusTimes?: Record<string, string>, gitops?: object|null}} entry
@@ -43,39 +100,28 @@ export function looksStalled(entry, afterMs, now = Date.now()) {
 export async function reportStall(db, doc, entry, settings) {
   const { stallWarnAfterMs, logger } = settings
 
+  if (auditOwed(entry)) {
+    await deliverAudit(db, doc, entry, entry.gitops.stalled.since, logger)
+
+    return false
+  }
+
   if (!looksStalled(entry, stallWarnAfterMs)) {
     return false
   }
 
   const since = entry.statusTimes[entry.status]
-  const { matchedCount } = await db.collection('teamDeployments').updateOne(
-    {
-      _id: doc._id,
-      deployments: {
-        $elemMatch: {
-          id: entry.id,
-          status: entry.status,
-          'gitops.stalled.status': { $ne: entry.status }
-        }
-      }
-    },
-    {
-      $set: entryFields({
-        'gitops.stalled': { status: entry.status, since }
-      })
-    }
+  const warned = await claim(
+    db,
+    doc,
+    entry,
+    { 'gitops.stalled.status': { $ne: entry.status } },
+    { 'gitops.stalled': { status: entry.status, since, audited: false } }
   )
 
-  if (matchedCount === 0) {
+  if (!warned) {
     return false
   }
-
-  await auditDeployment(db, entry, {
-    action: 'teamDeployment.stalled',
-    outcome: 'failure',
-    code: 'stalled',
-    reason: `${entry.status} since ${since}`
-  })
 
   logger?.warn(
     {
@@ -87,6 +133,8 @@ export async function reportStall(db, doc, entry, settings) {
     },
     'Team deployment looks stalled: still waiting on the apply, so it needs a platform engineer to look at it'
   )
+
+  await deliverAudit(db, doc, entry, since, logger)
 
   return true
 }
