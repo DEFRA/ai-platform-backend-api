@@ -322,19 +322,24 @@ async function runReport({ reader, client, repo, reports }, run, environment) {
   return report
 }
 
-// A successful apply that cannot be tied to the operation leaves it
-// deploying, which is otherwise silent. Warns once per operation, run and
-// reason, not on every poll.
-function warnUnmatchedApply({ logger, warned }, operationId, run, report) {
-  const reason = report ? 'operation-not-in-report' : 'report-unavailable'
-  const key = `${operationId}:${run.id}:${reason}`
+// Successful applies that cannot be tied to the operation leave it
+// deploying, which is otherwise silent. One warning per operation and
+// reason, naming every such run, so a long-stalled operation neither repeats
+// itself on each poll nor fills the bounded `warned` memory with run keys.
+function warnUnmatchedApplies({ logger, warned }, operationId, unmatched) {
+  for (const reason of ['operation-not-in-report', 'report-unavailable']) {
+    const applyRunIds = unmatched
+      .filter((candidate) => candidate.reason === reason)
+      .map(({ run }) => run.id)
+    const key = `${operationId}:${reason}`
 
-  if (!warned.has(key)) {
-    remember(warned, key, true)
-    logger.warn(
-      { operationId, applyRunId: run.id, reason },
-      'A successful apply could not be tied to the deployment'
-    )
+    if (applyRunIds.length > 0 && !warned.has(key)) {
+      remember(warned, key, true)
+      logger.warn(
+        { operationId, applyRunIds, reason },
+        'A successful apply could not be tied to the deployment'
+      )
+    }
   }
 }
 
@@ -363,15 +368,16 @@ async function deployedState(reads, entry, observed, links) {
         }
       }
 
-      unmatched.push({ run, report })
+      unmatched.push({
+        run,
+        reason: report ? 'operation-not-in-report' : 'report-unavailable'
+      })
     }
   }
 
   // Only once no apply matched: a newer apply of another team's change is
   // expected not to name this operation.
-  for (const { run, report } of unmatched) {
-    warnUnmatchedApply(reads, operationId, run, report)
-  }
+  warnUnmatchedApplies(reads, operationId, unmatched)
 
   return null
 }

@@ -194,6 +194,72 @@ describe('team-deployment-stall', () => {
       expect((await stored(doc)).gitops.stalled.audited).toBe(true)
     })
 
+    test('delivers an owed audit event after the deployment has moved on to another status', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const entry = entryAt('deploying', '2020-01-01T00:00:00Z')
+      const doc = await insertDocument(entry)
+      const settings = { stallWarnAfterMs: AFTER_MS, logger }
+      const failingAudit = {
+        collection(name) {
+          return name === 'auditEvents'
+            ? {
+                insertOne: async () => {
+                  throw new Error('audit store unavailable')
+                }
+              }
+            : db.collection(name)
+        }
+      }
+
+      await stall.reportStall(failingAudit, doc, entry, settings)
+      await db
+        .collection('teamDeployments')
+        .updateOne(
+          { _id: doc._id, 'deployments.id': entry.id },
+          { $set: { 'deployments.$.status': 'active' } }
+        )
+
+      const moved = await stored(doc)
+
+      expect(moved.status).toBe('active')
+      expect(await stall.reportStall(db, doc, moved, settings)).toBe(false)
+
+      const events = await db
+        .collection('auditEvents')
+        .find({ resourceId: entry.id })
+        .toArray()
+
+      expect(events).toHaveLength(1)
+      expect(events[0].reason).toBe('deploying since 2020-01-01T00:00:00Z')
+      expect(logger.warn).toHaveBeenCalledTimes(1)
+    })
+
+    test('logs and carries on when its own database write fails', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const entry = entryAt('deploying', '2020-01-01T00:00:00Z')
+      const doc = await insertDocument(entry)
+      const failingWrites = {
+        collection() {
+          return {
+            updateOne: async () => {
+              throw new Error('mongo unavailable')
+            }
+          }
+        }
+      }
+
+      await expect(
+        stall.reportStall(failingWrites, doc, entry, {
+          stallWarnAfterMs: AFTER_MS,
+          logger
+        })
+      ).resolves.toBe(false)
+      expect(logger.warn).toHaveBeenCalledWith(
+        { operationId: entry.operationId, message: 'mongo unavailable' },
+        expect.stringContaining('the deployment poll carries on')
+      )
+    })
+
     test('does nothing for a deployment inside the deadline', async () => {
       const logger = { warn: vi.fn() }
       const entry = entryAt('deploying', new Date().toISOString())

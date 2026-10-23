@@ -167,6 +167,35 @@ describe('team-deployment-gitops', () => {
       ).toHaveLength(1)
     })
 
+    test('delivers a stall audit event still owed once the deployment is active', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+      const entry = githubEntry({
+        status: 'active',
+        statusTimes: { active: justNow() },
+        gitops: {
+          stalled: {
+            status: 'deploying',
+            since: '2020-01-01T00:00:00Z',
+            audited: false
+          }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      await refresh(fakeOrchestrator(), doc, entry, {
+        logger,
+        stallWarnAfterMs: 60000
+      })
+
+      const events = (await auditEvents(entry)).filter(
+        (event) => event.action === 'teamDeployment.stalled'
+      )
+
+      expect(events).toHaveLength(1)
+      expect(events[0].reason).toBe('deploying since 2020-01-01T00:00:00Z')
+      expect((await storedEntry(entry.id)).gitops.stalled.audited).toBe(true)
+    })
+
     test('says nothing about a deployment still inside the deadline', async () => {
       const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
       const entry = githubEntry({

@@ -637,7 +637,7 @@ function isInProgress(entry) {
   )
 }
 
-async function refreshOwnStatus(db, doc, entry, settings) {
+async function refreshStatusOf(db, doc, entry, settings) {
   if (entry.status === 'active') {
     await retryTeamCredential(db, doc, settings, entry)
   }
@@ -656,13 +656,15 @@ async function refreshOwnStatus(db, doc, entry, settings) {
     return entry
   }
 
-  return refreshWithStallCheck(db, doc, entry, settings)
+  return refreshOperation(db, doc, entry, settings)
 }
 
-// Polls the entry's own operation, then warns once if it has sat waiting on
-// the apply for too long - including when the poll itself keeps failing.
-async function refreshWithStallCheck(db, doc, entry, settings) {
-  const refreshed = await refreshOperation(db, doc, entry, settings)
+// Refreshes the entry, then reports a stall if it has sat waiting on the
+// apply for too long - including when the poll itself keeps failing - and
+// delivers any stall audit event still owed after the status moved on. The
+// report is diagnostics only and never fails the refresh.
+async function refreshOwnStatus(db, doc, entry, settings) {
+  const refreshed = await refreshStatusOf(db, doc, entry, settings)
 
   await reportStall(db, doc, refreshed, settings)
 

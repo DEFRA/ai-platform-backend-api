@@ -807,10 +807,44 @@ describe('#createGithubTenantOrchestrator', () => {
       expect(logger.warn).toHaveBeenCalledWith(
         {
           operationId: OPERATION_ID,
-          applyRunId: 2002,
+          applyRunIds: [2002],
           reason: 'operation-not-in-report'
         },
         expect.stringContaining('could not be tied to the deployment')
+      )
+    })
+
+    test('names every unmatched successful run in one warning, however many there are', async () => {
+      const logger = { warn: vi.fn() }
+      const orchestrator = createOrchestrator({ logger })
+
+      for (let poll = 0; poll < 2; poll += 1) {
+        replyWithDeployments([
+          github.deployment({
+            id: 502,
+            sha: 'later-sha',
+            created_at: '2026-10-13T11:00:00Z'
+          }),
+          github.deployment({ id: 501 })
+        ])
+        nock(GITHUB_API)
+          .get(`${TENANTS}/compare/merge-sha...later-sha`)
+          .query({ per_page: 1 })
+          .reply(200, github.comparison('ahead'))
+        replyWithStatus(
+          502,
+          github.deploymentStatus({ state: 'success', runId: 2003 })
+        )
+        replyWithStatus(501, github.deploymentStatus({ state: 'inactive' }))
+        replyWithRunReport(2003, github.runReport({ operations: [] }))
+        replyWithRunReport(2002, github.runReport({ operations: [] }))
+        await orchestrator.getDeploymentStatus(mergedEntry())
+      }
+
+      expect(logger.warn).toHaveBeenCalledTimes(1)
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ applyRunIds: [2003, 2002] }),
+        expect.any(String)
       )
     })
 

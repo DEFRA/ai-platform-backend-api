@@ -28,15 +28,13 @@ export function looksStalled(entry, afterMs, now = Date.now()) {
   )
 }
 
-// Atomically sets fields on the entry while it still has the status read and
-// `matching` holds, so overlapping polls act once. Whether this call won.
+// Atomically sets fields on the entry while `matching` holds, so overlapping
+// polls act once. Whether this call won.
 async function claim(db, doc, entry, matching, fields) {
   const { matchedCount } = await db.collection('teamDeployments').updateOne(
     {
       _id: doc._id,
-      deployments: {
-        $elemMatch: { id: entry.id, status: entry.status, ...matching }
-      }
+      deployments: { $elemMatch: { id: entry.id, ...matching } }
     },
     { $set: entryFields(fields) }
   )
@@ -45,15 +43,15 @@ async function claim(db, doc, entry, matching, fields) {
 }
 
 // A stall warned about whose audit event is still owed: the insert failed.
+// Owed whatever the deployment's status is by now.
 function auditOwed(entry) {
-  const stalled = entry.gitops?.stalled
-
-  return stalled?.status === entry.status && stalled.audited === false
+  return entry.gitops?.stalled?.audited === false
 }
 
-// Delivers the audit event of a stall once. A failed insert never fails the
-// poll or hides the warning: it is logged and retried on a later poll.
-async function deliverAudit(db, doc, entry, since, logger) {
+// Delivers the audit event of a stall once, using the status and time saved
+// with the stall. A failed insert is logged and retried on a later poll.
+async function deliverAudit(db, doc, entry, logger) {
+  const { status, since } = entry.gitops.stalled
   const owed = { 'gitops.stalled.audited': false }
 
   if (
@@ -67,11 +65,11 @@ async function deliverAudit(db, doc, entry, since, logger) {
       action: 'teamDeployment.stalled',
       outcome: 'failure',
       code: 'stalled',
-      reason: `${entry.status} since ${since}`
+      reason: `${status} since ${since}`
     })
   } catch {
     logger?.error(
-      { operationId: entry.operationId, status: entry.status },
+      { operationId: entry.operationId, status },
       'The stalled deployment audit event could not be recorded, retrying on a later poll'
     )
     await claim(
@@ -84,24 +82,11 @@ async function deliverAudit(db, doc, entry, since, logger) {
   }
 }
 
-/**
- * Warns, and audits, once per status when a deployment has sat at `merged`
- * or `deploying` for too long. It records `gitops.stalled` atomically while
- * the entry still has the status read, so overlapping polls warn once, warns
- * before it audits, and retries an audit event that failed to record without
- * warning again. It never changes the deployment's status or fails the
- * poll. Logs carry the operation ID, status, run ID and the time only.
- * @param {import('mongodb').Db} db
- * @param {{_id: import('mongodb').ObjectId, environment: string}} doc
- * @param {{id: string, operationId: string, status: string, statusTimes?: Record<string, string>, gitops?: object|null}} entry
- * @param {{stallWarnAfterMs: number, logger?: import('pino').Logger}} settings
- * @returns {Promise<boolean>} Whether this call raised the warning.
- */
-export async function reportStall(db, doc, entry, settings) {
+async function raiseStall(db, doc, entry, settings) {
   const { stallWarnAfterMs, logger } = settings
 
   if (auditOwed(entry)) {
-    await deliverAudit(db, doc, entry, entry.gitops.stalled.since, logger)
+    await deliverAudit(db, doc, entry, logger)
 
     return false
   }
@@ -115,7 +100,10 @@ export async function reportStall(db, doc, entry, settings) {
     db,
     doc,
     entry,
-    { 'gitops.stalled.status': { $ne: entry.status } },
+    {
+      status: entry.status,
+      'gitops.stalled.status': { $ne: entry.status }
+    },
     { 'gitops.stalled': { status: entry.status, since, audited: false } }
   )
 
@@ -134,7 +122,43 @@ export async function reportStall(db, doc, entry, settings) {
     'Team deployment looks stalled: still waiting on the apply, so it needs a platform engineer to look at it'
   )
 
-  await deliverAudit(db, doc, entry, since, logger)
+  await deliverAudit(
+    db,
+    doc,
+    {
+      ...entry,
+      gitops: { ...entry.gitops, stalled: { status: entry.status, since } }
+    },
+    logger
+  )
 
   return true
+}
+
+/**
+ * Warns, and audits, once per status when a deployment has sat at `merged`
+ * or `deploying` for too long. It records `gitops.stalled` atomically while
+ * the entry still has the status read, so overlapping polls warn once, warns
+ * before it audits, and retries an audit event that failed to record - at
+ * any later status - without warning again. This is diagnostics only: it
+ * never changes the deployment's status, and a failure of its own database
+ * writes is logged and never fails the poll. Logs carry the operation ID,
+ * status, run ID and the time only.
+ * @param {import('mongodb').Db} db
+ * @param {{_id: import('mongodb').ObjectId, environment: string}} doc
+ * @param {{id: string, operationId: string, status: string, statusTimes?: Record<string, string>, gitops?: object|null}} entry
+ * @param {{stallWarnAfterMs: number, logger?: import('pino').Logger}} settings
+ * @returns {Promise<boolean>} Whether this call raised the warning.
+ */
+export async function reportStall(db, doc, entry, settings) {
+  try {
+    return await raiseStall(db, doc, entry, settings)
+  } catch (error) {
+    settings.logger?.warn(
+      { operationId: entry.operationId, message: error.message },
+      'Stall reporting failed, the deployment poll carries on'
+    )
+
+    return false
+  }
 }
