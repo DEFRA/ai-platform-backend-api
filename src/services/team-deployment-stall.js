@@ -7,24 +7,44 @@ import {
 // stay is worth a warning. Earlier ones wait on a person or on checks.
 const WAITING_ON_APPLY = new Set(['merged', 'deploying'])
 
+// When the current wait on the apply began: the first time the entry reached
+// its status, or later when a retry (D14, or an admin resuming a failed
+// deployment) dispatched a fresh apply. `statusTimes` keeps the first time,
+// so a deployment retried long after an old failure is not stalled the
+// moment it is retried. Null when no time was recorded.
+function waitingSince(entry) {
+  const times = [
+    entry.statusTimes?.[entry.status],
+    entry.gitops?.applyRetry?.claimedAt,
+    entry.gitops?.applyRetry?.dispatchedAt
+  ].filter((time) => Number.isFinite(Date.parse(time)))
+
+  return times.length > 0
+    ? times.reduce((latest, time) =>
+        Date.parse(time) > Date.parse(latest) ? time : latest
+      )
+    : null
+}
+
 /**
- * Whether an entry has waited on the apply for longer than `afterMs`, and
- * has not been warned about at that status yet.
- * @param {{status: string, statusTimes?: Record<string, string>, gitops?: {stalled?: {status: string}}|null}} entry
+ * Whether an entry has waited on the apply for longer than `afterMs` since
+ * its current attempt began, and has not been warned about that wait yet.
+ * @param {{status: string, statusTimes?: Record<string, string>, gitops?: {applyRetry?: {claimedAt?: string, dispatchedAt?: string}, stalled?: {status: string, since: string}}|null}} entry
  * @param {number} afterMs - 0 turns the warning off
  * @param {number} [now]
  * @returns {boolean}
  */
 export function looksStalled(entry, afterMs, now = Date.now()) {
-  const since = Date.parse(entry.statusTimes?.[entry.status])
+  const since = waitingSince(entry)
+  const stalled = entry.gitops?.stalled
 
   return (
     afterMs > 0 &&
     WAITING_ON_APPLY.has(entry.status) &&
     Boolean(entry.gitops) &&
-    entry.gitops.stalled?.status !== entry.status &&
-    Number.isFinite(since) &&
-    now - since >= afterMs
+    since !== null &&
+    !(stalled?.status === entry.status && stalled.since === since) &&
+    now - Date.parse(since) >= afterMs
   )
 }
 
@@ -101,14 +121,18 @@ async function raiseStall(db, doc, entry, settings) {
     return false
   }
 
-  const since = entry.statusTimes[entry.status]
+  const since = waitingSince(entry)
   const warned = await claim(
     db,
     doc,
     entry,
     {
       status: entry.status,
-      'gitops.stalled.status': { $ne: entry.status },
+      // Not the stall already recorded for this very wait.
+      $or: [
+        { 'gitops.stalled.status': { $ne: entry.status } },
+        { 'gitops.stalled.since': { $ne: since } }
+      ],
       // Never replaces a stall whose audit event is still pending in the
       // database, whatever this poll's snapshot says; it is delivered first.
       'gitops.stalled.audited': { $ne: false }

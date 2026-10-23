@@ -64,12 +64,42 @@ describe('team-deployment-stall', () => {
       expect(stall.looksStalled(entry, 0, NOW)).toBe(false)
     })
 
-    test('is false once warned at this status', () => {
+    test('is false once warned about this wait', () => {
       const entry = entryAt('deploying', '2026-10-23T08:00:00Z')
 
-      entry.gitops.stalled = { status: 'deploying' }
+      entry.gitops.stalled = {
+        status: 'deploying',
+        since: '2026-10-23T08:00:00Z'
+      }
 
       expect(stall.looksStalled(entry, AFTER_MS, NOW)).toBe(false)
+    })
+
+    test('measures a retried apply from its retry, not from the first time at the status', () => {
+      const entry = entryAt('deploying', '2026-10-01T00:00:00Z')
+
+      entry.gitops.applyRetry = { claimedAt: '2026-10-23T10:20:00Z' }
+
+      expect(stall.looksStalled(entry, AFTER_MS, NOW)).toBe(false)
+
+      entry.gitops.applyRetry = {
+        claimedAt: '2026-10-23T09:00:00Z',
+        dispatchedAt: '2026-10-23T09:00:05Z'
+      }
+
+      expect(stall.looksStalled(entry, AFTER_MS, NOW)).toBe(true)
+    })
+
+    test('warns again for a later wait at the same status', () => {
+      const entry = entryAt('deploying', '2026-10-01T00:00:00Z')
+
+      entry.gitops.stalled = {
+        status: 'deploying',
+        since: '2026-10-01T00:00:00Z'
+      }
+      entry.gitops.applyRetry = { claimedAt: '2026-10-23T09:00:00Z' }
+
+      expect(stall.looksStalled(entry, AFTER_MS, NOW)).toBe(true)
     })
 
     test('is false with no recorded start time or no GitOps trail', () => {
@@ -314,6 +344,57 @@ describe('team-deployment-stall', () => {
           .collection('auditEvents')
           .countDocuments({ resourceId: entry.id })
       ).toBe(1)
+    })
+
+    test('does not warn about a fresh retry of a deployment that first reached deploying long ago', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const entry = entryAt('deploying', '2020-01-01T00:00:00Z')
+
+      entry.gitops.applyRetry = { claimedAt: new Date().toISOString() }
+
+      const doc = await insertDocument(entry)
+
+      const raised = await stall.reportStall(db, doc, entry, {
+        stallWarnAfterMs: AFTER_MS,
+        logger
+      })
+
+      expect(raised).toBe(false)
+      expect(logger.warn).not.toHaveBeenCalled()
+      expect((await stored(doc)).gitops.stalled).toBeUndefined()
+    })
+
+    test('warns about a retry that has itself stalled, with its own start time and event', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const entry = entryAt('deploying', '2020-01-01T00:00:00Z')
+
+      entry.gitops.stalled = {
+        status: 'deploying',
+        since: '2020-01-01T00:00:00Z',
+        audited: true
+      }
+      entry.gitops.applyRetry = {
+        claimedAt: '2020-06-01T00:00:00Z',
+        dispatchedAt: '2020-06-01T00:00:05Z'
+      }
+
+      const doc = await insertDocument(entry)
+
+      const raised = await stall.reportStall(db, doc, entry, {
+        stallWarnAfterMs: AFTER_MS,
+        logger
+      })
+
+      expect(raised).toBe(true)
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ since: '2020-06-01T00:00:05Z' }),
+        expect.stringContaining('looks stalled')
+      )
+      expect((await stored(doc)).gitops.stalled).toEqual({
+        status: 'deploying',
+        since: '2020-06-01T00:00:05Z',
+        audited: true
+      })
     })
 
     test('a stale snapshot cannot replace a stall whose audit is still pending', async () => {
