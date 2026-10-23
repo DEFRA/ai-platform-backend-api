@@ -494,6 +494,12 @@ async function verifyDeployed(verifier, { environment, gitops }) {
       }
 }
 
+// The run reports, commit ancestry and already-raised warnings the status
+// reads share across polls.
+function createReadCaches() {
+  return { reports: new Map(), ancestry: new Map(), warned: new Map() }
+}
+
 // Builds each client lazily, once per repository and permission set.
 function cachedClients(createClient) {
   const clients = new Map()
@@ -543,9 +549,7 @@ export function createGithubTenantOrchestrator({
   now = Date.now
 } = {}) {
   const clientFor = cachedClients(createClient)
-  const reports = new Map()
-  const ancestry = new Map()
-  const warned = new Map()
+  const caches = createReadCaches()
 
   function repoFor(path) {
     return parseRepo(PIN_PATH.test(path) ? deploymentsRepo : tenantsRepo)
@@ -555,7 +559,7 @@ export function createGithubTenantOrchestrator({
     const repo = repoFor(path)
     const client = clientFor(repo, STATUS_PERMISSIONS)
 
-    return { reader, client, repo, reports, ancestry, logger, warned }
+    return { reader, client, repo, logger, ...caches }
   }
 
   function dispatch(repo, workflowId, inputs) {
