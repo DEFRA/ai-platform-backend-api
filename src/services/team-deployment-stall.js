@@ -42,44 +42,50 @@ async function claim(db, doc, entry, matching, fields) {
   return matchedCount === 1
 }
 
-// A stall warned about whose audit event is still owed: the insert failed.
+// A stall warned about whose audit event is not yet confirmed delivered.
 // Owed whatever the deployment's status is by now.
 function auditOwed(entry) {
   return entry.gitops?.stalled?.audited === false
 }
 
-// Delivers the audit event of a stall once, using the status and time saved
-// with the stall. A failed insert is logged and retried on a later poll.
+const DUPLICATE_KEY = 11000
+
+// Delivers the audit event of the stall saved on the entry, at that stall's
+// own status and time. The event has a deterministic ID, so inserting it
+// again - after a crash between the insert and the flag, or by a second poll
+// - is a harmless duplicate, and a stale snapshot can only ever (re)insert
+// its own stall's event. `audited` is then set for that exact stall alone,
+// so a newer stall is never marked delivered. A failed insert is logged and
+// retried on a later poll.
 async function deliverAudit(db, doc, entry, logger) {
   const { status, since } = entry.gitops.stalled
-  const owed = { 'gitops.stalled.audited': false }
-
-  if (
-    !(await claim(db, doc, entry, owed, { 'gitops.stalled.audited': true }))
-  ) {
-    return
-  }
 
   try {
     await auditDeployment(db, entry, {
       action: 'teamDeployment.stalled',
       outcome: 'failure',
       code: 'stalled',
-      reason: `${status} since ${since}`
+      reason: `${status} since ${since}`,
+      eventId: `stalled:${entry.id}:${status}:${since}`
     })
-  } catch {
-    logger?.error(
-      { operationId: entry.operationId, status },
-      'The stalled deployment audit event could not be recorded, retrying on a later poll'
-    )
-    await claim(
-      db,
-      doc,
-      entry,
-      { 'gitops.stalled.audited': true },
-      { 'gitops.stalled.audited': false }
-    ).catch(() => false)
+  } catch (error) {
+    if (error.code !== DUPLICATE_KEY) {
+      logger?.error(
+        { operationId: entry.operationId, status },
+        'The stalled deployment audit event could not be recorded, retrying on a later poll'
+      )
+
+      return
+    }
   }
+
+  await claim(
+    db,
+    doc,
+    entry,
+    { 'gitops.stalled.status': status, 'gitops.stalled.since': since },
+    { 'gitops.stalled.audited': true }
+  )
 }
 
 async function raiseStall(db, doc, entry, settings) {

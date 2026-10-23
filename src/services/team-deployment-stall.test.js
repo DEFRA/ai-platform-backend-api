@@ -234,6 +234,88 @@ describe('team-deployment-stall', () => {
       expect(logger.warn).toHaveBeenCalledTimes(1)
     })
 
+    test('a stale snapshot never marks a newer stall delivered', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const entry = entryAt('deploying', '2020-02-01T00:00:00Z', {
+        gitops: {
+          path: 'environments/infradev/alpha.json',
+          stalled: {
+            status: 'deploying',
+            since: '2020-02-01T00:00:00Z',
+            audited: false
+          }
+        }
+      })
+      const doc = await insertDocument(entry)
+      const stale = {
+        ...entry,
+        status: 'merged',
+        gitops: {
+          ...entry.gitops,
+          stalled: {
+            status: 'merged',
+            since: '2020-01-01T00:00:00Z',
+            audited: false
+          }
+        }
+      }
+      const settings = { stallWarnAfterMs: AFTER_MS, logger }
+
+      await stall.reportStall(db, doc, stale, settings)
+
+      expect((await stored(doc)).gitops.stalled).toMatchObject({
+        status: 'deploying',
+        audited: false
+      })
+
+      await stall.reportStall(db, doc, await stored(doc), settings)
+
+      expect((await stored(doc)).gitops.stalled.audited).toBe(true)
+
+      const events = await db
+        .collection('auditEvents')
+        .find({ resourceId: entry.id })
+        .sort({ reason: 1 })
+        .toArray()
+
+      expect(events.map((event) => event.reason)).toEqual([
+        'deploying since 2020-02-01T00:00:00Z',
+        'merged since 2020-01-01T00:00:00Z'
+      ])
+    })
+
+    test('does not record the event twice when a crash left the flag unset after the insert', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const since = '2020-01-01T00:00:00Z'
+      const entry = entryAt('deploying', since, {
+        gitops: {
+          path: 'environments/infradev/alpha.json',
+          stalled: { status: 'deploying', since, audited: false }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      await db.collection('auditEvents').insertOne({
+        _id: `stalled:${entry.id}:deploying:${since}`,
+        resourceId: entry.id,
+        action: 'teamDeployment.stalled',
+        reason: `deploying since ${since}`
+      })
+
+      await stall.reportStall(db, doc, entry, {
+        stallWarnAfterMs: AFTER_MS,
+        logger
+      })
+
+      expect(logger.error).not.toHaveBeenCalled()
+      expect((await stored(doc)).gitops.stalled.audited).toBe(true)
+      expect(
+        await db
+          .collection('auditEvents')
+          .countDocuments({ resourceId: entry.id })
+      ).toBe(1)
+    })
+
     test('logs and carries on when its own database write fails', async () => {
       const logger = { warn: vi.fn(), error: vi.fn() }
       const entry = entryAt('deploying', '2020-01-01T00:00:00Z')

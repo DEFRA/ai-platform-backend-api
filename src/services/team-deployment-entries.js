@@ -129,12 +129,19 @@ export function withStatusTime(statusTimes, status, at) {
  * itself unless an actor is given.
  * @param {import('mongodb').Db} db
  * @param {{id: string}} entry
- * @param {{action: string, outcome?: string, actorUserId?: string, code?: string, reason?: string}} event
+ * @param {{action: string, outcome?: string, actorUserId?: string, code?: string, reason?: string, eventId?: string}} event
  */
 export async function auditDeployment(
   db,
   entry,
-  { action, outcome = 'success', actorUserId = SYSTEM_ACTOR, code, reason }
+  {
+    action,
+    outcome = 'success',
+    actorUserId = SYSTEM_ACTOR,
+    code,
+    reason,
+    eventId
+  }
 ) {
   await recordAuditEvent(db, {
     actorUserId,
@@ -143,6 +150,7 @@ export async function auditDeployment(
     resourceId: entry.id,
     outcome,
     code,
-    reason
+    reason,
+    eventId
   })
 }
