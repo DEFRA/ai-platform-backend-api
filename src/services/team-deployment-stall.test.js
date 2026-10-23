@@ -316,6 +316,29 @@ describe('team-deployment-stall', () => {
       ).toBe(1)
     })
 
+    test('a stale snapshot cannot replace a stall whose audit is still pending', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn() }
+      const pending = {
+        status: 'merged',
+        since: '2020-01-01T00:00:00Z',
+        audited: false
+      }
+      const stale = entryAt('deploying', '2020-02-01T00:00:00Z')
+      const doc = await insertDocument({
+        ...stale,
+        gitops: { ...stale.gitops, stalled: pending }
+      })
+
+      const raised = await stall.reportStall(db, doc, stale, {
+        stallWarnAfterMs: AFTER_MS,
+        logger
+      })
+
+      expect(raised).toBe(false)
+      expect(logger.warn).not.toHaveBeenCalled()
+      expect((await stored(doc)).gitops.stalled).toEqual(pending)
+    })
+
     test('logs and carries on when its own database write fails', async () => {
       const logger = { warn: vi.fn(), error: vi.fn() }
       const entry = entryAt('deploying', '2020-01-01T00:00:00Z')

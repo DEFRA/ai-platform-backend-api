@@ -108,7 +108,10 @@ async function raiseStall(db, doc, entry, settings) {
     entry,
     {
       status: entry.status,
-      'gitops.stalled.status': { $ne: entry.status }
+      'gitops.stalled.status': { $ne: entry.status },
+      // Never replaces a stall whose audit event is still pending in the
+      // database, whatever this poll's snapshot says; it is delivered first.
+      'gitops.stalled.audited': { $ne: false }
     },
     { 'gitops.stalled': { status: entry.status, since, audited: false } }
   )
