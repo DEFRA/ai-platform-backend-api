@@ -228,7 +228,8 @@ describe('#config tenant orchestrator and GitOps', () => {
       deploymentsRepo: 'DEFRA/ai-platform-deployments',
       pollMinIntervalMs: 30000,
       claimLeaseMs: 600000,
-      verifyMaxAttempts: 5
+      verifyMaxAttempts: 5,
+      stallWarnAfterMs: 1800000
     })
     expect(config.get('aipEnvironments')).toEqual({})
   })

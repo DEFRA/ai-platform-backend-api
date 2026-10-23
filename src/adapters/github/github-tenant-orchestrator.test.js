@@ -757,6 +757,161 @@ describe('#createGithubTenantOrchestrator', () => {
       expect(status.status).toBe('deploying')
     })
 
+    // A pull request merged by hand loses the commit's Operation-Id trailer,
+    // so the report lists no operation; the team's resources still carry the
+    // operation from the state file as a tag.
+    function reportTaggedWith(operationId) {
+      const report = github.runReport({ operations: [] })
+
+      report.outputs.teams.value.alpha.tags = {
+        'aip-operation-id': operationId
+      }
+
+      return report
+    }
+
+    test('is deployed when the report lists no operation but tags the team’s resources with it', async () => {
+      replyWithDeployments([github.deployment()])
+      replyWithStatus(501, github.deploymentStatus({ state: 'success' }))
+      replyWithRunReport(2002, reportTaggedWith(OPERATION_ID))
+
+      const status =
+        await createOrchestrator().getDeploymentStatus(mergedEntry())
+
+      expect(status).toMatchObject({ status: 'deployed', applyRunId: 2002 })
+    })
+
+    test('stays deploying when the team’s resources are tagged with another operation', async () => {
+      replyWithDeployments([github.deployment()])
+      replyWithStatus(501, github.deploymentStatus({ state: 'success' }))
+      replyWithRunReport(2002, reportTaggedWith('ffffffffffffffffffffffff'))
+
+      const status =
+        await createOrchestrator().getDeploymentStatus(mergedEntry())
+
+      expect(status.status).toBe('deploying')
+    })
+
+    test('warns once, with the reason, when a successful apply’s report does not name the operation', async () => {
+      const logger = { warn: vi.fn() }
+      const orchestrator = createOrchestrator({ logger })
+
+      for (let poll = 0; poll < 2; poll += 1) {
+        replyWithDeployments([github.deployment()])
+        replyWithStatus(501, github.deploymentStatus({ state: 'success' }))
+        replyWithRunReport(2002, github.runReport({ operations: [] }))
+        await orchestrator.getDeploymentStatus(mergedEntry())
+      }
+
+      expect(logger.warn).toHaveBeenCalledTimes(1)
+      expect(logger.warn).toHaveBeenCalledWith(
+        {
+          operationId: OPERATION_ID,
+          applyRunIds: [2002],
+          reason: 'operation-not-in-report'
+        },
+        expect.stringContaining('could not be tied to the deployment')
+      )
+    })
+
+    test('names every unmatched successful run in one warning, however many there are', async () => {
+      const logger = { warn: vi.fn() }
+      const orchestrator = createOrchestrator({ logger })
+
+      for (let poll = 0; poll < 2; poll += 1) {
+        replyWithDeployments([
+          github.deployment({
+            id: 502,
+            sha: 'later-sha',
+            created_at: '2026-10-13T11:00:00Z'
+          }),
+          github.deployment({ id: 501 })
+        ])
+        nock(GITHUB_API)
+          .get(`${TENANTS}/compare/merge-sha...later-sha`)
+          .query({ per_page: 1 })
+          .reply(200, github.comparison('ahead'))
+        replyWithStatus(
+          502,
+          github.deploymentStatus({ state: 'success', runId: 2003 })
+        )
+        replyWithStatus(501, github.deploymentStatus({ state: 'inactive' }))
+        replyWithRunReport(2003, github.runReport({ operations: [] }))
+        replyWithRunReport(2002, github.runReport({ operations: [] }))
+        await orchestrator.getDeploymentStatus(mergedEntry())
+      }
+
+      expect(logger.warn).toHaveBeenCalledTimes(1)
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ applyRunIds: [2003, 2002] }),
+        expect.any(String)
+      )
+    })
+
+    test('warns that the report is unavailable when a successful apply uploaded none', async () => {
+      const logger = { warn: vi.fn() }
+
+      replyWithDeployments([github.deployment()])
+      replyWithStatus(501, github.deploymentStatus({ state: 'success' }))
+      nock(GITHUB_API)
+        .get(`${TENANTS}/actions/runs/2002/artifacts`)
+        .query(true)
+        .reply(200, { total_count: 0, artifacts: [] })
+
+      const status = await createOrchestrator({ logger }).getDeploymentStatus(
+        mergedEntry()
+      )
+
+      expect(status.status).toBe('deploying')
+      expect(logger.warn).toHaveBeenCalledWith(
+        expect.objectContaining({ reason: 'report-unavailable' }),
+        expect.any(String)
+      )
+    })
+
+    test('does not warn when a newer apply does not name the operation but an older one does', async () => {
+      const logger = { warn: vi.fn() }
+
+      replyWithDeployments([
+        github.deployment({
+          id: 502,
+          sha: 'later-sha',
+          created_at: '2026-10-13T11:00:00Z'
+        }),
+        github.deployment({ id: 501 })
+      ])
+      nock(GITHUB_API)
+        .get(`${TENANTS}/compare/merge-sha...later-sha`)
+        .query({ per_page: 1 })
+        .reply(200, github.comparison('ahead'))
+      replyWithStatus(
+        502,
+        github.deploymentStatus({ state: 'success', runId: 2003 })
+      )
+      replyWithStatus(501, github.deploymentStatus({ state: 'inactive' }))
+      replyWithRunReport(2003, github.runReport({ operations: [] }))
+      replyWithRunReport(2002, github.runReport())
+
+      const status = await createOrchestrator({ logger }).getDeploymentStatus(
+        mergedEntry()
+      )
+
+      expect(status).toMatchObject({ status: 'deployed', applyRunId: 2002 })
+      expect(logger.warn).not.toHaveBeenCalled()
+    })
+
+    test('does not warn when the report names the operation', async () => {
+      const logger = { warn: vi.fn() }
+
+      replyWithDeployments([github.deployment()])
+      replyWithStatus(501, github.deploymentStatus({ state: 'success' }))
+      replyWithRunReport(2002, github.runReport())
+
+      await createOrchestrator({ logger }).getDeploymentStatus(mergedEntry())
+
+      expect(logger.warn).not.toHaveBeenCalled()
+    })
+
     test('is deployed when an earlier apply listed the operation, even if a later one failed', async () => {
       replyWithDeployments([
         github.deployment({

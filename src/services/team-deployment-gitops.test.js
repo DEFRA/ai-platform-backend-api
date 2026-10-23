@@ -135,6 +135,120 @@ describe('team-deployment-gitops', () => {
     runUrl: 'https://github.com/DEFRA/ai-platform-tenants/actions/runs/2002'
   }
 
+  describe('a stalled apply', () => {
+    test('warns and audits once, even when every poll fails, and keeps the status', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+      const orchestrator = fakeOrchestrator()
+
+      orchestrator.getDeploymentStatus.mockRejectedValue(
+        Object.assign(new Error('GitHub unavailable'), { status: 502 })
+      )
+
+      const entry = githubEntry({
+        status: 'deploying',
+        statusTimes: { deploying: anHourAgo() }
+      })
+      const doc = await insertDocument(entry)
+      const deps = { logger, stallWarnAfterMs: 60000 }
+
+      const first = await refresh(orchestrator, doc, entry, deps)
+      await refresh(orchestrator, doc, first, deps)
+
+      const stalled = logger.warn.mock.calls.filter(([, message]) =>
+        message.includes('looks stalled')
+      )
+
+      expect(stalled).toHaveLength(1)
+      expect((await storedEntry(entry.id)).status).toBe('deploying')
+      expect(
+        (await auditEvents(entry)).filter(
+          (event) => event.action === 'teamDeployment.stalled'
+        )
+      ).toHaveLength(1)
+    })
+
+    test('delivers a stall audit event still owed once the deployment is active', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+      const entry = githubEntry({
+        status: 'active',
+        statusTimes: { active: justNow() },
+        gitops: {
+          stalled: {
+            status: 'deploying',
+            since: '2020-01-01T00:00:00Z',
+            audited: false
+          }
+        }
+      })
+      const doc = await insertDocument(entry)
+
+      await refresh(fakeOrchestrator(), doc, entry, {
+        logger,
+        stallWarnAfterMs: 60000
+      })
+
+      const events = (await auditEvents(entry)).filter(
+        (event) => event.action === 'teamDeployment.stalled'
+      )
+
+      expect(events).toHaveLength(1)
+      expect(events[0].reason).toBe('deploying since 2020-01-01T00:00:00Z')
+      expect((await storedEntry(entry.id)).gitops.stalled.audited).toBe(true)
+    })
+
+    test('does not report the fresh D14 retry of an overdue deployment as stalled', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+      const orchestrator = fakeOrchestrator()
+      const entry = githubEntry({
+        status: 'deploying',
+        statusTimes: { deploying: anHourAgo() },
+        gitops: { mergeSha: 'merge-sha' }
+      })
+      const doc = await insertDocument(entry)
+
+      orchestrator.getDeploymentStatus.mockResolvedValue(failedApply(entry))
+      orchestrator.requestApply.mockResolvedValue({ runId: 2002, runUrl: null })
+
+      await refresh(orchestrator, doc, entry, {
+        logger,
+        stallWarnAfterMs: 60000
+      })
+
+      expect(orchestrator.requestApply).toHaveBeenCalledTimes(1)
+      expect((await storedEntry(entry.id)).gitops.stalled).toBeUndefined()
+      expect(
+        logger.warn.mock.calls.filter(([, message]) =>
+          message.includes('looks stalled')
+        )
+      ).toHaveLength(0)
+      expect(
+        (await auditEvents(entry)).filter(
+          (event) => event.action === 'teamDeployment.stalled'
+        )
+      ).toHaveLength(0)
+    })
+
+    test('says nothing about a deployment still inside the deadline', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+      const entry = githubEntry({
+        status: 'deploying',
+        statusTimes: { deploying: justNow() }
+      })
+      const doc = await insertDocument(entry)
+
+      await refresh(fakeOrchestrator(), doc, entry, {
+        logger,
+        stallWarnAfterMs: 60000
+      })
+
+      expect(
+        logger.warn.mock.calls.filter(([, message]) =>
+          message.includes('looks stalled')
+        )
+      ).toHaveLength(0)
+    })
+  })
+
   describe('the poll window', () => {
     test('reads GitHub once when two polls race inside the minimum interval', async () => {
       const orchestrator = fakeOrchestrator()

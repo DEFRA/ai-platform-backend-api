@@ -1,6 +1,7 @@
 import { config } from '#/config.js'
 import { statusCodes } from '#/common/constants/status-codes.js'
 import { canonicalJson } from '#/common/helpers/canonical-json.js'
+import { createLogger } from '#/common/helpers/logging/logger.js'
 import { createGithubAppClient } from '#/adapters/github/github-app-client.js'
 import { createConditionalReader } from '#/adapters/github/github-conditional-reader.js'
 import {
@@ -93,6 +94,18 @@ function parseReport(data) {
 function listsOperation(report, operationId) {
   return (report?.operations ?? []).some((operation) =>
     operation.operationIds?.includes(operationId)
+  )
+}
+
+// The team file's own `operationId` is stamped on the team's resources as
+// the `aip-operation-id` tag, so the report still names the operation when
+// its commit message lost the `Operation-Id` trailer (a pull request merged
+// by hand).
+function taggedWithOperation(report, slug, operationId) {
+  return (
+    slug !== null &&
+    report?.outputs?.teams?.value?.[slug]?.tags?.['aip-operation-id'] ===
+      operationId
   )
 }
 
@@ -309,27 +322,62 @@ async function runReport({ reader, client, repo, reports }, run, environment) {
   return report
 }
 
-// Deployed once any successful apply's run report lists the operation,
-// even if a later apply (another team's change) has failed since. Null
-// when none does.
+// Successful applies that cannot be tied to the operation leave it
+// deploying, which is otherwise silent. One warning per operation and
+// reason, naming every such run, so a long-stalled operation neither repeats
+// itself on each poll nor fills the bounded `warned` memory with run keys.
+function warnUnmatchedApplies({ logger, warned }, operationId, unmatched) {
+  for (const reason of ['operation-not-in-report', 'report-unavailable']) {
+    const applyRunIds = unmatched
+      .filter((candidate) => candidate.reason === reason)
+      .map(({ run }) => run.id)
+    const key = `${operationId}:${reason}`
+
+    if (applyRunIds.length > 0 && !warned.has(key)) {
+      remember(warned, key, true)
+      logger.warn(
+        { operationId, applyRunIds, reason },
+        'A successful apply could not be tied to the deployment'
+      )
+    }
+  }
+}
+
+// Deployed once any successful apply's run report lists the operation (or
+// tags the team's resources with it), even if a later apply (another team's
+// change) has failed since. Null when none does.
 async function deployedState(reads, entry, observed, links) {
   const { operationId, environment, gitops } = entry
+  const slug = slugOf(gitops.path)
+  const unmatched = []
 
   for (const { latest, run } of observed) {
     if (SUCCEEDED_DEPLOYMENT_STATES.has(latest?.state) && run) {
       const report = await runReport(reads, run, environment)
 
-      if (listsOperation(report, operationId)) {
+      if (
+        listsOperation(report, operationId) ||
+        taggedWithOperation(report, slug, operationId)
+      ) {
         return {
           status: 'deployed',
           links: { ...links, applyRun: run.url },
           applyRunId: run.id,
           appliedSha: report.appliedSha,
-          resources: report.outputs?.teams?.value?.[slugOf(gitops.path)] ?? null
+          resources: report.outputs?.teams?.value?.[slug] ?? null
         }
       }
+
+      unmatched.push({
+        run,
+        reason: report ? 'operation-not-in-report' : 'report-unavailable'
+      })
     }
   }
+
+  // Only once no apply matched: a newer apply of another team's change is
+  // expected not to name this operation.
+  warnUnmatchedApplies(reads, operationId, unmatched)
 
   return null
 }
@@ -459,6 +507,12 @@ async function verifyDeployed(verifier, { environment, gitops }) {
       }
 }
 
+// The run reports, commit ancestry and already-raised warnings the status
+// reads share across polls.
+function createReadCaches() {
+  return { reports: new Map(), ancestry: new Map(), warned: new Map() }
+}
+
 // Builds each client lazily, once per repository and permission set.
 function cachedClients(createClient) {
   const clients = new Map()
@@ -493,6 +547,7 @@ function cachedClients(createClient) {
  * @param {number} [deps.pollMinIntervalMs]
  * @param {import('#/adapters/tenant-resource-verifier.js').TenantResourceVerifier} [deps.verifier]
  * @param {ReturnType<typeof createConditionalReader>} [deps.reader]
+ * @param {import('pino').Logger} [deps.logger]
  * @param {() => number} [deps.now]
  * @returns {import('#/adapters/tenant-orchestrator.js').TenantOrchestrator}
  */
@@ -503,11 +558,11 @@ export function createGithubTenantOrchestrator({
   pollMinIntervalMs = config.get('gitops.pollMinIntervalMs'),
   verifier = tenantResourceVerifier,
   reader = createConditionalReader(),
+  logger = createLogger(),
   now = Date.now
 } = {}) {
   const clientFor = cachedClients(createClient)
-  const reports = new Map()
-  const ancestry = new Map()
+  const caches = createReadCaches()
 
   function repoFor(path) {
     return parseRepo(PIN_PATH.test(path) ? deploymentsRepo : tenantsRepo)
@@ -517,7 +572,7 @@ export function createGithubTenantOrchestrator({
     const repo = repoFor(path)
     const client = clientFor(repo, STATUS_PERMISSIONS)
 
-    return { reader, client, repo, reports, ancestry }
+    return { reader, client, repo, logger, ...caches }
   }
 
   function dispatch(repo, workflowId, inputs) {

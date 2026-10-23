@@ -26,6 +26,7 @@ import {
   needsAbandon
 } from '#/services/team-deployment-gitops-steps.js'
 import { releaseQueue } from '#/services/team-deployment-queue.js'
+import { reportStall } from '#/services/team-deployment-stall.js'
 import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
 import {
   ensureTeamCredential,
@@ -57,6 +58,7 @@ function settingsOf({
   pollMinIntervalMs = config.get('gitops.pollMinIntervalMs'),
   claimLeaseMs = config.get('gitops.claimLeaseMs'),
   verifyMaxAttempts = config.get('gitops.verifyMaxAttempts'),
+  stallWarnAfterMs = config.get('gitops.stallWarnAfterMs'),
   buildDesiredState = teamDesiredStateBuilder,
   ensureCredential = ensureTeamCredential
 }) {
@@ -67,6 +69,7 @@ function settingsOf({
     pollMinIntervalMs,
     claimLeaseMs,
     verifyMaxAttempts,
+    stallWarnAfterMs,
     buildDesiredState,
     ensureCredential
   }
@@ -634,7 +637,7 @@ function isInProgress(entry) {
   )
 }
 
-async function refreshOwnStatus(db, doc, entry, settings) {
+async function refreshStatusOf(db, doc, entry, settings) {
   if (entry.status === 'active') {
     await retryTeamCredential(db, doc, settings, entry)
   }
@@ -654,6 +657,18 @@ async function refreshOwnStatus(db, doc, entry, settings) {
   }
 
   return refreshOperation(db, doc, entry, settings)
+}
+
+// Refreshes the entry, then reports a stall if it has sat waiting on the
+// apply for too long - including when the poll itself keeps failing - and
+// delivers any stall audit event still owed after the status moved on. The
+// report is diagnostics only and never fails the refresh.
+async function refreshOwnStatus(db, doc, entry, settings) {
+  const refreshed = await refreshStatusOf(db, doc, entry, settings)
+
+  await reportStall(db, doc, refreshed, settings)
+
+  return refreshed
 }
 
 // A queued request moves when the operation holding its team file ends, so
@@ -681,7 +696,7 @@ async function refreshQueued(db, doc, entry, settings) {
  * @param {import('mongodb').Db} db
  * @param {object} doc
  * @param {object} entry
- * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps] - locker is the lock manager a model turning active creates its team's credential under; `buildDesiredState` is the WS6 builder a queued GitHub-mode request is built with when dispatched
+ * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, stallWarnAfterMs?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps] - locker is the lock manager a model turning active creates its team's credential under; `buildDesiredState` is the WS6 builder a queued GitHub-mode request is built with when dispatched
  */
 export async function refreshEntryStatus(db, doc, entry, deps = {}) {
   const settings = settingsOf(deps)
@@ -743,7 +758,7 @@ async function sweepEntry(db, doc, entry, settings) {
  * request once nothing holds its team file. Operations nobody is watching still
  * progress and reach `active`.
  * @param {import('mongodb').Db} db
- * @param {{registry?: object, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps]
+ * @param {{registry?: object, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, stallWarnAfterMs?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps]
  * @returns {Promise<{polled: number, transitioned: number, abandoned: number}>}
  */
 export async function sweepGitopsDeployments(db, deps = {}) {

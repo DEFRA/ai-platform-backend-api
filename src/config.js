@@ -227,6 +227,12 @@ export const config = convict({
       format: 'nat',
       default: 5,
       env: 'GITOPS_VERIFY_MAX_ATTEMPTS'
+    },
+    stallWarnAfterMs: {
+      doc: 'How long in ms a deployment may stay merged or deploying before the backend warns and audits that it looks stalled, once per status; 0 turns it off. It never changes the deployment',
+      format: 'nat',
+      default: 1800000,
+      env: 'GITOPS_STALL_WARN_AFTER_MS'
     }
   },
   aipEnvironments: {
