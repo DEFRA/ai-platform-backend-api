@@ -135,6 +135,59 @@ describe('team-deployment-gitops', () => {
     runUrl: 'https://github.com/DEFRA/ai-platform-tenants/actions/runs/2002'
   }
 
+  describe('a stalled apply', () => {
+    test('warns and audits once, even when every poll fails, and keeps the status', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+      const orchestrator = fakeOrchestrator()
+
+      orchestrator.getDeploymentStatus.mockRejectedValue(
+        Object.assign(new Error('GitHub unavailable'), { status: 502 })
+      )
+
+      const entry = githubEntry({
+        status: 'deploying',
+        statusTimes: { deploying: anHourAgo() }
+      })
+      const doc = await insertDocument(entry)
+      const deps = { logger, stallWarnAfterMs: 60000 }
+
+      const first = await refresh(orchestrator, doc, entry, deps)
+      await refresh(orchestrator, doc, first, deps)
+
+      const stalled = logger.warn.mock.calls.filter(([, message]) =>
+        message.includes('looks stalled')
+      )
+
+      expect(stalled).toHaveLength(1)
+      expect((await storedEntry(entry.id)).status).toBe('deploying')
+      expect(
+        (await auditEvents(entry)).filter(
+          (event) => event.action === 'teamDeployment.stalled'
+        )
+      ).toHaveLength(1)
+    })
+
+    test('says nothing about a deployment still inside the deadline', async () => {
+      const logger = { warn: vi.fn(), error: vi.fn(), debug: vi.fn() }
+      const entry = githubEntry({
+        status: 'deploying',
+        statusTimes: { deploying: justNow() }
+      })
+      const doc = await insertDocument(entry)
+
+      await refresh(fakeOrchestrator(), doc, entry, {
+        logger,
+        stallWarnAfterMs: 60000
+      })
+
+      expect(
+        logger.warn.mock.calls.filter(([, message]) =>
+          message.includes('looks stalled')
+        )
+      ).toHaveLength(0)
+    })
+  })
+
   describe('the poll window', () => {
     test('reads GitHub once when two polls race inside the minimum interval', async () => {
       const orchestrator = fakeOrchestrator()

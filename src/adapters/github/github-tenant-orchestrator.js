@@ -1,6 +1,7 @@
 import { config } from '#/config.js'
 import { statusCodes } from '#/common/constants/status-codes.js'
 import { canonicalJson } from '#/common/helpers/canonical-json.js'
+import { createLogger } from '#/common/helpers/logging/logger.js'
 import { createGithubAppClient } from '#/adapters/github/github-app-client.js'
 import { createConditionalReader } from '#/adapters/github/github-conditional-reader.js'
 import {
@@ -93,6 +94,18 @@ function parseReport(data) {
 function listsOperation(report, operationId) {
   return (report?.operations ?? []).some((operation) =>
     operation.operationIds?.includes(operationId)
+  )
+}
+
+// The team file's own `operationId` is stamped on the team's resources as
+// the `aip-operation-id` tag, so the report still names the operation when
+// its commit message lost the `Operation-Id` trailer (a pull request merged
+// by hand).
+function taggedWithOperation(report, slug, operationId) {
+  return (
+    slug !== null &&
+    report?.outputs?.teams?.value?.[slug]?.tags?.['aip-operation-id'] ===
+      operationId
   )
 }
 
@@ -309,25 +322,47 @@ async function runReport({ reader, client, repo, reports }, run, environment) {
   return report
 }
 
-// Deployed once any successful apply's run report lists the operation,
-// even if a later apply (another team's change) has failed since. Null
-// when none does.
+// A successful apply that cannot be tied to the operation leaves it
+// deploying, which is otherwise silent. Warns once per operation, run and
+// reason, not on every poll.
+function warnUnmatchedApply({ logger, warned }, operationId, run, report) {
+  const reason = report ? 'operation-not-in-report' : 'report-unavailable'
+  const key = `${operationId}:${run.id}:${reason}`
+
+  if (!warned.has(key)) {
+    remember(warned, key, true)
+    logger.warn(
+      { operationId, applyRunId: run.id, reason },
+      'A successful apply could not be tied to the deployment, so it stays deploying'
+    )
+  }
+}
+
+// Deployed once any successful apply's run report lists the operation (or
+// tags the team's resources with it), even if a later apply (another team's
+// change) has failed since. Null when none does.
 async function deployedState(reads, entry, observed, links) {
   const { operationId, environment, gitops } = entry
+  const slug = slugOf(gitops.path)
 
   for (const { latest, run } of observed) {
     if (SUCCEEDED_DEPLOYMENT_STATES.has(latest?.state) && run) {
       const report = await runReport(reads, run, environment)
 
-      if (listsOperation(report, operationId)) {
+      if (
+        listsOperation(report, operationId) ||
+        taggedWithOperation(report, slug, operationId)
+      ) {
         return {
           status: 'deployed',
           links: { ...links, applyRun: run.url },
           applyRunId: run.id,
           appliedSha: report.appliedSha,
-          resources: report.outputs?.teams?.value?.[slugOf(gitops.path)] ?? null
+          resources: report.outputs?.teams?.value?.[slug] ?? null
         }
       }
+
+      warnUnmatchedApply(reads, operationId, run, report)
     }
   }
 
@@ -493,6 +528,7 @@ function cachedClients(createClient) {
  * @param {number} [deps.pollMinIntervalMs]
  * @param {import('#/adapters/tenant-resource-verifier.js').TenantResourceVerifier} [deps.verifier]
  * @param {ReturnType<typeof createConditionalReader>} [deps.reader]
+ * @param {import('pino').Logger} [deps.logger]
  * @param {() => number} [deps.now]
  * @returns {import('#/adapters/tenant-orchestrator.js').TenantOrchestrator}
  */
@@ -503,11 +539,13 @@ export function createGithubTenantOrchestrator({
   pollMinIntervalMs = config.get('gitops.pollMinIntervalMs'),
   verifier = tenantResourceVerifier,
   reader = createConditionalReader(),
+  logger = createLogger(),
   now = Date.now
 } = {}) {
   const clientFor = cachedClients(createClient)
   const reports = new Map()
   const ancestry = new Map()
+  const warned = new Map()
 
   function repoFor(path) {
     return parseRepo(PIN_PATH.test(path) ? deploymentsRepo : tenantsRepo)
@@ -517,7 +555,7 @@ export function createGithubTenantOrchestrator({
     const repo = repoFor(path)
     const client = clientFor(repo, STATUS_PERMISSIONS)
 
-    return { reader, client, repo, reports, ancestry }
+    return { reader, client, repo, reports, ancestry, logger, warned }
   }
 
   function dispatch(repo, workflowId, inputs) {

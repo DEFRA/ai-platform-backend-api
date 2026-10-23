@@ -26,6 +26,7 @@ import {
   needsAbandon
 } from '#/services/team-deployment-gitops-steps.js'
 import { releaseQueue } from '#/services/team-deployment-queue.js'
+import { reportStall } from '#/services/team-deployment-stall.js'
 import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
 import {
   ensureTeamCredential,
@@ -57,6 +58,7 @@ function settingsOf({
   pollMinIntervalMs = config.get('gitops.pollMinIntervalMs'),
   claimLeaseMs = config.get('gitops.claimLeaseMs'),
   verifyMaxAttempts = config.get('gitops.verifyMaxAttempts'),
+  stallWarnAfterMs = config.get('gitops.stallWarnAfterMs'),
   buildDesiredState = teamDesiredStateBuilder,
   ensureCredential = ensureTeamCredential
 }) {
@@ -67,6 +69,7 @@ function settingsOf({
     pollMinIntervalMs,
     claimLeaseMs,
     verifyMaxAttempts,
+    stallWarnAfterMs,
     buildDesiredState,
     ensureCredential
   }
@@ -653,7 +656,17 @@ async function refreshOwnStatus(db, doc, entry, settings) {
     return entry
   }
 
-  return refreshOperation(db, doc, entry, settings)
+  return refreshWithStallCheck(db, doc, entry, settings)
+}
+
+// Polls the entry's own operation, then warns once if it has sat waiting on
+// the apply for too long - including when the poll itself keeps failing.
+async function refreshWithStallCheck(db, doc, entry, settings) {
+  const refreshed = await refreshOperation(db, doc, entry, settings)
+
+  await reportStall(db, doc, refreshed, settings)
+
+  return refreshed
 }
 
 // A queued request moves when the operation holding its team file ends, so
@@ -681,7 +694,7 @@ async function refreshQueued(db, doc, entry, settings) {
  * @param {import('mongodb').Db} db
  * @param {object} doc
  * @param {object} entry
- * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps] - locker is the lock manager a model turning active creates its team's credential under; `buildDesiredState` is the WS6 builder a queued GitHub-mode request is built with when dispatched
+ * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, stallWarnAfterMs?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps] - locker is the lock manager a model turning active creates its team's credential under; `buildDesiredState` is the WS6 builder a queued GitHub-mode request is built with when dispatched
  */
 export async function refreshEntryStatus(db, doc, entry, deps = {}) {
   const settings = settingsOf(deps)
@@ -743,7 +756,7 @@ async function sweepEntry(db, doc, entry, settings) {
  * request once nothing holds its team file. Operations nobody is watching still
  * progress and reach `active`.
  * @param {import('mongodb').Db} db
- * @param {{registry?: object, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps]
+ * @param {{registry?: object, logger?: import('pino').Logger, locker?: import('mongo-locks').LockManager, pollMinIntervalMs?: number, claimLeaseMs?: number, verifyMaxAttempts?: number, stallWarnAfterMs?: number, buildDesiredState?: Function, ensureCredential?: Function}} [deps]
  * @returns {Promise<{polled: number, transitioned: number, abandoned: number}>}
  */
 export async function sweepGitopsDeployments(db, deps = {}) {
