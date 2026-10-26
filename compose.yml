@@ -59,6 +59,15 @@ services:
       PORT: 3001
       NODE_ENV: development
       MONGO_URI: mongodb://mongodb:27017/
+      # mock (the default) stages the GitOps events itself. To run against the
+      # queues floci creates (compose/floci/start.d/20-gitops-queues.sh), start
+      # with TENANT_ORCHESTRATOR=sqs and also set, from the README's
+      # configuration table: GITOPS_COMMANDS_QUEUE_URL
+      # (http://floci:4566/000000000000/aip-gitops-commands.fifo),
+      # GITOPS_EVENTS_QUEUE_URL
+      # (http://floci:4566/000000000000/aip-gitops-events.fifo),
+      # AWS_SQS_ENDPOINT (http://floci:4566) and the GitHub App credentials.
+      TENANT_ORCHESTRATOR: ${TENANT_ORCHESTRATOR:-mock}
     networks:
       - cdp-tenant
     volumes:
