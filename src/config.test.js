@@ -219,7 +219,7 @@ describe('#config tenant orchestrator and GitOps', () => {
     vi.unstubAllEnvs()
   })
 
-  test('defaults to the mock orchestrator, the DEFRA state repositories, a 30 second poll interval and a 10 minute claim lease', async () => {
+  test('defaults to the mock orchestrator, the DEFRA state repositories and the GitOps timings', async () => {
     const { config } = await loadConfig({})
 
     expect(config.get('tenantOrchestrator')).toBe('mock')
@@ -229,9 +229,64 @@ describe('#config tenant orchestrator and GitOps', () => {
       pollMinIntervalMs: 30000,
       claimLeaseMs: 600000,
       verifyMaxAttempts: 5,
-      stallWarnAfterMs: 1800000
+      stallWarnAfterMs: 1800000,
+      commandsQueueUrl: null,
+      eventsQueueUrl: null,
+      awsSqsEndpoint: null,
+      awsRegion: 'eu-west-2',
+      handlerTimeoutMs: 30000,
+      sqsWaitTimeSeconds: 20,
+      outboxSweepMs: 2000,
+      sweepIntervalMs: 15000,
+      reconcileGraceMs: 600000,
+      deadlineRequestedMs: 600000,
+      deadlineCommittedMs: 1800000,
+      deadlineDeployingMs: 2700000,
+      deadlineDeployedMs: 900000,
+      resubmitMax: 3,
+      revertGraceMs: 300000,
+      deadlineHeldMs: 1800000,
+      heldAlarmMs: 3600000
     })
     expect(config.get('aipEnvironments')).toEqual({})
+  })
+
+  const SQS_ENV = {
+    TENANT_ORCHESTRATOR: 'sqs',
+    GITOPS_COMMANDS_QUEUE_URL: 'http://sqs.test/commands.fifo',
+    GITOPS_EVENTS_QUEUE_URL: 'http://sqs.test/events.fifo',
+    GITHUB_APP_ID: '1',
+    GITHUB_APP_INSTALLATION_ID: '2',
+    GITHUB_APP_PRIVATE_KEY: 'cGxhY2Vob2xkZXI='
+  }
+
+  test('accepts the sqs orchestrator with both queues and GitHub App credentials', async () => {
+    const { config } = await loadConfig(SQS_ENV)
+
+    expect(config.get('tenantOrchestrator')).toBe('sqs')
+    expect(config.get('gitops.commandsQueueUrl')).toBe(
+      'http://sqs.test/commands.fifo'
+    )
+  })
+
+  test('the sqs orchestrator requires GitHub App credentials', async () => {
+    await expect(
+      loadConfig({
+        ...SQS_ENV,
+        GITHUB_APP_ID: undefined,
+        GITHUB_APP_INSTALLATION_ID: undefined,
+        GITHUB_APP_PRIVATE_KEY: undefined
+      })
+    ).rejects.toThrow('TENANT_ORCHESTRATOR=sqs requires GITHUB_CLIENT_ID')
+  })
+
+  test.each([
+    ['GITOPS_COMMANDS_QUEUE_URL', 'GITOPS_COMMANDS_QUEUE_URL to be set'],
+    ['GITOPS_EVENTS_QUEUE_URL', 'GITOPS_EVENTS_QUEUE_URL to be set']
+  ])('the sqs orchestrator requires %s', async (name, message) => {
+    await expect(loadConfig({ ...SQS_ENV, [name]: undefined })).rejects.toThrow(
+      message
+    )
   })
 
   test('parses AIP_ENVIRONMENTS from JSON', async () => {

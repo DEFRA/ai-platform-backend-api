@@ -192,8 +192,8 @@ export const config = convict({
     }
   },
   tenantOrchestrator: {
-    doc: 'TenantOrchestrator for new team deployments: mock advances through the GitOps states on a timer; github dispatches submit.yml in the GitOps state repositories. Refused as mock in prod',
-    format: ['mock', 'github'],
+    doc: 'How team deployments reach the GitOps state repositories: mock stages events on a timer; sqs publishes commands to the GitOps worker and reads its events; github dispatches submit.yml directly (replaced by sqs in this change)',
+    format: ['mock', 'github', 'sqs'],
     default: 'mock',
     env: 'TENANT_ORCHESTRATOR'
   },
@@ -233,6 +233,111 @@ export const config = convict({
       format: 'nat',
       default: 1800000,
       env: 'GITOPS_STALL_WARN_AFTER_MS'
+    },
+    commandsQueueUrl: {
+      doc: 'URL of aip-gitops-commands.fifo, which the backend sends commands to; required when tenantOrchestrator is sqs',
+      format: String,
+      nullable: true,
+      default: null,
+      env: 'GITOPS_COMMANDS_QUEUE_URL'
+    },
+    eventsQueueUrl: {
+      doc: 'URL of aip-gitops-events.fifo, which the backend reads status events from; required when tenantOrchestrator is sqs',
+      format: String,
+      nullable: true,
+      default: null,
+      env: 'GITOPS_EVENTS_QUEUE_URL'
+    },
+    awsSqsEndpoint: {
+      doc: 'SQS endpoint override for local runs (Floci); unset on CDP',
+      format: String,
+      nullable: true,
+      default: null,
+      env: 'AWS_SQS_ENDPOINT'
+    },
+    awsRegion: {
+      doc: 'AWS region of the GitOps queues',
+      format: String,
+      default: 'eu-west-2',
+      env: 'AWS_REGION'
+    },
+    handlerTimeoutMs: {
+      doc: 'How long in ms the events handler may take for one message; the queue visibility timeout (60 s) must stay above it',
+      format: 'nat',
+      default: 30000,
+      env: 'HANDLER_TIMEOUT_MS'
+    },
+    sqsWaitTimeSeconds: {
+      doc: 'Long polling wait in seconds for the events queue',
+      format: 'nat',
+      default: 20,
+      env: 'SQS_WAIT_TIME_SECONDS'
+    },
+    outboxSweepMs: {
+      doc: 'How often in ms the relay publishes outbox entries the request path did not',
+      format: 'nat',
+      default: 2000,
+      env: 'GITOPS_OUTBOX_SWEEP_MS'
+    },
+    sweepIntervalMs: {
+      doc: 'How often in ms the deadline sweeper looks for overdue operations and due verification retries',
+      format: 'nat',
+      default: 15000,
+      env: 'GITOPS_SWEEP_INTERVAL_MS'
+    },
+    reconcileGraceMs: {
+      doc: 'How long in ms an operation gets after the worker is asked to reconcile it, before it times out with no progress',
+      format: 'nat',
+      default: 600000,
+      env: 'GITOPS_RECONCILE_GRACE_MS'
+    },
+    deadlineRequestedMs: {
+      doc: 'Deadline in ms from entering requested',
+      format: 'nat',
+      default: 600000,
+      env: 'GITOPS_DEADLINE_REQUESTED_MS'
+    },
+    deadlineCommittedMs: {
+      doc: 'Deadline in ms from entering committed',
+      format: 'nat',
+      default: 1800000,
+      env: 'GITOPS_DEADLINE_COMMITTED_MS'
+    },
+    deadlineDeployingMs: {
+      doc: 'Deadline in ms from entering deploying',
+      format: 'nat',
+      default: 2700000,
+      env: 'GITOPS_DEADLINE_DEPLOYING_MS'
+    },
+    deadlineDeployedMs: {
+      doc: 'Deadline in ms from entering deployed (ARM verification included)',
+      format: 'nat',
+      default: 900000,
+      env: 'GITOPS_DEADLINE_DEPLOYED_MS'
+    },
+    resubmitMax: {
+      doc: 'How many times a write the workflow refused as stale-revision or commit-conflict is rebuilt from main and resubmitted before it times out',
+      format: 'nat',
+      default: 3,
+      env: 'GITOPS_RESUBMIT_MAX'
+    },
+    revertGraceMs: {
+      doc: 'How long in ms a revert waits before it is published, in case the failed apply recovers',
+      format: 'nat',
+      default: 300000,
+      env: 'GITOPS_REVERT_GRACE_MS'
+    },
+    deadlineHeldMs: {
+      doc: 'Deadline in ms of an operation held while its environment is paused, doubling each time up to 4 hours',
+      format: 'nat',
+      default: 1800000,
+      env: 'GITOPS_DEADLINE_HELD_MS'
+    },
+    heldAlarmMs: {
+      doc: 'How long in ms an operation may stay held or deferred before the backend raises an alarm',
+      format: 'nat',
+      default: 3600000,
+      env: 'GITOPS_HELD_ALARM_MS'
     }
   },
   aipEnvironments: {
@@ -533,4 +638,25 @@ if (config.get('tenantOrchestrator') === 'github' && !isGithubAppAuth) {
   throw new Error(
     'TENANT_ORCHESTRATOR=github requires GITHUB_CLIENT_ID or GITHUB_APP_ID (a GitHub App) to be set'
   )
+}
+
+// The queue mode reads team files and corroborates runs with the App's read
+// tokens, and needs both queues.
+if (config.get('tenantOrchestrator') === 'sqs') {
+  if (!isGithubAppAuth) {
+    throw new Error(
+      'TENANT_ORCHESTRATOR=sqs requires GITHUB_CLIENT_ID or GITHUB_APP_ID (a GitHub App) to be set'
+    )
+  }
+
+  const missingQueues = [
+    ['GITOPS_COMMANDS_QUEUE_URL', 'gitops.commandsQueueUrl'],
+    ['GITOPS_EVENTS_QUEUE_URL', 'gitops.eventsQueueUrl']
+  ].filter(([, key]) => !config.get(key))
+
+  if (missingQueues.length > 0) {
+    throw new Error(
+      `TENANT_ORCHESTRATOR=sqs requires ${missingQueues.map(([name]) => name).join(' and ')} to be set`
+    )
+  }
 }
