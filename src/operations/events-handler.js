@@ -23,6 +23,14 @@ import {
 
 const MAX_TRIES = 4
 
+// The statuses of an event that means the commit happened.
+const COMMITTED_STATUSES = new Set([
+  'committed',
+  'deploying',
+  'deployed',
+  DEPLOY_FAILED
+])
+
 class TransientError extends Error {}
 
 /**
@@ -523,6 +531,35 @@ function targetMatches(operation, event) {
   )
 }
 
+// A revert cancelled because its parent recovered (plan 5, "Revert").
+function isCancelledRevert(operation) {
+  return (
+    operation.type === OPERATION_TYPES.REVERT &&
+    operation.error?.code === FAILURE_CODES.REVERT_CANCELLED
+  )
+}
+
+// The cancel only ended the operation here: a command already sent still runs.
+// An event that says it committed (or went on to apply) means the rollback
+// landed over the recovered change, which is the revert "already committed"
+// of AC22: an engineer is alerted, and the cancelled operation does not move.
+function handleCancelledRevert({ ctx }, event, operation) {
+  if (COMMITTED_STATUSES.has(event.status)) {
+    ctx.logger?.error(
+      {
+        operationId: operation._id,
+        parentId: operation.parentId,
+        eventId: event.eventId,
+        status: event.status,
+        alert: true
+      },
+      'A cancelled revert was committed after all: the failed change was rolled back over the recovered apply, and an engineer should check the file'
+    )
+  }
+
+  return { outcome: 'dropped', reason: 'revert-cancelled' }
+}
+
 async function handleEvent(deps, raw) {
   const { ctx, external } = deps
   const { valid, errors } = validateEvent(raw)
@@ -560,6 +597,10 @@ async function handleEvent(deps, raw) {
 
   if (!targetMatches(operation, event)) {
     return drop(deps, event, 'target-differs')
+  }
+
+  if (isCancelledRevert(operation)) {
+    return handleCancelledRevert(deps, event, operation)
   }
 
   return handleOperationEvent(deps, event, operation)

@@ -1378,6 +1378,72 @@ describe('events-handler', () => {
       expect(verifier.verify).toHaveBeenCalledWith(OP_ID)
     })
 
+    describe('a revert cancelled before its events arrive', () => {
+      async function seedCancelledRevert() {
+        await seed('deployed', { revertId: 'op-revert' })
+        await seedRevertChild({
+          state: 'checks-failed',
+          held: undefined,
+          error: {
+            code: 'operation-revert-cancelled',
+            message: 'The revert was cancelled: the failed apply moved on',
+            retryable: false
+          }
+        })
+        await db
+          .collection('operations')
+          .updateOne({ _id: 'op-revert' }, { $unset: { slot: '' } })
+      }
+
+      test.each(['committed', 'deploying', 'deployed'])(
+        'alerts on a late %s, which means the rollback landed over the recovered change, and does not move the cancelled revert',
+        async (status) => {
+          await seedCancelledRevert()
+
+          const result = await handler.handle(
+            event(status, { operationId: 'op-revert', runId: SUBMIT_RUN })
+          )
+
+          const child = await stored('op-revert')
+
+          expect(result).toEqual({
+            outcome: 'dropped',
+            reason: 'revert-cancelled'
+          })
+          expect(child).toMatchObject({ state: 'checks-failed' })
+          expect(child.slot).toBeUndefined()
+          expect(child.gitops?.commitSha).toBeUndefined()
+          expect(logger.error).toHaveBeenCalledWith(
+            expect.objectContaining({
+              operationId: 'op-revert',
+              parentId: OP_ID,
+              status,
+              alert: true
+            }),
+            'A cancelled revert was committed after all: the failed change was rolled back over the recovered apply, and an engineer should check the file'
+          )
+          expect(verifier.verify).not.toHaveBeenCalled()
+        }
+      )
+
+      test('drops a late refusal quietly: nothing was committed', async () => {
+        await seedCancelledRevert()
+
+        const result = await handler.handle(
+          event('checks-failed', {
+            operationId: 'op-revert',
+            failureReason: STALE_REFUSAL
+          })
+        )
+
+        expect(result).toEqual({
+          outcome: 'dropped',
+          reason: 'revert-cancelled'
+        })
+        expect(logger.error).not.toHaveBeenCalled()
+      })
+    })
+
     test('does not publish a held revert on resume once its parent has recovered', async () => {
       await setControl({ paused: true })
       await seed('deployed', { revertId: 'op-revert' })

@@ -195,9 +195,11 @@ export async function recoverTeamCredentials(db, deps = {}) {
     .toArray()
   let created = 0
 
-  // Sequential by design: one team's attempt holds its credential lock.
+  // One team at a time, so a backlog (after an outage, say) never puts more
+  // than one credential creation at once on the issuer and the vault. Each
+  // attempt takes its own team's lock, so this order is for load, not safety.
   for (const doc of docs) {
-    const retried = await retryTeamCredential(db, doc, deps) // NOSONAR: sequential by design, see above
+    const retried = await retryTeamCredential(db, doc, deps) // NOSONAR: sequential to bound the load on the issuer, see above
 
     if (retried) {
       created += 1
