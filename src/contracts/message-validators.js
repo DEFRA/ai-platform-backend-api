@@ -29,7 +29,7 @@ const validateEventSchema = ajv.compile(loadSchema('event.schema.json'))
 // The errors as short paths and messages only: never the data, which can
 // hold a whole desired-state document.
 function summarise(errors) {
-  return (errors ?? []).map(
+  return errors.map(
     ({ instancePath, message }) => `${instancePath || '/'} ${message}`
   )
 }
