@@ -73,6 +73,7 @@ export function buildOperation({
   traceparent = null,
   cdpRequestId = null,
   held,
+  mockOutcome,
   now = new Date().toISOString()
 }) {
   const operation = {
@@ -116,6 +117,11 @@ export function buildOperation({
 
   if (held) {
     operation.held = held
+  }
+
+  // Only the mock orchestrator sets this: the outcome its worker forces.
+  if (mockOutcome) {
+    operation.mockOutcome = mockOutcome
   }
 
   return operation

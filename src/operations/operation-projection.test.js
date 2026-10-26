@@ -282,7 +282,8 @@ describe('entryFieldsOf', () => {
     })
     expect(fields).toMatchObject({
       status: 'deploying',
-      projectedVersion: 5
+      projectedVersion: 5,
+      operationId: 'op-1'
     })
   })
 

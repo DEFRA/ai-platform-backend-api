@@ -176,6 +176,7 @@ export function entryFieldsOf(operation, item, entry, at) {
     statusTimes: withStatusTime(entry.statusTimes, status, at),
     failureReason: entryFailureReasonOf(operation, item),
     projectedVersion: operation.stateVersion,
+    operationId: operation._id,
     operation: {
       id: operation._id,
       state: operation.state,

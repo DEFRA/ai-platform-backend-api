@@ -265,6 +265,23 @@ describe('buildOperation', () => {
     expect(operation.cdpRequestId).toBe('request-1')
   })
 
+  test('records the outcome a mock request forces, and nothing otherwise', () => {
+    const params = {
+      type: 'team-file.write',
+      state: 'requested',
+      teamId: 'team-1',
+      environment: 'infradev',
+      target: TEAM_TARGET,
+      items: ITEMS,
+      requestedBy: `entra:${OID}`
+    }
+
+    expect(
+      buildOperation({ ...params, mockOutcome: 'deploy-failed' }).mockOutcome
+    ).toBe('deploy-failed')
+    expect(buildOperation(params)).not.toHaveProperty('mockOutcome')
+  })
+
   test('gives each operation its own ID and stamps the current time by default', () => {
     const params = {
       type: 'team-file.write',
