@@ -22,6 +22,9 @@ import {
 import { publish } from '#/operations/operations-support.js'
 import { SYSTEM_ACTOR } from '#/services/team-deployment-entries.js'
 
+const REVERT_CANCELLED_MESSAGE =
+  'The revert was cancelled: the failed apply moved on'
+
 // The revert of a failed write (plan 5). Each function takes the service's
 // context ({db, settings, logger, relay, buildDocument, reader, controls}).
 
@@ -98,7 +101,7 @@ async function cancelRevert(ctx, parentId) {
   )
   ctx.logger?.warn(
     { operationId: parentId, code: FAILURE_CODES.REVERT_CANCELLED },
-    'The revert was cancelled: the failed apply moved on'
+    REVERT_CANCELLED_MESSAGE
   )
 }
 
@@ -125,7 +128,7 @@ function cancelChild(ctx, child) {
           set: {
             error: {
               code: FAILURE_CODES.REVERT_CANCELLED,
-              message: 'The revert was cancelled: the failed apply moved on',
+              message: REVERT_CANCELLED_MESSAGE,
               retryable: false
             },
             outboxPending: false
@@ -144,7 +147,7 @@ async function cancelledChild(ctx, child) {
   if (cancelled) {
     ctx.logger?.warn(
       { operationId: child._id, code: FAILURE_CODES.REVERT_CANCELLED },
-      'The revert was cancelled: the failed apply moved on'
+      REVERT_CANCELLED_MESSAGE
     )
   }
 

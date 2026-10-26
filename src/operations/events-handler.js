@@ -516,7 +516,7 @@ async function handleOperationEvent(deps, event, first) {
       return { outcome: decision.kind, operationId: written._id }
     }
 
-    operation = await findOperation(db, operation._id)
+    operation = await findOperation(db, operation._id) // NOSONAR: sequential compare-and-set retry
   }
 
   throw new TransientError(`Operation ${operation._id} kept moving`)
