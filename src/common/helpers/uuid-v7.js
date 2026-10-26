@@ -8,8 +8,11 @@ const LOW_NIBBLE_MASK = 0x0f
 const VERSION_7 = 0x70
 const LOW_SIX_BITS_MASK = 0x3f
 const VARIANT_RFC_9562 = 0x80
+const GROUP_8 = 8
+const GROUP_4 = 4
+const GROUP_12 = 12
 // Hex digits in each dash-separated group of a UUID.
-const UUID_GROUP_LENGTHS = [8, 4, 4, 4, 12]
+const UUID_GROUP_LENGTHS = [GROUP_8, GROUP_4, GROUP_4, GROUP_4, GROUP_12]
 
 function groupHex(hex) {
   let offset = 0

@@ -1,4 +1,3 @@
-import { SYSTEM_ACTOR } from '#/services/team-deployment-entries.js'
 import {
   endRefused,
   finish,
@@ -13,10 +12,8 @@ import {
 } from '#/operations/operations-retry.js'
 import { startRevert } from '#/operations/operations-revert.js'
 
-/**
- * The principal the backend's own operations (a revert) are attributed to.
- */
-export const SYSTEM_PRINCIPAL = SYSTEM_ACTOR
+// The principal the backend's own operations (a revert) are attributed to.
+export { SYSTEM_ACTOR as SYSTEM_PRINCIPAL } from '#/services/team-deployment-entries.js'
 
 function bindTo(ctx, operationFn) {
   return (...args) => operationFn(ctx, ...args)

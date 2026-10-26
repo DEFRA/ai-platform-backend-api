@@ -159,7 +159,7 @@ export function appRegistrationOf(resources) {
   }
 }
 
-const VERIFIED_STATES = ['verified', 'active', 'removed']
+const VERIFIED_STATES = new Set(['verified', 'active', 'removed'])
 
 function operationSummaryOf(operation, gitops) {
   return {
@@ -206,7 +206,7 @@ function verificationFailureOf(operation, verify) {
 export function entryFieldsOf(operation, item, entry, at) {
   const status = entryStatusOf(operation, item)
   const { gitops = {}, verify } = operation
-  const verified = VERIFIED_STATES.includes(operation.state)
+  const verified = VERIFIED_STATES.has(operation.state)
   const fields = {
     status,
     statusTimes: withStatusTime(entry.statusTimes, status, at),

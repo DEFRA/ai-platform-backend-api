@@ -275,16 +275,23 @@ export function overdueAction(operation, now = Date.now()) {
 }
 
 const SECOND_MS = 1000
+const VERIFY_RETRY_1_S = 30
+const VERIFY_RETRY_2_S = 60
+const VERIFY_RETRY_3_S = 120
+const VERIFY_RETRY_4_S = 240
+const RESUBMIT_1_S = 10
+const RESUBMIT_2_S = 30
+const RESUBMIT_3_S = 90
 
 /**
  * The delays before the ARM verification retries (plan 5): FIFO queues take
  * no per-message delay, so the sweeper retries at these ages.
  */
 export const VERIFY_BACKOFF_MS = Object.freeze([
-  30 * SECOND_MS,
-  60 * SECOND_MS,
-  120 * SECOND_MS,
-  240 * SECOND_MS
+  VERIFY_RETRY_1_S * SECOND_MS,
+  VERIFY_RETRY_2_S * SECOND_MS,
+  VERIFY_RETRY_3_S * SECOND_MS,
+  VERIFY_RETRY_4_S * SECOND_MS
 ])
 
 /**
@@ -310,9 +317,9 @@ export function verifyOutcome(attempts, maxAttempts, now = Date.now()) {
  * The delays before a refused write is rebuilt and resubmitted (plan 5).
  */
 export const RESUBMIT_DELAYS_MS = Object.freeze([
-  10 * SECOND_MS,
-  30 * SECOND_MS,
-  90 * SECOND_MS
+  RESUBMIT_1_S * SECOND_MS,
+  RESUBMIT_2_S * SECOND_MS,
+  RESUBMIT_3_S * SECOND_MS
 ])
 
 /**
