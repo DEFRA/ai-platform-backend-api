@@ -94,6 +94,25 @@
   },
   "allOf": [
     {
+      "description": "The target is whole: an operation with its team and path, or none of the three, so a command for an operation can always be grouped.",
+      "if": {
+        "required": ["operationId"],
+        "properties": { "operationId": { "type": "string" } }
+      },
+      "then": {
+        "properties": {
+          "team": { "type": "string" },
+          "path": { "type": "string" }
+        }
+      },
+      "else": {
+        "properties": {
+          "team": { "type": "null" },
+          "path": { "type": "null" }
+        }
+      }
+    },
+    {
       "description": "An apply dispatches the apply workflow with the environment alone.",
       "if": {
         "required": ["type"],
@@ -159,7 +178,9 @@
       "then": {
         "allOf": [
           {
-            "if": { "properties": { "action": { "const": "write" } } },
+            "if": {
+              "properties": { "action": { "enum": ["write", "revert"] } }
+            },
             "then": {
               "required": ["document"],
               "properties": {

@@ -286,6 +286,15 @@
           "path": { "type": "string" }
         }
       }
+    },
+    {
+      "description": "The team and the path travel together: both, or neither, so an event never names half a target.",
+      "if": {
+        "required": ["team"],
+        "properties": { "team": { "type": "null" } }
+      },
+      "then": { "properties": { "path": { "type": "null" } } },
+      "else": { "properties": { "path": { "type": "string" } } }
     }
   ],
   "$defs": {
