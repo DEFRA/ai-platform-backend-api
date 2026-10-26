@@ -973,6 +973,77 @@ describe('operations-service', () => {
       expect((await stored(waiting._id)).slot).toBe('active')
     })
 
+    describe('a revert child refused and resubmitted', () => {
+      async function refusedRevert(previous) {
+        const parent = await seed('deploy-failed', {
+          attempt: 2,
+          deferred: 'revert',
+          revision: 4,
+          gitops: { commitSha: SHA, applyRunId: 25000000011 }
+        })
+        reader.getPreviousDocument.mockResolvedValue({ document: previous })
+        await service.startRevert(parent)
+
+        const child = await db
+          .collection('operations')
+          .findOne({ parentId: parent._id })
+
+        await db.collection('operations').updateOne(
+          { _id: child._id },
+          {
+            $set: {
+              state: 'queued',
+              held: { code: 'paused', since: '2026-10-26T12:00:00Z' }
+            }
+          }
+        )
+
+        return child
+      }
+
+      test('keeps the rollback document and base it was built with, and submits it again', async () => {
+        const child = await refusedRevert({
+          environment: 'infradev',
+          revision: 3,
+          models: []
+        })
+
+        await service.resubmit(child._id)
+
+        const persisted = await stored(child._id)
+
+        expect(buildDocument).not.toHaveBeenCalled()
+        expect(persisted).toMatchObject({
+          state: 'requested',
+          action: 'revert',
+          document: child.document,
+          expectedRevision: 4,
+          items: [],
+          outboxPending: true
+        })
+        expect(persisted.held).toBeUndefined()
+        expect(entryTypes(persisted)).toEqual(['submit', 'submit'])
+        expect(relay.publishOperation).toHaveBeenLastCalledWith(child._id)
+      })
+
+      test('keeps the removal of a file that did not exist before', async () => {
+        const child = await refusedRevert(null)
+
+        await service.resubmit(child._id)
+
+        const persisted = await stored(child._id)
+
+        expect(buildDocument).not.toHaveBeenCalled()
+        expect(persisted).toMatchObject({
+          state: 'requested',
+          action: 'remove',
+          expectedRevision: 4
+        })
+        expect(persisted.document).toBeUndefined()
+        expect(entryTypes(persisted)).toEqual(['submit', 'submit'])
+      })
+    })
+
     test('rethrows a failure to build that is not a refusal', async () => {
       const operation = await held()
       buildDocument.mockRejectedValue(new Error('GitHub unavailable'))

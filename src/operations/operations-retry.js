@@ -7,6 +7,7 @@ import {
 import {
   DEPLOYING,
   DEPLOY_FAILED,
+  OPERATION_TYPES,
   RANK,
   RETRY_APPLY,
   TIMED_OUT,
@@ -22,6 +23,7 @@ import {
   busyConflict,
   isPolicyRefusal,
   publish,
+  withHeldSubmit,
   withSubmit
 } from '#/operations/operations-support.js'
 
@@ -52,6 +54,26 @@ function resubmitRecord(operation, { counted, passed }) {
   }
 }
 
+// What a resubmission submits: a revert its own rollback, built once when it
+// was created, so a refusal never swaps it for the file as it is now; any
+// other write is rebuilt from main. A request that can no longer be built
+// comes back as the refusal that ends it.
+async function resubmission(ctx, operation) {
+  if (operation.type === OPERATION_TYPES.REVERT) {
+    return { submit: withHeldSubmit(operation) }
+  }
+
+  try {
+    return { submit: withSubmit(operation, await ctx.buildDocument(operation)) }
+  } catch (error) {
+    if (!isPolicyRefusal(error)) {
+      throw error
+    }
+
+    return { refusal: error }
+  }
+}
+
 /**
  * Rebuilds a held write from main and publishes it again: after a
  * `stale-revision` or `commit-conflict` (counted, at most
@@ -74,19 +96,12 @@ export async function resubmit(
       return null
     }
 
-    let submission
+    const { submit, refusal } = await resubmission(ctx, operation)
 
-    try {
-      submission = await ctx.buildDocument(operation)
-    } catch (error) {
-      if (!isPolicyRefusal(error)) {
-        throw error
-      }
-
-      return endRefused(ctx, operation, error)
+    if (refusal) {
+      return endRefused(ctx, operation, refusal)
     }
 
-    const submit = withSubmit(operation, submission)
     const record = resubmitRecord(operation, { counted, passed })
     const written = await writeOperation(ctx, operation, {
       state: 'requested',

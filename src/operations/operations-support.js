@@ -61,6 +61,21 @@ export async function publish({ relay, logger }, operationId) {
 }
 
 /**
+ * The change that submits again what an operation already holds: a revert's
+ * rollback document (or its removal of the file) and base, built once when
+ * the revert was created and never rebuilt from the file as it is now.
+ * @param {object} operation
+ * @param {number} [attempt]
+ * @returns {{set: object, push: {outbox: object}}}
+ */
+export function withHeldSubmit(operation, attempt = operation.attempt) {
+  return {
+    set: { outboxPending: true },
+    push: { outbox: newOutboxEntry('submit', { attempt }) }
+  }
+}
+
+/**
  * The change that submits an operation's built document: the submission
  * fields, a pending outbox flag and a `submit` command.
  * @param {object} operation
