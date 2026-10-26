@@ -294,6 +294,7 @@ describe('#createGithubRunReader', () => {
         contents: 'read',
         metadata: 'read'
       })
+      expect(Object.values(RUN_READ_PERMISSIONS)).not.toContain('write')
       expect(createClient.mock.calls).toEqual([
         [
           {

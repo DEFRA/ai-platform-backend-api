@@ -229,6 +229,7 @@ describe('#createGithubTeamFileReader', () => {
       await reader.getCurrentDocument({ path: PIN_PATH })
 
       expect(READ_PERMISSIONS).toEqual({ contents: 'read', metadata: 'read' })
+      expect(Object.values(READ_PERMISSIONS)).not.toContain('write')
       expect(createClient.mock.calls).toEqual([
         [
           {

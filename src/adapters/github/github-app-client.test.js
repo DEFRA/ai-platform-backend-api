@@ -42,6 +42,11 @@ const appEnv = {
   GITHUB_TOKEN: ''
 }
 
+const READ_SCOPE = {
+  repositoryNames: ['ai-platform-infra'],
+  permissions: { contents: 'read' }
+}
+
 describe('#createGithubAppClient', () => {
   afterEach(() => {
     nock.cleanAll()
@@ -72,7 +77,7 @@ describe('#createGithubAppClient', () => {
 
       const client = createGithubAppClient({
         repositoryNames: ['ai-platform-tenants'],
-        permissions: { actions: 'write' }
+        permissions: { contents: 'read', actions: 'read' }
       })
 
       await client.request('GET /repos/{owner}/{repo}', {
@@ -82,7 +87,7 @@ describe('#createGithubAppClient', () => {
 
       expect(tokenRequestBody).toEqual({
         repositories: ['ai-platform-tenants'],
-        permissions: { actions: 'write' }
+        permissions: { contents: 'read', actions: 'read' }
       })
       expect(sentAuthorization).toBe('token ghs_scoped')
     })
@@ -131,10 +136,13 @@ describe('#createGithubAppClient', () => {
         return [200, {}]
       })
 
-    await createGithubAppClient().request('GET /repos/{owner}/{repo}', {
-      owner: 'DEFRA',
-      repo: 'ai-platform-infra'
-    })
+    await createGithubAppClient(READ_SCOPE).request(
+      'GET /repos/{owner}/{repo}',
+      {
+        owner: 'DEFRA',
+        repo: 'ai-platform-infra'
+      }
+    )
 
     expect(GITHUB_API_VERSION).toBe('2026-03-10')
     expect(sentHeaders['x-github-api-version']).toBe('2026-03-10')
@@ -160,12 +168,111 @@ describe('#createGithubAppClient', () => {
       })
 
     await expect(
-      createGithubAppClient().request('GET /repos/{owner}/{repo}', {
+      createGithubAppClient(READ_SCOPE).request('GET /repos/{owner}/{repo}', {
         owner: 'DEFRA',
         repo: 'ai-platform-infra'
       })
     ).rejects.toMatchObject({ status: 403 })
     expect(attempts).toBe(1)
+  })
+
+  describe('read-only enforcement', () => {
+    test('allows exactly the read permissions contents, actions and metadata', async () => {
+      const { GITHUB_READ_PERMISSIONS } = await loadClientModule({})
+
+      expect(GITHUB_READ_PERMISSIONS).toEqual({
+        contents: 'read',
+        actions: 'read',
+        metadata: 'read'
+      })
+      expect(Object.isFrozen(GITHUB_READ_PERMISSIONS)).toBe(true)
+    })
+
+    test.each([
+      ['write access to contents', { contents: 'write' }],
+      ['write access to actions', { actions: 'write' }],
+      ['admin access to metadata', { metadata: 'admin' }],
+      ['a write mixed in with reads', { contents: 'read', actions: 'write' }],
+      ['a permission outside the allow-list', { pull_requests: 'read' }],
+      ['an inherited property name', { toString: 'read' }]
+    ])('refuses %s without minting a token', async (_name, permissions) => {
+      const { createGithubAppClient } = await loadClientModule(appEnv)
+      const tokenRequests = nock(GITHUB_API)
+        .post('/app/installations/123/access_tokens')
+        .reply(201, { token: 'ghs_never' })
+
+      expect(() =>
+        createGithubAppClient({
+          repositoryNames: ['ai-platform-tenants'],
+          permissions
+        })
+      ).toThrow(/read permissions/)
+      expect(tokenRequests.isDone()).toBe(false)
+    })
+
+    test.each([
+      ['no scope', undefined],
+      ['no permissions', { repositoryNames: ['ai-platform-infra'] }],
+      [
+        'empty permissions',
+        { repositoryNames: ['ai-platform-infra'], permissions: {} }
+      ],
+      ['no repositories', { permissions: { contents: 'read' } }],
+      [
+        'an empty repository list',
+        { repositoryNames: [], permissions: { contents: 'read' } }
+      ]
+    ])(
+      'requires explicit repositories and permissions: %s',
+      async (_n, scope) => {
+        const { createGithubAppClient } = await loadClientModule({})
+
+        expect(() => createGithubAppClient(scope)).toThrow(
+          /repositoryNames and permissions/
+        )
+      }
+    )
+
+    test.each(['POST', 'PUT', 'PATCH', 'DELETE'])(
+      'refuses a %s request before any token or call goes out',
+      async (method) => {
+        const { createGithubAppClient } = await loadClientModule(appEnv)
+        const calls = []
+        const scope = nock(GITHUB_API).persist()
+
+        scope.on('request', (request) =>
+          calls.push(`${request.method} ${request.path}`)
+        )
+        scope.intercept(/.*/, method).reply(200, {})
+        scope.post(/.*/).reply(201, { token: 'ghs_never' })
+
+        const client = createGithubAppClient(READ_SCOPE)
+
+        await expect(
+          client.request(`${method} /repos/{owner}/{repo}/dispatches`, {
+            owner: 'DEFRA',
+            repo: 'ai-platform-tenants'
+          })
+        ).rejects.toMatchObject({ code: 'github-write-refused' })
+        expect(calls).toEqual([])
+      }
+    )
+
+    test('refuses a write through a named Octokit method too, on the PAT fallback', async () => {
+      const { createGithubAppClient } = await loadClientModule({
+        GITHUB_TOKEN: 'pat-placeholder'
+      })
+      const client = createGithubAppClient(READ_SCOPE)
+
+      await expect(
+        client.rest.actions.createWorkflowDispatch({
+          owner: 'DEFRA',
+          repo: 'ai-platform-tenants',
+          workflow_id: 'submit.yml',
+          ref: 'main'
+        })
+      ).rejects.toMatchObject({ code: 'github-write-refused' })
+    })
   })
 })
 
