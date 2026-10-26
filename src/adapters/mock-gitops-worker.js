@@ -33,6 +33,8 @@ const SUBMIT_WORKFLOW = '.github/workflows/submit.yml'
 const APPLY_WORKFLOW = '.github/workflows/apply.yml'
 const APPLY_STATES = new Set(['committed', 'deploying', 'deployed'])
 const SUBMIT_STATUSES = new Set(['requested', 'committed', MOCK_CHECKS_FAILED])
+// A fake commit SHA is as long as a Git object name in hex.
+const SHA_HEX_LENGTH = 40
 
 /**
  * The outcome a request's purpose forces in the mock orchestrator, or null.
@@ -58,7 +60,10 @@ function forcedOutcomeOf(command, operation) {
 }
 
 function mockSha(operationId) {
-  return createHash('sha1').update(operationId).digest('hex')
+  return createHash('sha256')
+    .update(operationId)
+    .digest('hex')
+    .slice(0, SHA_HEX_LENGTH)
 }
 
 /**
@@ -97,6 +102,14 @@ function stepsOf(command, forced) {
     command.type === 'submit' ||
     (command.type === 'reconcile' && command.state === 'requested')
 
+  if (
+    !submits &&
+    command.type === 'reconcile' &&
+    !APPLY_STATES.has(command.state)
+  ) {
+    return []
+  }
+
   if (submits) {
     steps.push('requested')
 
@@ -105,13 +118,170 @@ function stepsOf(command, forced) {
     }
 
     steps.push('committed')
-  } else if (command.type === 'reconcile' && !APPLY_STATES.has(command.state)) {
-    return []
   }
 
   const fails = forced === MOCK_DEPLOY_FAILED && command.attempt === 1
 
   return [...steps, 'deploying', fails ? MOCK_DEPLOY_FAILED : 'deployed']
+}
+
+// Run IDs rise by one, and never fall behind the clock, as GitHub's do.
+function createRunIdSource(now) {
+  let lastRunId = 0
+
+  return function nextRunId() {
+    lastRunId = Math.max(lastRunId + 1, now())
+
+    return lastRunId
+  }
+}
+
+// A cancellable sleep: `pause` resolves true once it has slept, false when
+// `stop` cut it short or the pauser was already stopped.
+function createPauser() {
+  const sleepers = new Set()
+  let stopped = false
+
+  return {
+    pause(ms) {
+      return new Promise((resolve) => {
+        const sleeper = { resolve }
+
+        sleeper.timer = setTimeout(() => {
+          sleepers.delete(sleeper)
+          resolve(!stopped)
+        }, ms)
+        sleeper.timer.unref()
+        sleepers.add(sleeper)
+      })
+    },
+    stop() {
+      stopped = true
+
+      for (const sleeper of sleepers) {
+        clearTimeout(sleeper.timer)
+        sleeper.resolve(false)
+      }
+
+      sleepers.clear()
+    }
+  }
+}
+
+function recordRun({ runReader, now }, command, { source, runId, conclusion }) {
+  const label = source === 'submit' ? 'Submit' : 'Apply'
+
+  runReader.record({
+    id: runId,
+    name: `${label} (${command.operationId})`,
+    path: source === 'submit' ? SUBMIT_WORKFLOW : APPLY_WORKFLOW,
+    headBranch: 'main',
+    status: 'completed',
+    conclusion,
+    runStartedAt: new Date(now()).toISOString(),
+    report:
+      conclusion === 'failure'
+        ? { outcome: 'failure', failingTeams: [command.team] }
+        : null
+  })
+
+  return {
+    source,
+    runId,
+    runUrl: `https://github.com/${command.repository}/actions/runs/${runId}`
+  }
+}
+
+function eventOf(now, command, operation, status, run, facts) {
+  return {
+    schema: 'aip.gitops.event/1',
+    eventId: `${command.operationId}:${status}:${run.runId}:1`,
+    environment: command.environment,
+    team: command.team,
+    path: command.path,
+    action: command.action ?? operation?.action ?? 'write',
+    status,
+    timestamp: new Date(now()).toISOString(),
+    source: run.source,
+    requestedBy: command.requestedBy,
+    repository: command.repository,
+    traceparent: command.traceparent ?? null,
+    cdpRequestId: command.cdpRequestId ?? null,
+    operationId: command.operationId,
+    runId: run.runId,
+    runAttempt: 1,
+    runUrl: run.runUrl,
+    ...facts
+  }
+}
+
+function factsOf(status, command, { sha, committedAt }) {
+  if (status === 'requested') {
+    return {}
+  }
+
+  if (status === MOCK_CHECKS_FAILED) {
+    return {
+      failureReason: {
+        code: 'validation-failed',
+        message: 'Automated checks failed on the desired-state change (mock)',
+        retryable: false
+      }
+    }
+  }
+
+  if (status === MOCK_DEPLOY_FAILED) {
+    return {
+      commitSha: sha,
+      committedAt,
+      failureReason: {
+        code: 'apply-failed',
+        message: 'Deploy workflow failed to reconcile the stack (mock)',
+        retryable: false
+      },
+      failingTeams: [command.team],
+      attributable: false
+    }
+  }
+
+  return {
+    commitSha: sha,
+    committedAt,
+    ...(status === 'deployed' ? { appliedSha: sha, resources: [] } : {})
+  }
+}
+
+// The stages are sent one after another, each a stage duration after the
+// last, so the order of the events is the order of the pipeline.
+async function play(stages, command, operation, steps) {
+  const { handle, now, pause, nextRunId, stageDurationMs } = stages
+  const sha = operation?.gitops?.commitSha ?? mockSha(command.operationId)
+  const runIds = { submit: nextRunId(), apply: nextRunId() }
+  let committedAt =
+    operation?.gitops?.committedAt ?? new Date(now()).toISOString()
+
+  for (const status of steps) {
+    if (!(await pause(stageDurationMs))) {
+      return
+    }
+
+    const source = SUBMIT_STATUSES.has(status) ? 'submit' : 'apply'
+    const failed =
+      status === MOCK_CHECKS_FAILED || status === MOCK_DEPLOY_FAILED
+    const run = recordRun(stages, command, {
+      source,
+      runId: runIds[source],
+      conclusion: failed ? 'failure' : 'success'
+    })
+
+    if (status === 'committed') {
+      committedAt = new Date(now()).toISOString()
+    }
+
+    const facts = factsOf(status, command, { sha, committedAt })
+
+    await handle(eventOf(now, command, operation, status, run, facts))
+  }
 }
 
 /**
@@ -134,149 +304,14 @@ export function createMockGitopsWorker({
   now = Date.now
 }) {
   const pending = new Set()
-  const sleepers = new Set()
-  let lastRunId = 0
-  let stopped = false
-
-  function nextRunId() {
-    lastRunId = Math.max(lastRunId + 1, now())
-
-    return lastRunId
-  }
-
-  function pause(ms) {
-    return new Promise((resolve) => {
-      const sleeper = { resolve }
-
-      sleeper.timer = setTimeout(() => {
-        sleepers.delete(sleeper)
-        resolve(!stopped)
-      }, ms)
-      sleeper.timer.unref()
-      sleepers.add(sleeper)
-    })
-  }
-
-  function runOf(command, { source, runId, conclusion }) {
-    const label = source === 'submit' ? 'Submit' : 'Apply'
-
-    runReader.record({
-      id: runId,
-      name: `${label} (${command.operationId})`,
-      path: source === 'submit' ? SUBMIT_WORKFLOW : APPLY_WORKFLOW,
-      headBranch: 'main',
-      status: 'completed',
-      conclusion,
-      runStartedAt: new Date(now()).toISOString(),
-      report:
-        conclusion === 'failure'
-          ? { outcome: 'failure', failingTeams: [command.team] }
-          : null
-    })
-
-    return {
-      source,
-      runId,
-      runUrl: `https://github.com/${command.repository}/actions/runs/${runId}`
-    }
-  }
-
-  function eventOf(command, operation, status, run, facts) {
-    return {
-      schema: 'aip.gitops.event/1',
-      eventId: `${command.operationId}:${status}:${run.runId}:1`,
-      environment: command.environment,
-      team: command.team,
-      path: command.path,
-      action: command.action ?? operation?.action ?? 'write',
-      status,
-      timestamp: new Date(now()).toISOString(),
-      source: run.source,
-      requestedBy: command.requestedBy,
-      repository: command.repository,
-      traceparent: command.traceparent ?? null,
-      cdpRequestId: command.cdpRequestId ?? null,
-      operationId: command.operationId,
-      runId: run.runId,
-      runAttempt: 1,
-      runUrl: run.runUrl,
-      ...facts
-    }
-  }
-
-  async function play(command, operation, steps) {
-    const sha = operation?.gitops?.commitSha ?? mockSha(command.operationId)
-    const runIds = { submit: nextRunId(), apply: nextRunId() }
-    let committedAt =
-      operation?.gitops?.committedAt ?? new Date(now()).toISOString()
-
-    for (const status of steps) {
-      if (!(await pause(stageDurationMs))) {
-        return
-      }
-
-      const source = SUBMIT_STATUSES.has(status) ? 'submit' : 'apply'
-      const failed =
-        status === MOCK_CHECKS_FAILED || status === MOCK_DEPLOY_FAILED
-      const run = runOf(command, {
-        source,
-        runId: runIds[source],
-        conclusion: failed ? 'failure' : 'success'
-      })
-
-      if (status === 'committed') {
-        committedAt = new Date(now()).toISOString()
-      }
-
-      await handle(
-        eventOf(
-          command,
-          operation,
-          status,
-          run,
-          factsOf(status, command, {
-            sha,
-            committedAt
-          })
-        )
-      )
-    }
-  }
-
-  function factsOf(status, command, { sha, committedAt }) {
-    if (status === 'requested') {
-      return {}
-    }
-
-    if (status === MOCK_CHECKS_FAILED) {
-      return {
-        failureReason: {
-          code: 'validation-failed',
-          message: 'Automated checks failed on the desired-state change (mock)',
-          retryable: false
-        }
-      }
-    }
-
-    if (status === MOCK_DEPLOY_FAILED) {
-      return {
-        commitSha: sha,
-        committedAt,
-        failureReason: {
-          code: 'apply-failed',
-          message: 'Deploy workflow failed to reconcile the stack (mock)',
-          retryable: false
-        },
-        failingTeams: [command.team],
-        attributable: false
-      }
-    }
-
-    return {
-      commitSha: sha,
-      committedAt,
-      ...(status === 'deployed' ? { appliedSha: sha, resources: [] } : {})
-    }
+  const pauser = createPauser()
+  const stages = {
+    handle,
+    runReader,
+    now,
+    pause: pauser.pause,
+    nextRunId: createRunIdSource(now),
+    stageDurationMs
   }
 
   return {
@@ -287,7 +322,7 @@ export function createMockGitopsWorker({
     async accept(command) {
       const operation = await findOperation(db, command.operationId)
       const steps = stepsOf(command, forcedOutcomeOf(command, operation))
-      const chain = play(command, operation, steps)
+      const chain = play(stages, command, operation, steps)
         .catch((error) => {
           logger?.warn(
             { operationId: command.operationId, message: error.message },
@@ -305,7 +340,7 @@ export function createMockGitopsWorker({
      */
     async idle() {
       while (pending.size > 0) {
-        await Promise.all([...pending])
+        await Promise.all(pending)
       }
     },
 
@@ -313,14 +348,7 @@ export function createMockGitopsWorker({
      * Cancels the events still to come.
      */
     stop() {
-      stopped = true
-
-      for (const sleeper of sleepers) {
-        clearTimeout(sleeper.timer)
-        sleeper.resolve(false)
-      }
-
-      sleepers.clear()
+      pauser.stop()
     }
   }
 }

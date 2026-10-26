@@ -3,7 +3,10 @@ import {
   messageGroupId
 } from '#/adapters/command-publisher.js'
 
-const FIVE_MINUTES_MS = 5 * 60 * 1000
+const MINUTES_IN_MS = 60 * 1000
+// The SQS FIFO deduplication interval is five minutes.
+const SQS_DEDUP_WINDOW_MINUTES = 5
+const FIVE_MINUTES_MS = SQS_DEDUP_WINDOW_MINUTES * MINUTES_IN_MS
 
 /**
  * Creates an in-memory `CommandPublisher` that simulates an SQS FIFO queue

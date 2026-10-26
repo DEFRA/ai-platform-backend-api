@@ -174,8 +174,7 @@ export async function retryTeamCredential(db, doc, settings, entry) {
   })
 
   return (
-    needed &&
-    (await grantTeamCredential(db, doc, newest, resolved, { retry: true }))
+    needed && grantTeamCredential(db, doc, newest, resolved, { retry: true })
   )
 }
 

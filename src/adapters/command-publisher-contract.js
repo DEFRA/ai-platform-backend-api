@@ -41,7 +41,7 @@ export function describeCommandPublisherContract(
 
       const error = await createPublisher()
         .publish(command)
-        .catch((caught) => caught)
+        .catch((error_) => error_)
 
       expect(error).toBeInstanceOf(Error)
       expect(error.message).not.toContain(command.document)

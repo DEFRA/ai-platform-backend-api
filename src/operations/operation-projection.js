@@ -159,6 +159,42 @@ export function appRegistrationOf(resources) {
   }
 }
 
+const VERIFIED_STATES = ['verified', 'active', 'removed']
+
+function operationSummaryOf(operation, gitops) {
+  return {
+    id: operation._id,
+    state: operation.state,
+    attempt: operation.attempt,
+    runUrl: gitops.applyRunUrl ?? gitops.submitRunUrl ?? null,
+    commitSha: gitops.commitSha ?? null,
+    failureReason: operation.error?.code ?? null
+  }
+}
+
+function linksOf(gitops) {
+  return Object.fromEntries(
+    Object.entries({
+      submitRun: gitops.submitRunUrl,
+      applyRun: gitops.applyRunUrl
+    }).filter(([, url]) => url)
+  )
+}
+
+function registrationStatusOf(resources) {
+  if (!resources) {
+    return null
+  }
+
+  return appRegistrationOf(resources) ? 'created' : 'skipped'
+}
+
+function verificationFailureOf(operation, verify) {
+  return verify?.reason && operation.state === 'deployed'
+    ? { reason: verify.reason, attempts: verify.attempts }
+    : null
+}
+
 /**
  * The fields of one entry as its operation now stands.
  * @param {object} operation
@@ -170,37 +206,18 @@ export function appRegistrationOf(resources) {
 export function entryFieldsOf(operation, item, entry, at) {
   const status = entryStatusOf(operation, item)
   const { gitops = {}, verify } = operation
-  const verified = ['verified', 'active', 'removed'].includes(operation.state)
+  const verified = VERIFIED_STATES.includes(operation.state)
   const fields = {
     status,
     statusTimes: withStatusTime(entry.statusTimes, status, at),
     failureReason: entryFailureReasonOf(operation, item),
     projectedVersion: operation.stateVersion,
     operationId: operation._id,
-    operation: {
-      id: operation._id,
-      state: operation.state,
-      attempt: operation.attempt,
-      runUrl: gitops.applyRunUrl ?? gitops.submitRunUrl ?? null,
-      commitSha: gitops.commitSha ?? null,
-      failureReason: operation.error?.code ?? null
-    },
-    links: Object.fromEntries(
-      Object.entries({
-        submitRun: gitops.submitRunUrl,
-        applyRun: gitops.applyRunUrl
-      }).filter(([, url]) => url)
-    ),
+    operation: operationSummaryOf(operation, gitops),
+    links: linksOf(gitops),
     resources: resourceListOf(gitops.resources, verified),
-    appRegistration: gitops.resources
-      ? appRegistrationOf(gitops.resources)
-        ? 'created'
-        : 'skipped'
-      : null,
-    verificationFailure:
-      verify?.reason && operation.state === 'deployed'
-        ? { reason: verify.reason, attempts: verify.attempts }
-        : null
+    appRegistration: registrationStatusOf(gitops.resources),
+    verificationFailure: verificationFailureOf(operation, verify)
   }
 
   if (status === 'active' && item.change !== 'remove') {

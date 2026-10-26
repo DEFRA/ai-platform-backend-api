@@ -50,22 +50,11 @@ function toRun(run) {
   }
 }
 
-/**
- * Creates the GitHub reader for workflow runs, their run reports, commit
- * ancestry and actor permissions. It only ever reads. Repositories are
- * passed per call as `owner/name`; clients are built lazily, once per
- * repository, so this is safe to construct with GitHub config unset.
- * @param {object} [deps]
- * @param {typeof createGithubAppClient} [deps.createClient]
- * @param {ReturnType<typeof createConditionalReader>} [deps.reader]
- */
-export function createGithubRunReader({
-  createClient = createGithubAppClient,
-  reader = createConditionalReader()
-} = {}) {
+// Clients are built lazily, once per repository.
+function createTargetResolver(createClient) {
   const clients = new Map()
 
-  function target(repository) {
+  return function target(repository) {
     const { owner, repo } = parseRepo(repository)
 
     if (!clients.has(repository)) {
@@ -80,21 +69,63 @@ export function createGithubRunReader({
 
     return { client: clients.get(repository), repo: { owner, repo } }
   }
+}
 
-  // A missing resource reads as `fallback`; any other error propagates.
-  async function readOr(fallback, repository, route, params) {
-    const { client, repo } = target(repository)
+// A missing resource reads as `fallback`; any other error propagates.
+async function readOr({ target, reader }, fallback, repository, route, params) {
+  const { client, repo } = target(repository)
 
-    try {
-      return await reader.read(client, route, { ...repo, ...params })
-    } catch (error) {
-      if (error.status === statusCodes.notFound) {
-        return fallback
-      }
-
-      throw error
+  try {
+    return await reader.read(client, route, { ...repo, ...params })
+  } catch (error) {
+    if (error.status === statusCodes.notFound) {
+      return fallback
     }
+
+    throw error
   }
+}
+
+async function readRunReport(access, { repository, runId, environment }) {
+  const name = `run-report-${environment}.json`
+  const { artifacts = [] } = await readOr(
+    access,
+    {},
+    repository,
+    'GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts',
+    { run_id: runId, name }
+  )
+  const artifact = artifacts.find(
+    (candidate) => candidate.name === name && !candidate.expired
+  )
+
+  if (!artifact) {
+    return null
+  }
+
+  const { client } = access.target(repository)
+  const { data } = await client.request({
+    method: 'GET',
+    url: artifact.archive_download_url
+  })
+
+  return parseReport(data)
+}
+
+/**
+ * Creates the GitHub reader for workflow runs, their run reports, commit
+ * ancestry and actor permissions. It only ever reads. Repositories are
+ * passed per call as `owner/name`; clients are built lazily, once per
+ * repository, so this is safe to construct with GitHub config unset.
+ * @param {object} [deps]
+ * @param {typeof createGithubAppClient} [deps.createClient]
+ * @param {ReturnType<typeof createConditionalReader>} [deps.reader]
+ */
+export function createGithubRunReader({
+  createClient = createGithubAppClient,
+  reader = createConditionalReader()
+} = {}) {
+  const access = { target: createTargetResolver(createClient), reader }
 
   return {
     /**
@@ -103,6 +134,7 @@ export function createGithubRunReader({
      */
     async getRun({ repository, runId }) {
       const run = await readOr(
+        access,
         null,
         repository,
         'GET /repos/{owner}/{repo}/actions/runs/{run_id}',
@@ -117,29 +149,8 @@ export function createGithubRunReader({
      * when the run has no unexpired one.
      * @param {{repository: string, runId: number, environment: string}} params
      */
-    async getRunReport({ repository, runId, environment }) {
-      const name = `run-report-${environment}.json`
-      const { artifacts = [] } = await readOr(
-        {},
-        repository,
-        'GET /repos/{owner}/{repo}/actions/runs/{run_id}/artifacts',
-        { run_id: runId, name }
-      )
-      const artifact = artifacts.find(
-        (candidate) => candidate.name === name && !candidate.expired
-      )
-
-      if (!artifact) {
-        return null
-      }
-
-      const { client } = target(repository)
-      const { data } = await client.request({
-        method: 'GET',
-        url: artifact.archive_download_url
-      })
-
-      return parseReport(data)
+    async getRunReport(params) {
+      return readRunReport(access, params)
     },
 
     /**
@@ -149,6 +160,7 @@ export function createGithubRunReader({
      */
     async isOnMain({ repository, sha }) {
       const { status } = await readOr(
+        access,
         {},
         repository,
         'GET /repos/{owner}/{repo}/compare/{basehead}',
@@ -166,6 +178,7 @@ export function createGithubRunReader({
      */
     async getActorPermission({ repository, username }) {
       const collaborator = await readOr(
+        access,
         null,
         repository,
         'GET /repos/{owner}/{repo}/collaborators/{username}/permission',

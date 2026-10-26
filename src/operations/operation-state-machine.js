@@ -274,11 +274,18 @@ export function overdueAction(operation, now = Date.now()) {
   return (operation.reconcileCount ?? 0) < 1 ? 'reconcile' : 'time-out'
 }
 
+const SECOND_MS = 1000
+
 /**
  * The delays before the ARM verification retries (plan 5): FIFO queues take
  * no per-message delay, so the sweeper retries at these ages.
  */
-export const VERIFY_BACKOFF_MS = Object.freeze([30000, 60000, 120000, 240000])
+export const VERIFY_BACKOFF_MS = Object.freeze([
+  30 * SECOND_MS,
+  60 * SECOND_MS,
+  120 * SECOND_MS,
+  240 * SECOND_MS
+])
 
 /**
  * What follows a failed ARM verification: another try at `nextAt`, or, once
@@ -302,7 +309,11 @@ export function verifyOutcome(attempts, maxAttempts, now = Date.now()) {
 /**
  * The delays before a refused write is rebuilt and resubmitted (plan 5).
  */
-export const RESUBMIT_DELAYS_MS = Object.freeze([10000, 30000, 90000])
+export const RESUBMIT_DELAYS_MS = Object.freeze([
+  10 * SECOND_MS,
+  30 * SECOND_MS,
+  90 * SECOND_MS
+])
 
 /**
  * When the next resubmission is due, or null once `max` are used up.

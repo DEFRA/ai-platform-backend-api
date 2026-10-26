@@ -105,7 +105,7 @@ export async function checkContracts({
   for (const [file, expected] of downloaded) {
     const vendored = await readFile(`${dir}${file}`).catch(() => null)
 
-    if (!vendored || !vendored.equals(expected)) {
+    if (!vendored?.equals(expected)) {
       differing.push(file)
     }
   }

@@ -18,6 +18,33 @@ function dotted(prefix, facts) {
   )
 }
 
+// A state move records its history entry and resets the reconcile count.
+function applyTransition({ set, unset, push }, operation, change, now) {
+  set.state = change.state
+  set.reconcileCount = 0
+
+  if (operation.state === TIMED_OUT) {
+    unset.push('leftState')
+  }
+
+  push.history = {
+    state: change.state,
+    at: change.eventAt ?? now,
+    receivedAt: now,
+    source: change.source ?? 'backend',
+    eventId: change.eventId ?? null
+  }
+}
+
+// undefined leaves the deadline as it is.
+function deadlineOf(change, settings) {
+  if (change.deadlineAt !== undefined) {
+    return change.deadlineAt
+  }
+
+  return change.state ? deadlineFor(change.state, settings) : undefined
+}
+
 /**
  * Writes one change to an operation by compare-and-set and projects it.
  * `state` moves it (recording history, resetting the deadline and
@@ -40,26 +67,13 @@ export async function writeOperation(ctx, operation, change) {
   const push = { ...change.push }
 
   if (change.state) {
-    set.state = change.state
-    set.reconcileCount = 0
-
-    if (operation.state === TIMED_OUT) {
-      unset.push('leftState')
-    }
-
-    push.history = {
-      state: change.state,
-      at: change.eventAt ?? now,
-      receivedAt: now,
-      source: change.source ?? 'backend',
-      eventId: change.eventId ?? null
-    }
+    applyTransition({ set, unset, push }, operation, change, now)
   }
 
-  if (change.deadlineAt !== undefined) {
-    set.deadlineAt = change.deadlineAt
-  } else if (change.state) {
-    set.deadlineAt = deadlineFor(change.state, settings)
+  const deadlineAt = deadlineOf(change, settings)
+
+  if (deadlineAt !== undefined) {
+    set.deadlineAt = deadlineAt
   }
 
   const written = await compareAndSet(db, operation, {

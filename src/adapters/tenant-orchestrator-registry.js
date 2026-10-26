@@ -10,7 +10,9 @@ import { createSqsTransport } from '#/adapters/sqs/sqs-transport.js'
 export const MOCK_ORCHESTRATOR = 'mock'
 export const SQS_ORCHESTRATOR = 'sqs'
 
-const NO_OUTCOME = () => null
+function noOutcome() {
+  return null
+}
 
 /**
  * @typedef {object} TenantOrchestratorRegistry
@@ -52,7 +54,7 @@ export function createTenantOrchestratorRegistry(
     key: mode,
     reader: adapters.reader,
     createTransport: adapters.createTransport,
-    mockOutcomeOf: adapters.mockOutcomeOf ?? NO_OUTCOME
+    mockOutcomeOf: adapters.mockOutcomeOf ?? noOutcome
   }
 }
 

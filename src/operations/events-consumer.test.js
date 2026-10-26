@@ -41,10 +41,10 @@ describe('createMessageHandler', () => {
 
     const message = { MessageId: 'm-1', Body: JSON.stringify(event) }
 
-    // sqs-consumer deletes a message only when the handler returns it.
-    await expect(createMessageHandler(handler, logger)(message)).resolves.toBe(
-      message
-    )
+    // With `alwaysAcknowledge` the library deletes the message once this resolves.
+    await expect(
+      createMessageHandler(handler, logger)(message)
+    ).resolves.toBeUndefined()
 
     expect(handler.handle).toHaveBeenCalledTimes(1)
     expect(handler.handle).toHaveBeenCalledWith(event)
@@ -74,7 +74,7 @@ describe('createMessageHandler', () => {
 
       await expect(
         createMessageHandler(handler, logger)(dropped)
-      ).resolves.toBe(dropped)
+      ).resolves.toBeUndefined()
 
       expect(handler.handle).not.toHaveBeenCalled()
       expect(logger.warn).toHaveBeenCalledWith(
@@ -88,7 +88,9 @@ describe('createMessageHandler', () => {
   test('drops a message that is not JSON when there is no logger', async () => {
     const dropped = { MessageId: 'm-3', Body: 'nope' }
 
-    await expect(createMessageHandler(handler)(dropped)).resolves.toBe(dropped)
+    await expect(
+      createMessageHandler(handler)(dropped)
+    ).resolves.toBeUndefined()
     expect(handler.handle).not.toHaveBeenCalled()
   })
 

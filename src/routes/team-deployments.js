@@ -11,6 +11,8 @@ import {
 } from '#/services/team-deployment-service.js'
 import { removeDeployment } from '#/services/team-deployment-removal.js'
 
+const MAX_PURPOSE_LENGTH = 500
+
 const userIdHeader = Joi.object({
   'x-user-id': Joi.string().required()
 }).unknown(true)
@@ -45,7 +47,11 @@ export const teamDeployments = [
             .required(),
           // What the team wants the models for. It is not stored; only the
           // mock orchestrator reads a marker in it (see the registry).
-          purpose: Joi.string().trim().max(500).allow('').optional()
+          purpose: Joi.string()
+            .trim()
+            .max(MAX_PURPOSE_LENGTH)
+            .allow('')
+            .optional()
         }).unknown(false)
       }
     },

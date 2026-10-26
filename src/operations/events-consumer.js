@@ -10,14 +10,12 @@ const DEFAULT_ERROR_PAUSE_MS = 10000
  * A message that is not JSON is logged and acknowledged; a handler error
  * leaves the message on the queue, so it is redelivered and, after three
  * receives, reaches the dead-letter queue.
+ * With `alwaysAcknowledge` the library deletes a message once the handler
+ * resolves, so the handler returns nothing; a thrown error leaves the
+ * message on the queue.
  * @param {{handle: (event: unknown) => Promise<unknown>}} handler
  * @param {import('pino').Logger} [logger]
- * `sqs-consumer` deletes a message only when the handler returns it, so the
- * message is returned once it is handled or dropped; a thrown error returns
- * nothing and leaves the message on the queue.
- * @param {{handle: (event: unknown) => Promise<unknown>}} handler
- * @param {import('pino').Logger} [logger]
- * @returns {(message: {Body?: string, MessageId?: string}) => Promise<{Body?: string, MessageId?: string}>}
+ * @returns {(message: {Body?: string, MessageId?: string}) => Promise<void>}
  */
 export function createMessageHandler(handler, logger) {
   return async function handleMessage(message) {
@@ -31,12 +29,10 @@ export function createMessageHandler(handler, logger) {
         'A message that is not JSON was dropped'
       )
 
-      return message
+      return
     }
 
     await handler.handle(event)
-
-    return message
   }
 }
 
@@ -62,6 +58,7 @@ export function createEventsConsumer({
     sqs,
     batchSize: 1,
     suppressFifoWarning: true,
+    alwaysAcknowledge: true,
     waitTimeSeconds: settings.waitTimeSeconds,
     visibilityTimeout: 60,
     // After a failed receive the library waits this long before it polls again.

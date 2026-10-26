@@ -21,7 +21,10 @@ export function describeTeamFileReaderContract(
       const current = await createReader().getCurrentDocument({ path })
 
       expect(current).toEqual({ document: null, sha: null })
-      expect(Object.keys(current).sort()).toEqual(['document', 'sha'])
+      expect(Object.keys(current).sort((a, b) => a.localeCompare(b))).toEqual([
+        'document',
+        'sha'
+      ])
     })
 
     test('getPreviousDocument returns a null document for a file that did not exist before the commit', async () => {
