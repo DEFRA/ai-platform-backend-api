@@ -207,6 +207,24 @@ describe('operation-writer', () => {
         expect(written.deadlineAt).toBeNull()
       })
 
+      test('records a pending follow-up and falls due at the next sweep for a change that ends the operation', async () => {
+        const operation = await seedOperation()
+        const before = Date.now()
+
+        const written = await writeOperation(ctx(), operation, {
+          state: 'checks-failed',
+          finishes: true
+        })
+
+        expect(written.followUp).toBe('finish')
+        expect(Date.parse(written.deadlineAt)).toBeGreaterThanOrEqual(
+          before + settings.sweepIntervalMs
+        )
+        expect(Date.parse(written.deadlineAt)).toBeLessThanOrEqual(
+          Date.now() + settings.sweepIntervalMs
+        )
+      })
+
       test('unsets the state a timed-out operation left when it moves on', async () => {
         const operation = await seedOperation({
           state: 'timed-out',

@@ -328,7 +328,10 @@ publishes `reconcile` (the worker reports what GitHub holds) and extends the dea
 progress the operation is `timed-out`, keeping the file's slot until an event moves it on or a Platform Admin retries.
 After `deployed` the backend verifies the team's resources through ARM (`PROVISIONING_MODE=live`) once in the handler,
 then at 30, 60, 120 and 240 seconds, up to `GITOPS_VERIFY_MAX_ATTEMPTS`, before `deploy-failed` with
-`operation-verify-failed`; verified, a team's credential is issued and the operation is `active`. An attributable apply
+`operation-verify-failed`; verified, a team's credential is issued and the operation is `active`. A `verified` operation and
+one that has ended but not yet freed its file carry a deadline and a pending `followUp`, so the sweeper or a redelivered
+event completes the ending (freeing the slot, promoting the waiting request, the projection) if a restart or a lost write
+interrupted it. An attributable apply
 failure gets one fresh apply (attempt 2), then a revert (a child `team-file.revert` operation published after
 `GITOPS_REVERT_GRACE_MS` unless the apply recovered) or an engineer alert (D14); a refusal as `stale-revision` or
 `commit-conflict` is rebuilt from `main` and resubmitted up to `GITOPS_RESUBMIT_MAX` times.

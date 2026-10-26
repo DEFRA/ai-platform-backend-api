@@ -152,7 +152,8 @@ describe('operation-verifier', () => {
           'verified',
           'active'
         ])
-        expect(ended.deadlineAt).toBeNull()
+        expect(ended.followUp).toBe('finish')
+        expect(Date.parse(ended.deadlineAt)).toBeGreaterThan(Date.now())
         expect(ended.verify).toEqual({ attempts: 0, nextAt: null })
         expect(await findOperation(db, operation._id)).toMatchObject({
           state: 'active',
@@ -392,7 +393,7 @@ describe('operation-verifier', () => {
           reason: 'resource-unavailable',
           nextAt: null
         })
-        expect(ended.deadlineAt).toBeNull()
+        expect(ended.followUp).toBe('finish')
         expect(ended.history.at(-1)).toMatchObject({
           state: 'deploy-failed',
           source: 'backend'
@@ -472,7 +473,7 @@ describe('operation-verifier', () => {
           operation._id
         )
 
-        expect(result).toMatchObject({ state: 'active', deadlineAt: null })
+        expect(result).toMatchObject({ state: 'active', followUp: 'finish' })
         expect(operations.finish).toHaveBeenCalledTimes(1)
         expect(grantCredentials).toHaveBeenCalledTimes(1)
         expect(await findOperation(db, operation._id)).toMatchObject({
@@ -550,6 +551,42 @@ describe('operation-verifier', () => {
     })
 
     describe('a verified operation, left so by a restart', () => {
+      test('keeps the follow-up pending when the projection fails after the ending write', async () => {
+        const operation = await seedDeployed()
+        let reads = 0
+        const failing = {
+          collection(name) {
+            const collection = db.collection(name)
+
+            if (name === 'teamDeployments') {
+              const original = collection.findOne.bind(collection)
+
+              collection.findOne = async (...args) => {
+                reads += 1
+
+                if (reads === 2) {
+                  throw new Error('projection down')
+                }
+
+                return original(...args)
+              }
+            }
+
+            return collection
+          }
+        }
+
+        await expect(
+          build({ database: failing }).verify(operation._id)
+        ).rejects.toThrow('projection down')
+
+        expect(await findOperation(db, operation._id)).toMatchObject({
+          state: 'active',
+          slot: 'active',
+          followUp: 'finish'
+        })
+        expect(operations.finish).not.toHaveBeenCalled()
+      })
       test('is ended active, finished and granted, without reading ARM again', async () => {
         const operation = await seedDeployed({
           state: 'verified',
@@ -559,7 +596,7 @@ describe('operation-verifier', () => {
         const ended = await build().verify(operation._id)
 
         expect(verifier.verify).not.toHaveBeenCalled()
-        expect(ended).toMatchObject({ state: 'active', deadlineAt: null })
+        expect(ended).toMatchObject({ state: 'active', followUp: 'finish' })
         expect(operations.finish).toHaveBeenCalledWith(ended)
         expect(grantCredentials).toHaveBeenCalledWith(ended)
       })

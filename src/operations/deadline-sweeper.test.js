@@ -193,6 +193,51 @@ describe('deadline-sweeper', () => {
   })
 
   describe('an operation past its deadline', () => {
+    test('finishes an ended operation whose slot release was left undone, and promotes the waiting request', async () => {
+      const ended = await seed({
+        state: 'checks-failed',
+        followUp: 'finish'
+      })
+
+      await seed({ state: 'queued', slot: 'waiting', teamId: ended.teamId })
+
+      await sweeper.sweep()
+
+      const swept = await findOperation(db, ended._id)
+      const promoted = await db
+        .collection('operations')
+        .findOne({ teamId: ended.teamId, slot: 'active' })
+
+      expect(swept).toMatchObject({ state: 'checks-failed', deadlineAt: null })
+      expect(swept.slot).toBeUndefined()
+      expect(swept.followUp).toBeUndefined()
+      expect(promoted).toMatchObject({ state: 'requested' })
+      expect(promoted._id).not.toBe(ended._id)
+      expect(relay.publishOperation).toHaveBeenCalledWith(promoted._id)
+    })
+
+    test('promotes the waiting request when the file was freed but the promotion was not made', async () => {
+      const ended = await seed({ state: 'active', followUp: 'finish' })
+
+      await db
+        .collection('operations')
+        .updateOne({ _id: ended._id }, { $unset: { slot: '' } })
+      const waiting = await seed({
+        state: 'queued',
+        slot: 'waiting',
+        teamId: ended.teamId,
+        deadlineAt: null
+      })
+
+      await sweeper.sweep()
+
+      expect(await findOperation(db, waiting._id)).toMatchObject({
+        slot: 'active',
+        state: 'requested'
+      })
+      expect((await findOperation(db, ended._id)).followUp).toBeUndefined()
+    })
+
     test('finishes a verified operation by verifying it again, not by reconciling or timing it out', async () => {
       const operation = await seed({ state: 'verified', reconcileCount: 1 })
 

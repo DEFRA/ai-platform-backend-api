@@ -56,7 +56,8 @@ export async function endRefused(ctx, operation, error) {
       }
     },
     unset: ['held', 'deferred'],
-    source: 'backend'
+    source: 'backend',
+    finishes: true
   }))
 
   await finish(ctx, written)
@@ -209,15 +210,11 @@ async function promotionOf(ctx, waiting, paused) {
   }
 }
 
-/**
- * Gives the file to the waiting operation once nothing holds it (plan 5):
- * its document is built now, from main, and its command goes to the outbox;
- * paused, it holds. A document that can no longer be built ends it refused.
- * @param {object} ctx
- * @param {{environment: string, teamId: string}} file
- * @returns {Promise<object|null>} The promoted operation, or null.
- */
-export async function promoteWaiting(ctx, { environment, teamId }) {
+const LOST = Symbol('another writer moved the waiting operation')
+
+// One try at promoting: LOST when another writer (a request merging into the
+// waiting operation) moved it between the read and the write.
+async function tryPromote(ctx, { environment, teamId }) {
   const waiting = await findSlotHolder(ctx.db, {
     environment,
     teamId,
@@ -233,7 +230,11 @@ export async function promoteWaiting(ctx, { environment, teamId }) {
     const change = await promotionOf(ctx, waiting, paused)
     const promoted = await writeOperation(ctx, waiting, change)
 
-    if (promoted && !paused) {
+    if (!promoted) {
+      return LOST
+    }
+
+    if (!paused) {
       await publish(ctx, promoted._id)
     }
 
@@ -249,6 +250,31 @@ export async function promoteWaiting(ctx, { environment, teamId }) {
 
     throw error
   }
+}
+
+/**
+ * Gives the file to the waiting operation once nothing holds it (plan 5):
+ * its document is built now, from main, and its command goes to the outbox;
+ * paused, it holds. A document that can no longer be built ends it refused.
+ * When another writer moves the waiting operation first it is read again,
+ * and a promotion that keeps losing throws, so the caller's follow-up stays
+ * pending for the next try.
+ * @param {object} ctx
+ * @param {{environment: string, teamId: string}} file
+ * @returns {Promise<object|null>} The promoted operation, or null.
+ */
+export async function promoteWaiting(ctx, file) {
+  for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
+    const promoted = await tryPromote(ctx, file)
+
+    if (promoted !== LOST) {
+      return promoted
+    }
+  }
+
+  throw new Error(
+    `The waiting request of ${file.teamId} kept moving; try again`
+  )
 }
 
 // What follows a revert's end for the operation it reverts (plan 5): a
@@ -284,28 +310,55 @@ async function settleParent(ctx, child) {
   }
 }
 
+// Frees the file: the slot goes first, because the waiting operation cannot
+// take it before. The deadline goes with it unless a follow-up is pending.
+function releaseSlot(ctx, operation) {
+  return writeWithRetry(ctx, operation._id, (current) => {
+    if (!current.slot) {
+      return null
+    }
+
+    return current.followUp
+      ? { unset: ['slot'] }
+      : { unset: ['slot'], deadlineAt: null }
+  })
+}
+
+function clearFollowUp(ctx, operation) {
+  return writeWithRetry(ctx, operation._id, (current) =>
+    current.followUp ? { unset: ['followUp'], deadlineAt: null } : null
+  )
+}
+
 /**
  * Frees an ended operation's file and promotes the waiting one; a revert's
- * end settles the operation it reverts.
+ * end settles the operation it reverts. Safe to run again: an operation
+ * ended with a pending follow-up (`followUp`) keeps it until every step is
+ * done, so a redelivered event or the sweep completes what a failure left.
  * @param {object} ctx
  * @param {object} operation - as written, in an ending state
  * @returns {Promise<void>}
  */
 export async function finish(ctx, operation) {
   if (operation.slot) {
-    await writeWithRetry(ctx, operation._id, (current) =>
-      current.slot ? { unset: ['slot'], deadlineAt: null } : null
-    )
+    await releaseSlot(ctx, operation)
+  }
 
-    if (operation.type !== OPERATION_TYPES.REVERT) {
-      await promoteWaiting(ctx, {
-        environment: operation.environment,
-        teamId: operation.teamId
-      })
-    }
+  if (
+    (operation.slot || operation.followUp) &&
+    operation.type !== OPERATION_TYPES.REVERT
+  ) {
+    await promoteWaiting(ctx, {
+      environment: operation.environment,
+      teamId: operation.teamId
+    })
   }
 
   if (operation.parentId) {
     await settleParent(ctx, operation)
+  }
+
+  if (operation.followUp) {
+    await clearFollowUp(ctx, operation)
   }
 }

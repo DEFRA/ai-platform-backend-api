@@ -61,6 +61,11 @@ export async function createOperationIndexes(db) {
     { deadlineAt: 1 },
     { partialFilterExpression: { slot: { $exists: true } } }
   )
+  // An ended operation whose follow-up (freeing its file) is not done yet.
+  await operations.createIndex(
+    { followUp: 1, deadlineAt: 1 },
+    { partialFilterExpression: { followUp: { $exists: true } } }
+  )
   await operations.createIndex(
     { 'verify.nextAt': 1 },
     { partialFilterExpression: { state: 'deployed' } }
@@ -226,10 +231,14 @@ export function findPendingOutbox(db, limit = 100) {
  * @returns {Promise<object[]>}
  */
 export function findOverdue(db, { now = Date.now(), limit = 100 } = {}) {
+  const due = { $lte: new Date(now).toISOString() }
+
   return operationsOf(db)
     .find({
-      slot: { $exists: true },
-      deadlineAt: { $lte: new Date(now).toISOString() }
+      $or: [
+        { slot: { $exists: true }, deadlineAt: due },
+        { followUp: { $exists: true }, deadlineAt: due }
+      ]
     })
     .sort({ deadlineAt: 1 })
     .limit(limit)

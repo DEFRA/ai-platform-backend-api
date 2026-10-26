@@ -254,7 +254,7 @@ function advanceUnset(operation, decision) {
   const unset = ['held', 'deferred', 'deferredAttempt', 'heldSince']
 
   if (decision.recovered) {
-    unset.push('error', 'retrying', 'lastFailure')
+    unset.push('error', 'retrying', 'lastFailure', 'followUp')
   }
 
   if (!failed && operation.error) {
@@ -262,6 +262,21 @@ function advanceUnset(operation, decision) {
   }
 
   return unset
+}
+
+// Whether an accepted event ends the operation for good, leaving its file to
+// be freed: a refusal that is not retried, or an apply failure that will not
+// be retried or reverted (a revert's own, or one that is not attributable).
+function endsTheFile(operation, decision, event) {
+  if (decision.state === CHECKS_FAILED) {
+    return true
+  }
+
+  return (
+    decision.state === DEPLOY_FAILED &&
+    (operation.type === OPERATION_TYPES.REVERT ||
+      failurePolicy(operation, event) === 'alert')
+  )
 }
 
 async function advanceWrite({ ctx }, operation, decision, event) {
@@ -272,7 +287,8 @@ async function advanceWrite({ ctx }, operation, decision, event) {
     unset: advanceUnset(operation, decision),
     source: event.source,
     eventId: event.eventId,
-    eventAt: event.timestamp
+    eventAt: event.timestamp,
+    finishes: endsTheFile(operation, decision, event)
   })
 }
 
@@ -416,8 +432,13 @@ async function handleOperationEvent(deps, event, first) {
     const decision = decideEvent(operation, event)
 
     if (isRepeat(decision)) {
-      // A redelivery repairs a projection the first delivery did not finish.
+      // A redelivery repairs what the first delivery did not finish: the
+      // projection, and the freeing of the file of an operation it ended.
       await projectOperation(db, operation)
+
+      if (operation.followUp) {
+        await deps.operations.finish(operation)
+      }
 
       return { outcome: decision.kind }
     }

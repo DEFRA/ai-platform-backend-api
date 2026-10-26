@@ -36,8 +36,14 @@ function applyTransition({ set, unset, push }, operation, change, now) {
   }
 }
 
-// undefined leaves the deadline as it is.
+// undefined leaves the deadline as it is. A change that ends the operation
+// (`finishes`) falls due at the next sweep, which completes its follow-up
+// work if the handler could not.
 function deadlineOf(change, settings) {
+  if (change.finishes) {
+    return new Date(Date.now() + settings.sweepIntervalMs).toISOString()
+  }
+
   if (change.deadlineAt !== undefined) {
     return change.deadlineAt
   }
@@ -45,14 +51,22 @@ function deadlineOf(change, settings) {
   return change.state ? deadlineFor(change.state, settings) : undefined
 }
 
+// The follow-up persisted with an ending transition: freeing the file and
+// promoting the waiting request, left pending until `finish` completes it.
+function followUpOf(change) {
+  return change.finishes ? { followUp: 'finish' } : {}
+}
+
 /**
  * Writes one change to an operation by compare-and-set and projects it.
  * `state` moves it (recording history, resetting the deadline and
  * `reconcileCount`, as any accepted event does); `facts` fill or replace
- * `gitops` fields; `set` and `unset` change anything else.
+ * `gitops` fields; `set` and `unset` change anything else; `finishes` marks a
+ * transition that ends the operation and leaves its file to be freed, which
+ * `finish` completes and a redelivery or the sweep completes if it did not.
  * @param {{db: import('mongodb').Db, settings: object, logger?: import('pino').Logger}} ctx
  * @param {object} operation - as read
- * @param {{state?: string, facts?: object, set?: object, unset?: string[], push?: object, addToSet?: object, source?: string, eventId?: string|null, eventAt?: string, deadlineAt?: string|null, audit?: {action: string, outcome?: string, code?: string, reason?: string}}} change
+ * @param {{state?: string, facts?: object, set?: object, unset?: string[], push?: object, addToSet?: object, source?: string, eventId?: string|null, eventAt?: string, deadlineAt?: string|null, finishes?: boolean, audit?: {action: string, outcome?: string, code?: string, reason?: string}}} change
  * @returns {Promise<object|null>} The operation as written, or null when it had moved.
  */
 export async function writeOperation(ctx, operation, change) {
@@ -61,6 +75,7 @@ export async function writeOperation(ctx, operation, change) {
   const set = {
     updatedAt: now,
     ...dotted('gitops', change.facts ?? {}),
+    ...followUpOf(change),
     ...change.set
   }
   const unset = [...(change.unset ?? [])]

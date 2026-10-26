@@ -36,7 +36,7 @@ function resubmitRecord(operation, { counted, passed }) {
   }
 
   if (!passed) {
-    return { set, unset: ['held', 'deferred', 'heldSince'] }
+    return { set, unset: ['held', 'deferred', 'followUp', 'heldSince'] }
   }
 
   return {
@@ -46,7 +46,7 @@ function resubmitRecord(operation, { counted, passed }) {
       heldSince:
         operation.heldSince ?? operation.held?.since ?? new Date().toISOString()
     },
-    unset: ['held', 'deferred']
+    unset: ['held', 'deferred', 'followUp']
   }
 }
 
@@ -118,7 +118,13 @@ function applyChange(operation, { attempt, state, reset, passed }) {
       ...(passed ? { heldPasses: (operation.heldPasses ?? 0) + 1 } : {}),
       ...(reset ? { verify: { attempts: 0, nextAt: null } } : {})
     },
-    unset: ['deferred', 'deferredAttempt', 'held', ...(reset ? ['error'] : [])],
+    unset: [
+      'deferred',
+      'deferredAttempt',
+      'followUp',
+      'held',
+      ...(reset ? ['error'] : [])
+    ],
     push: { outbox: newOutboxEntry('apply', { attempt: next }) }
   }
 }

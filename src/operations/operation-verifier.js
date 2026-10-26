@@ -78,7 +78,7 @@ async function endVerified({ ctx }, first) {
     const ended = await writeOperation(ctx, operation, {
       state: isRemoval(operation) ? REMOVED : ACTIVE,
       set: { verify: { attempts: 0, nextAt: null } },
-      deadlineAt: null
+      finishes: true
     })
 
     if (ended) {
@@ -178,7 +178,7 @@ async function endVerification(deps, operation, verifyState) {
         retryable: false
       }
     },
-    deadlineAt: null,
+    finishes: true,
     source: 'backend'
   })
 

@@ -21,7 +21,9 @@ const LOCK_NAME = 'gitops-deadline-sweeper'
  * sweeps at a time, reading only its own database. An operation past its
  * deadline is reconciled once (the worker finds what GitHub holds), then, with no
  * progress, `timed-out` (it keeps its file until a later event or a retry).
- * It also retries ARM verification when due, resubmits held writes, runs
+ * It also retries ARM verification when due, finishes verified operations and
+ * ended operations whose follow-up (freeing the file) was left undone,
+ * resubmits held writes, runs
  * deferred retries and reverts, and raises an alarm for work held too long.
  * @param {object} deps
  * @param {{db: import('mongodb').Db, settings: object, logger?: import('pino').Logger}} deps.ctx
@@ -103,6 +105,12 @@ async function resolveDeferred(deps, operation) {
 }
 
 async function sweepOverdue(deps, operation) {
+  // An ended operation whose follow-up was left undone: free its file and
+  // promote the waiting request.
+  if (operation.followUp) {
+    return deps.operations.finish(operation)
+  }
+
   // A verified operation is only waiting to be ended: finish it, never
   // reconcile or time it out.
   if (operation.state === VERIFIED) {

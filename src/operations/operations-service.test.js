@@ -619,7 +619,7 @@ describe('operations-service', () => {
       expect((await stored(waiting._id)).slot).toBe('waiting')
     })
 
-    test('returns null when the move is lost to another instance', async () => {
+    test('reads the waiting operation again when the move is lost to another instance', async () => {
       const ended = await seed('active')
       await db
         .collection('operations')
@@ -632,13 +632,92 @@ describe('operations-service', () => {
         teamId: ended.teamId
       })
 
-      expect(result).toBeNull()
+      expect(result).toMatchObject({ _id: waiting._id, slot: 'active' })
+      expect(relay.publishOperation).toHaveBeenCalledWith(waiting._id)
+    })
+
+    test('throws when the move keeps being lost, rather than reporting a promotion', async () => {
+      const ended = await seed('active')
+      await db
+        .collection('operations')
+        .updateOne({ _id: ended._id }, { $unset: { slot: '' } })
+      const waiting = await waitingFor(ended)
+      service = create({ db: losing(3) })
+
+      await expect(
+        service.promoteWaiting({
+          environment: 'infradev',
+          teamId: ended.teamId
+        })
+      ).rejects.toThrow('kept moving')
       expect((await stored(waiting._id)).slot).toBe('waiting')
       expect(relay.publishOperation).not.toHaveBeenCalled()
     })
   })
 
   describe('finish', () => {
+    test('clears the pending follow-up once the file is freed and the waiting operation promoted', async () => {
+      const ended = await seed('checks-failed', {
+        followUp: 'finish',
+        deadlineAt: '2030-01-01T00:00:00Z'
+      })
+      const waiting = await seed('queued', {
+        slot: 'waiting',
+        teamId: ended.teamId,
+        items: [PHI]
+      })
+
+      await service.finish(ended)
+
+      const freed = await stored(ended._id)
+
+      expect(freed.slot).toBeUndefined()
+      expect(freed.followUp).toBeUndefined()
+      expect(freed.deadlineAt).toBeNull()
+      expect((await stored(waiting._id)).slot).toBe('active')
+    })
+
+    test('keeps the follow-up pending when the promotion fails, so the next try completes it', async () => {
+      const ended = await seed('checks-failed', { followUp: 'finish' })
+      const waiting = await seed('queued', {
+        slot: 'waiting',
+        teamId: ended.teamId,
+        items: [PHI]
+      })
+      const failing = create({
+        controls: {
+          isPaused: vi.fn().mockRejectedValue(new Error('controls down'))
+        }
+      })
+
+      await expect(failing.finish(ended)).rejects.toThrow('controls down')
+
+      const half = await stored(ended._id)
+
+      expect(half.slot).toBeUndefined()
+      expect(half.followUp).toBe('finish')
+
+      await service.finish(half)
+
+      expect((await stored(ended._id)).followUp).toBeUndefined()
+      expect((await stored(waiting._id)).slot).toBe('active')
+    })
+
+    test('promotes the waiting operation for an ended operation that holds no slot but has a follow-up pending', async () => {
+      const ended = await seed('active', { followUp: 'finish' })
+      await db
+        .collection('operations')
+        .updateOne({ _id: ended._id }, { $unset: { slot: '' } })
+      const waiting = await seed('queued', {
+        slot: 'waiting',
+        teamId: ended.teamId,
+        items: [PHI]
+      })
+
+      await service.finish(await stored(ended._id))
+
+      expect((await stored(waiting._id)).slot).toBe('active')
+    })
     test('frees the file of an ended operation and promotes the waiting one', async () => {
       const ended = await seed('active', { deadlineAt: '2030-01-01T00:00:00Z' })
       const waiting = await seed('queued', {

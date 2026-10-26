@@ -1277,6 +1277,103 @@ describe('events-handler', () => {
     })
   })
 
+  describe('a projection that fails after the state write', () => {
+    // A database whose first read of the team's deployments fails, after the
+    // operation's own write has committed.
+    function failingProjection() {
+      let failed = false
+
+      return {
+        collection(name) {
+          const collection = db.collection(name)
+
+          if (name === 'teamDeployments') {
+            const original = collection.findOne.bind(collection)
+
+            collection.findOne = async (...args) => {
+              if (!failed) {
+                failed = true
+                throw new Error('projection down')
+              }
+
+              return original(...args)
+            }
+          }
+
+          return collection
+        }
+      }
+    }
+
+    async function seedFileWithWaiting(state, overrides = {}) {
+      const active = await seed(state, overrides)
+
+      await seed('queued', {
+        _id: 'op-waiting',
+        teamId: active.teamId,
+        slot: 'waiting'
+      })
+
+      return active
+    }
+
+    test('frees the file and promotes the waiting request when the failure is redelivered', async () => {
+      await seedFileWithWaiting('requested')
+      const refusal = event('checks-failed')
+      const racing = build(failingProjection())
+
+      await expect(racing.handle(refusal)).rejects.toThrow('projection down')
+
+      expect(await stored()).toMatchObject({
+        state: 'checks-failed',
+        slot: 'active',
+        followUp: 'finish'
+      })
+
+      const again = await racing.handle(refusal)
+
+      expect(again).toEqual({ outcome: 'duplicate' })
+      expect(await stored()).toMatchObject({ state: 'checks-failed' })
+      expect((await stored()).slot).toBeUndefined()
+      expect((await stored()).followUp).toBeUndefined()
+      expect(await stored('op-waiting')).toMatchObject({
+        slot: 'active',
+        state: 'requested'
+      })
+    })
+
+    test('frees the file when an apply failure that is not attributable is redelivered', async () => {
+      await seedFileWithWaiting('deploying', {
+        gitops: { commitSha: SHA, applyRunId: APPLY_RUN }
+      })
+      const failure = event('deploy-failed', {
+        runId: APPLY_RUN,
+        attributable: false
+      })
+      const racing = build(failingProjection())
+
+      await expect(racing.handle(failure)).rejects.toThrow('projection down')
+      await racing.handle(failure)
+
+      expect((await stored()).slot).toBeUndefined()
+      expect((await stored('op-waiting')).slot).toBe('active')
+    })
+
+    test('leaves the file held by an apply failure that will be retried', async () => {
+      await seedFileWithWaiting('deploying', {
+        gitops: { commitSha: SHA, applyRunId: APPLY_RUN }
+      })
+
+      await handler.handle(event('deploy-failed', { runId: APPLY_RUN }))
+
+      const retrying = await stored()
+
+      expect(retrying.slot).toBe('active')
+      expect(retrying.followUp).toBeUndefined()
+      expect((await stored('op-waiting')).slot).toBe('waiting')
+    })
+  })
+
   describe('a write that races another writer', () => {
     test('reads the operation again and applies the event on top of the winner', async () => {
       await seed('requested')
