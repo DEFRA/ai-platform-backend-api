@@ -641,7 +641,7 @@ describe('#team-deployments routes', () => {
 
     expect(first.result.deployment.status).toBe('requested')
 
-    await wait(300)
+    await wait()
 
     const second = await server.inject({ method: 'GET', url, headers })
 
@@ -701,7 +701,7 @@ describe('#team-deployments routes', () => {
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
     const headers = userHeaders('test-checks-fail-6c')
 
-    await wait(300)
+    await wait()
 
     const { result } = await server.inject({ method: 'GET', url, headers })
 
@@ -728,7 +728,7 @@ describe('#team-deployments routes', () => {
 
     const created = await requestModel(teamId, 'test-checks-fail-8')
 
-    await wait(100)
+    await wait()
 
     const { result } = await server.inject({
       method: 'GET',
@@ -745,7 +745,7 @@ describe('#team-deployments routes', () => {
 
     const created = await requestModel(teamId, 'test-deploy-fail-9')
 
-    await wait(300)
+    await wait()
 
     const { result } = await server.inject({
       method: 'GET',
@@ -819,7 +819,7 @@ describe('#team-deployments routes', () => {
 
     await requestModel(teamId, 'deploy-user-12')
 
-    await wait(300)
+    await wait()
 
     const { result } = await server.inject({
       method: 'GET',
