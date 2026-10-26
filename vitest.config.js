@@ -13,6 +13,14 @@ export default defineConfig({
       reportsDirectory: './coverage',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.js'],
+      // The floors are the coverage measured at ab412ca (843 tests, plan 8):
+      // coverage never falls below where the B28 refactor started.
+      thresholds: {
+        lines: 97.3,
+        functions: 98.55,
+        branches: 92.54,
+        statements: 97.34
+      },
       // Shared CredentialIssuer and TenantOrchestrator contract suites, not
       // application code - they are exercised (and so already covered) via
       // the adapter test files that call them, not directly.

@@ -838,6 +838,57 @@ describe('#team-deployments routes', () => {
     expect(after.result.deployment.status).toBe('active')
   })
 
+  // B28 characterisation (plan 6.2, "unchanged route payloads"): the keys of a
+  // deployment and of each response envelope, so a refactor that moves the
+  // orchestration cannot change a payload the frontend reads by accident.
+  describe('payload shape', () => {
+    const DEPLOYMENT_KEYS = [
+      '_id',
+      'activatedAt',
+      'appRegistration',
+      'createdAt',
+      'credentialPlaceholder',
+      'environment',
+      'failureReason',
+      'idempotencyKey',
+      'links',
+      'modelSlug',
+      'operationId',
+      'progressSteps',
+      'removedAt',
+      'requestedBy',
+      'resources',
+      'status',
+      'teamId',
+      'verificationFailure'
+    ]
+
+    test('the request, read and list responses carry the same deployment keys in the same envelopes', async () => {
+      const teamId = await createTeam('shape-user-1')
+      const created = await requestModel(teamId, 'shape-user-1')
+      const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
+      const headers = userHeaders('shape-user-1')
+
+      const read = await server.inject({ method: 'GET', url, headers })
+      const list = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${teamId}/deployments`,
+        headers
+      })
+
+      expect(Object.keys(created.result)).toEqual(['deployments', 'deployment'])
+      expect(Object.keys(created.result.deployment).sort()).toEqual(
+        DEPLOYMENT_KEYS
+      )
+      expect(Object.keys(read.result)).toEqual(['deployment'])
+      expect(Object.keys(read.result.deployment).sort()).toEqual(
+        DEPLOYMENT_KEYS
+      )
+      expect(Object.keys(list.result)).toEqual(['items'])
+      expect(Object.keys(list.result.items[0]).sort()).toEqual(DEPLOYMENT_KEYS)
+    })
+  })
+
   describe('DELETE /v1/teams/{teamId}/deployments/{id}', () => {
     async function activeDeployment(label) {
       const teamId = await createTeam(label)
