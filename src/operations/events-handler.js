@@ -256,6 +256,10 @@ function advanceUnset(operation, decision, pending) {
     (field) => !(field in pending.set)
   )
 
+  if (pending.set.deferred === 'revert') {
+    unset.push('revertId')
+  }
+
   if (decision.recovered) {
     unset.push('error', 'retrying', 'lastFailure', 'followUp')
   }

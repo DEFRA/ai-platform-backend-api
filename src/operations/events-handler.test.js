@@ -1441,6 +1441,17 @@ describe('events-handler', () => {
       expect(again.deadlineAt).toBe(pending.deadlineAt)
     })
 
+    test('starts a new revert from a clean claim when an earlier one was left on the operation', async () => {
+      await seedDeploying({ attempt: 2, revertId: 'earlier-revert' })
+
+      await build().handle(event('deploy-failed', { runId: APPLY_RUN }))
+
+      const pending = await stored()
+
+      expect(pending).toMatchObject({ deferred: 'revert' })
+      expect(pending.revertId).toBeUndefined()
+    })
+
     test('defers a persisted retry while the environment is paused when the failure is redelivered', async () => {
       await seedDeploying()
       await setControl({ paused: true })

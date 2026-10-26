@@ -1347,7 +1347,7 @@ describe('operations-service', () => {
 
     test('re-arms with a doubled deadline while the environment is paused', async () => {
       paused = true
-      const parent = await failedParent({ heldPasses: 1 })
+      const parent = await failedParent({ heldPasses: 0 })
       const before = Date.now()
 
       const outcome = await service.startRevert(parent)
@@ -1355,9 +1355,155 @@ describe('operations-service', () => {
       const persisted = await stored(parent._id)
 
       expect(outcome).toBe('re-armed')
-      expect(persisted).toMatchObject({ heldPasses: 2, deferred: 'revert' })
-      expectDueIn(persisted.deadlineAt, HELD_MS * 4, before)
+      expect(persisted).toMatchObject({ heldPasses: 1, deferred: 'revert' })
+      expectDueIn(persisted.deadlineAt, HELD_MS * 2, before)
       expect(await childOf(parent)).toBeNull()
+    })
+
+    test('probes the pause at the held deadline, so a lost resumed event cannot hold the file for ever, and keeps the backoff', async () => {
+      paused = true
+      const parent = await failedParent({ heldPasses: 1 })
+
+      const outcome = await service.startRevert(parent)
+
+      const child = await childOf(parent)
+      const persisted = await stored(parent._id)
+
+      expect(outcome).toBe('started')
+      expect(child).toMatchObject({ state: 'requested', heldPasses: 1 })
+      expect(persisted).toMatchObject({ revertId: child._id, deadlineAt: null })
+      expect(persisted.deferred).toBeUndefined()
+      expect(relay.publishOperation).toHaveBeenCalledWith(child._id)
+    })
+
+    describe('a claim on the failed parent', () => {
+      // The parent moves on while the file is read from GitHub.
+      function recoveringDuringRead() {
+        reader.getPreviousDocument.mockImplementation(async () => {
+          await db
+            .collection('operations')
+            .updateOne(
+              { slot: 'active', state: 'deploy-failed' },
+              { $set: { state: 'deployed' }, $inc: { stateVersion: 1 } }
+            )
+
+          return { document: { environment: 'infradev', revision: 3 } }
+        })
+      }
+
+      test('never creates or publishes the revert when the parent recovers during the read', async () => {
+        const parent = await failedParent()
+        recoveringDuringRead()
+
+        const outcome = await service.startRevert(parent)
+
+        const persisted = await stored(parent._id)
+
+        expect(outcome).toBe('cancelled')
+        expect(await childOf(parent)).toBeNull()
+        expect(relay.publishOperation).not.toHaveBeenCalled()
+        expect(persisted.state).toBe('deployed')
+        expect(persisted.revertId).toBeUndefined()
+        expect(persisted.deferred).toBeUndefined()
+      })
+
+      test('is durable: a stop before the child is created leaves the claim, and the next try creates the child it names', async () => {
+        const parent = await failedParent()
+        const stopped = create({
+          db: {
+            collection(name) {
+              const collection = db.collection(name)
+
+              collection.insertOne = async () => {
+                throw new Error('stopped')
+              }
+
+              return collection
+            }
+          }
+        })
+
+        await expect(stopped.startRevert(parent)).rejects.toThrow('stopped')
+
+        const claimed = await stored(parent._id)
+
+        expect(claimed).toMatchObject({ deferred: 'revert' })
+        expect(claimed.revertId).toEqual(expect.any(String))
+        expect(Date.parse(claimed.deadlineAt)).toBeGreaterThan(0)
+        expect(await childOf(parent)).toBeNull()
+        expect(relay.publishOperation).not.toHaveBeenCalled()
+
+        expect(await service.startRevert(claimed)).toBe('started')
+
+        const child = await childOf(parent)
+        const settled = await stored(parent._id)
+
+        expect(child._id).toBe(claimed.revertId)
+        expect(settled.deferred).toBeUndefined()
+        expect(settled.deadlineAt).toBeNull()
+        expect(relay.publishOperation).toHaveBeenCalledWith(child._id)
+      })
+
+      test('is recoverable: a stop after the child was created publishes that child once, never a second', async () => {
+        const parent = await failedParent()
+        let writes = 0
+        const stopped = create({
+          db: {
+            collection(name) {
+              const collection = db.collection(name)
+
+              if (name === 'operations') {
+                const update = collection.findOneAndUpdate.bind(collection)
+
+                collection.findOneAndUpdate = async (...args) => {
+                  writes += 1
+
+                  if (writes > 1) {
+                    throw new Error('stopped')
+                  }
+
+                  return update(...args)
+                }
+              }
+
+              return collection
+            }
+          }
+        })
+
+        await expect(stopped.startRevert(parent)).rejects.toThrow('stopped')
+
+        const claimed = await stored(parent._id)
+
+        expect(await childOf(parent)).not.toBeNull()
+        expect(claimed).toMatchObject({ deferred: 'revert' })
+
+        expect(await service.startRevert(claimed)).toBe('started')
+
+        const children = await db
+          .collection('operations')
+          .find({ parentId: parent._id })
+          .toArray()
+
+        expect(children).toHaveLength(1)
+        expect((await stored(parent._id)).deferred).toBeUndefined()
+        expect(relay.publishOperation).toHaveBeenCalledWith(children[0]._id)
+      })
+
+      test('cancels a claim whose parent moved on before the child was created', async () => {
+        const parent = await failedParent({
+          revertId: 'claimed-1',
+          state: 'deployed'
+        })
+
+        expect(await service.startRevert(parent)).toBe('cancelled')
+
+        const persisted = await stored(parent._id)
+
+        expect(await childOf(parent)).toBeNull()
+        expect(persisted.revertId).toBeUndefined()
+        expect(persisted.deferred).toBeUndefined()
+      })
     })
 
     test('counts the first paused pass from none', async () => {
