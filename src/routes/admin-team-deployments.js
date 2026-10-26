@@ -9,9 +9,10 @@ const userIdHeader = Joi.object({
 
 const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
 
-// Retry and reconcile are fresh apply dispatches on `main`, never re-runs
-// (D6, D14), for Platform Admins only. 202: the apply runs asynchronously
-// and the deployment's status shows its progress.
+// Retry and reconcile go through the deployment's operation, for Platform
+// Admins only: a retry by state (a fresh apply once committed, a submit
+// before), a reconcile asks the worker what GitHub holds (D6, D14). 202: the
+// command runs asynchronously and the deployment's status shows its progress.
 function redispatchRoute(kind) {
   return {
     method: 'POST',
@@ -20,11 +21,15 @@ function redispatchRoute(kind) {
       validate: { headers: userIdHeader, params: idParam }
     },
     handler: async (request, h) => {
-      const deployment = await redispatchApply(request.db, {
-        id: request.params.id,
-        actorUserId: request.headers['x-user-id'],
-        kind
-      })
+      const deployment = await redispatchApply(
+        request.db,
+        {
+          id: request.params.id,
+          actorUserId: request.headers['x-user-id'],
+          kind
+        },
+        { operations: request.operations }
+      )
 
       return h.response({ deployment }).code(statusCodes.accepted)
     }

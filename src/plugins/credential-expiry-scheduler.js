@@ -2,17 +2,18 @@ import { config } from '#/config.js'
 import {
   expireCredentials,
   reconcilePendingCredentials,
-  pollTeamDeployments,
   flagStraySubscriptions
 } from '#/services/maintenance-service.js'
+import { recoverTeamCredentials } from '#/services/team-credential-grant.js'
 
 /**
  * Runs the same sweep as `POST /maintenance/expire-credentials` on an
  * in-process interval, so expiry enforcement doesn't depend on an external
- * caller hitting that route, then polls GitHub-mode team deployments still
- * in progress (WS5). `server.db`/`server.locker` are only read inside the
- * interval callback, so registration order relative to the `mongodb`
- * plugin doesn't matter.
+ * caller hitting that route, then gives any active team deployment the
+ * credential it is missing. Team deployments themselves move on events and
+ * the operations sweeper, not on this interval. `server.db`/`server.locker`
+ * are only read inside the interval callback, so registration order relative
+ * to the `mongodb` plugin doesn't matter.
  */
 export const credentialExpiryScheduler = {
   plugin: {
@@ -37,17 +38,16 @@ export const credentialExpiryScheduler = {
           )
           const { reconciled, vaultReconciled } =
             await reconcilePendingCredentials(server.db, server.locker)
-          const { polled, transitioned, abandoned, credentials } =
-            await pollTeamDeployments(server.db, server.locker, server.logger)
+          const credentials = await recoverTeamCredentials(server.db, {
+            locker: server.locker,
+            logger: server.logger
+          })
           const straySubscriptions = await flagStraySubscriptions(server.logger)
           const result = {
             expired,
             suspended,
             reconciled,
             vaultReconciled,
-            polled,
-            transitioned,
-            abandoned,
             credentials,
             straySubscriptions
           }
@@ -61,8 +61,6 @@ export const credentialExpiryScheduler = {
             suspended,
             reconciled,
             vaultReconciled,
-            transitioned,
-            abandoned,
             credentials,
             straySubscriptions
           ].some(Boolean)

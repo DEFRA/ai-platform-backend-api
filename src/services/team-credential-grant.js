@@ -2,7 +2,10 @@ import {
   ensureTeamCredential,
   teamCredentialNeedsRetry
 } from '#/services/credential-service.js'
-import { auditDeployment } from '#/services/team-deployment-entries.js'
+import {
+  auditDeployment,
+  findEntry
+} from '#/services/team-deployment-entries.js'
 
 // Stable codes a team credential failure is audited under.
 const VAULT_WRITE_FAILED = 'vault-write-failed'
@@ -106,6 +109,33 @@ async function reportCredentialFailure(
       { code, operationId: entry.operationId },
       'The team credential failure could not be audited'
     )
+  }
+}
+
+/**
+ * Creates the function the operations runtime calls once an operation has
+ * made models active (plan 6.1): it grants the team's credential for the
+ * environment once for the whole operation, from the first model it added -
+ * `ensureCredential` creates the team's one credential and leaves it alone
+ * after. An operation that only removes models grants nothing. It never
+ * throws, as `grantTeamCredential`.
+ * @param {{db: import('mongodb').Db, ensureCredential?: Function, locker: import('mongo-locks').LockManager, logger?: import('pino').Logger, retryAfterMs?: number}} deps
+ * @returns {(operation: {teamId: string, environment: string, items: Array<{entryId: string, change: string}>}) => Promise<void>}
+ */
+export function createCredentialGranter({ db, ...settings }) {
+  return async function grantCredentials(operation) {
+    const doc = await db.collection('teamDeployments').findOne({
+      teamId: operation.teamId,
+      environment: operation.environment
+    })
+    const added = operation.items
+      .filter(({ change }) => change !== 'remove')
+      .map(({ entryId }) => findEntry(doc, entryId))
+      .find(Boolean)
+
+    if (added) {
+      await grantTeamCredential(db, doc, added, settings)
+    }
   }
 }
 

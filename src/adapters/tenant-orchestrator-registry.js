@@ -1,30 +1,38 @@
 import { config } from '#/config.js'
-import { mockTenantOrchestrator } from '#/adapters/mock-tenant-orchestrator.js'
-import { createGithubTenantOrchestrator } from '#/adapters/github/github-tenant-orchestrator.js'
+import { mockTeamFileReader } from '#/adapters/mock-team-file-reader.js'
+import {
+  createMockTransport,
+  mockOutcomeOfPurpose
+} from '#/adapters/mock-gitops-worker.js'
+import { createGithubTeamFileReader } from '#/adapters/github/github-team-file-reader.js'
+import { createSqsTransport } from '#/adapters/sqs/sqs-transport.js'
 
 export const MOCK_ORCHESTRATOR = 'mock'
-export const GITHUB_ORCHESTRATOR = 'github'
+export const SQS_ORCHESTRATOR = 'sqs'
+
+const NO_OUTCOME = () => null
 
 /**
  * @typedef {object} TenantOrchestratorRegistry
- * @property {string} key - the orchestrator new deployments are submitted through, persisted on each entry
- * @property {import('#/adapters/tenant-orchestrator.js').TenantOrchestrator} orchestrator - the orchestrator for `key`
- * @property {(entry: {orchestrator?: string}) => import('#/adapters/tenant-orchestrator.js').TenantOrchestrator} forEntry - the orchestrator that submitted an existing entry
+ * @property {string} key - the orchestrator mode, `mock` or `sqs`
+ * @property {import('#/adapters/team-file-reader.js').TeamFileReader} reader - how the team files are read
+ * @property {(deps: {db: import('mongodb').Db, handle: (event: object) => Promise<unknown>, logger?: import('pino').Logger}) => {publisher: import('#/adapters/command-publisher.js').CommandPublisher, runReader: object, start: () => void, stop: () => Promise<void>}} createTransport - how commands go out and events come back
+ * @property {(purpose: string|undefined) => 'checks-failed'|'deploy-failed'|null} mockOutcomeOf - the outcome a request's purpose forces; always null outside the mock
  */
 
 /**
- * Creates the registry that picks the `TenantOrchestrator` for new team
- * deployments from `TENANT_ORCHESTRATOR`, and resolves an existing entry to
- * the orchestrator that submitted it (as credentials keep their
- * `issuerKey`), so switching modes never sends an old mock entry to GitHub.
- * Refuses to start with the mock in the prod environment.
- * @param {Record<string, import('#/adapters/tenant-orchestrator.js').TenantOrchestrator>} orchestratorsByKey
+ * Creates the registry that picks how team changes reach the GitOps state
+ * repositories, from `TENANT_ORCHESTRATOR`: `mock` stages the events itself
+ * on a timer; `sqs` publishes commands to the GitOps worker's queue and reads
+ * its events. Each mode also names how the team files are read. Refuses to
+ * start with the mock in the prod environment.
+ * @param {Record<string, {reader: object, createTransport: Function, mockOutcomeOf?: Function}>} adaptersByMode
  * @param {string} mode
  * @param {string} cdpEnvironment
  * @returns {TenantOrchestratorRegistry}
  */
 export function createTenantOrchestratorRegistry(
-  orchestratorsByKey,
+  adaptersByMode,
   mode,
   cdpEnvironment
 ) {
@@ -34,34 +42,39 @@ export function createTenantOrchestratorRegistry(
     )
   }
 
-  function resolve(key) {
-    const orchestrator = orchestratorsByKey[key]
+  const adapters = adaptersByMode[mode]
 
-    if (!orchestrator) {
-      throw new Error(`No tenant orchestrator registered for "${key}"`)
-    }
-
-    return orchestrator
+  if (!adapters) {
+    throw new Error(`No tenant orchestrator registered for "${mode}"`)
   }
 
   return {
     key: mode,
-    orchestrator: resolve(mode),
-    forEntry(entry) {
-      return resolve(entry?.orchestrator ?? MOCK_ORCHESTRATOR)
-    }
+    reader: adapters.reader,
+    createTransport: adapters.createTransport,
+    mockOutcomeOf: adapters.mockOutcomeOf ?? NO_OUTCOME
   }
 }
 
 /**
- * The live registry, built from config at startup. The GitHub adapter
- * builds its clients lazily, so it is safe to register in mock mode.
+ * The live registry, built from config at startup. The GitHub reader and the
+ * SQS transport build their clients lazily, so this is safe in mock mode.
  * @type {TenantOrchestratorRegistry}
  */
 export const tenantOrchestratorRegistry = createTenantOrchestratorRegistry(
   {
-    [MOCK_ORCHESTRATOR]: mockTenantOrchestrator,
-    [GITHUB_ORCHESTRATOR]: createGithubTenantOrchestrator()
+    [MOCK_ORCHESTRATOR]: {
+      reader: mockTeamFileReader,
+      createTransport: createMockTransport,
+      mockOutcomeOf: mockOutcomeOfPurpose
+    },
+    [SQS_ORCHESTRATOR]: {
+      reader: createGithubTeamFileReader({
+        tenantsRepo: config.get('gitops.tenantsRepo'),
+        deploymentsRepo: config.get('gitops.deploymentsRepo')
+      }),
+      createTransport: createSqsTransport
+    }
   },
   config.get('tenantOrchestrator'),
   config.get('cdpEnvironment')

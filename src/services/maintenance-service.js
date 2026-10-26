@@ -9,30 +9,9 @@ import {
   environmentOf,
   credentialLockName
 } from '#/services/credential-service.js'
-import {
-  recoverTeamCredentials,
-  sweepGitopsDeployments
-} from '#/services/team-deployment-gitops.js'
 import { requireLock, acquireLock } from '#/common/helpers/mongo-lock.js'
 
 const PENDING_RECONCILE_AFTER_MS = 10 * 60 * 1000
-
-/**
- * Polls every non-terminal GitHub-mode team deployment so operations nobody
- * is watching still progress through the GitOps states, with an audit event
- * per transition and the D14 failure policy applied, then creates any team
- * credential still missing for an active deployment (`credentials`).
- * @param {import('mongodb').Db} db
- * @param {import('mongo-locks').LockManager} locker - a model reaching `active` creates its team's credential under it
- * @param {import('pino').Logger} [logger]
- * @returns {Promise<{polled: number, transitioned: number, abandoned: number, credentials: number}>}
- */
-export async function pollTeamDeployments(db, locker, logger) {
-  const swept = await sweepGitopsDeployments(db, { locker, logger })
-  const credentials = await recoverTeamCredentials(db, { locker, logger })
-
-  return { ...swept, credentials }
-}
 
 /**
  * Expires past-due active credentials and suspends their APIM subscriptions.

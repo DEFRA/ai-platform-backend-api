@@ -6,6 +6,7 @@ describe('team-credential-grant', () => {
   let grantTeamCredential
   let recoverTeamCredentials
   let retryTeamCredential
+  let createCredentialGranter
 
   beforeAll(async () => {
     // Dynamic imports needed due to config being updated by vitest-mongodb
@@ -14,8 +15,12 @@ describe('team-credential-grant', () => {
     server = await createServer()
     await server.initialize()
     db = server.db
-    ;({ grantTeamCredential, recoverTeamCredentials, retryTeamCredential } =
-      await import('#/services/team-credential-grant.js'))
+    ;({
+      grantTeamCredential,
+      recoverTeamCredentials,
+      retryTeamCredential,
+      createCredentialGranter
+    } = await import('#/services/team-credential-grant.js'))
   })
 
   afterAll(async () => {
@@ -565,6 +570,79 @@ describe('team-credential-grant', () => {
 
       expect(teams).not.toContain(revoked.teamId)
       expect(teams).not.toContain(notActive.teamId)
+    })
+  })
+
+  describe('the credential granter of the operations runtime', () => {
+    function operationOf(doc, entries, fields = {}) {
+      return {
+        _id: randomUUID(),
+        teamId: doc.teamId,
+        environment: 'sandbox',
+        items: entries.map(({ id, modelSlug }) => ({
+          entryId: id,
+          modelSlug,
+          change: 'add'
+        })),
+        ...fields
+      }
+    }
+
+    test('grants the first model the operation made active, once for the whole operation', async () => {
+      const first = deploymentEntry({ activatedAt: justNow() })
+      const second = deploymentEntry({
+        modelSlug: 'gpt-5-mini',
+        activatedAt: justNow()
+      })
+      const doc = await insertDocument(first, second)
+      const settings = settingsWith()
+      const grant = createCredentialGranter({ db, ...settings })
+
+      await grant(operationOf(doc, [first, second]))
+
+      expect(callsFor(settings.ensureCredential, doc)).toEqual([
+        expect.objectContaining({ modelSlug: 'gpt-4o' })
+      ])
+    })
+
+    test('grants nothing for an operation that only removes models', async () => {
+      const entry = deploymentEntry({ activatedAt: justNow() })
+      const doc = await insertDocument(entry)
+      const settings = settingsWith()
+      const grant = createCredentialGranter({ db, ...settings })
+      const operation = operationOf(doc, [entry])
+
+      operation.items[0].change = 'remove'
+      await grant(operation)
+
+      expect(settings.ensureCredential).not.toHaveBeenCalled()
+    })
+
+    test('grants nothing when the team document or the entries are gone', async () => {
+      const entry = deploymentEntry()
+      const doc = await insertDocument(entry)
+      const settings = settingsWith()
+      const grant = createCredentialGranter({ db, ...settings })
+
+      await grant(operationOf({ teamId: 'no-such-team' }, [entry]))
+      await grant(operationOf(doc, [deploymentEntry()]))
+
+      expect(settings.ensureCredential).not.toHaveBeenCalled()
+    })
+
+    test('never throws: a credential failure is audited by the grant, not raised', async () => {
+      const entry = deploymentEntry({ activatedAt: justNow() })
+      const doc = await insertDocument(entry)
+      const settings = settingsWith({
+        ensureCredential: vi.fn().mockRejectedValue(new Error('vault down'))
+      })
+      const grant = createCredentialGranter({ db, ...settings })
+
+      await expect(grant(operationOf(doc, [entry]))).resolves.toBeUndefined()
+      expect((await auditEvents(entry))[0]).toMatchObject({
+        action: 'teamDeployment.credential',
+        outcome: 'failure'
+      })
     })
   })
 })

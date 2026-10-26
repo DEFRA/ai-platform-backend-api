@@ -669,6 +669,27 @@ describe('projectOperation', () => {
       expect((await read()).deployments[0].operation.commitSha).toBeNull()
     })
 
+    test('projects another operation of the same entry whatever its version, since versions order one operation only', async () => {
+      await seed([entry('entry-1', 'gpt-4o')])
+
+      await projectOperation(db, operationAt('active', { stateVersion: 9 }))
+      await projectOperation(
+        db,
+        operationAt('requested', {
+          _id: 'op-2',
+          stateVersion: 0,
+          items: [{ entryId: 'entry-1', modelSlug: 'gpt-4o', change: 'remove' }]
+        })
+      )
+
+      expect((await read()).deployments[0]).toMatchObject({
+        status: 'removing',
+        projectedVersion: 0,
+        operationId: 'op-2',
+        operation: { id: 'op-2', state: 'requested' }
+      })
+    })
+
     test('guards each entry on its own version', async () => {
       await seed([
         entry('entry-1', 'gpt-4o', { projectedVersion: 9, status: 'active' }),

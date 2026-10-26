@@ -248,10 +248,17 @@ export async function projectOperation(db, operation) {
     const key = `e${index}`
     const fields = entryFieldsOf(operation, item, entry, at)
 
+    // A version guard per entry: a slower projection of the same operation
+    // never overwrites a newer one. An entry last projected from another
+    // operation (a removal of an added model) takes this one at once, since
+    // state versions only order the writes of one operation.
     arrayFilters.push({
       [`${key}.id`]: item.entryId,
       $or: [
         { [`${key}.projectedVersion`]: { $exists: false } },
+        {
+          [`${key}.operation.id`]: { $exists: true, $ne: operation._id }
+        },
         { [`${key}.projectedVersion`]: { $lt: operation.stateVersion } }
       ]
     })

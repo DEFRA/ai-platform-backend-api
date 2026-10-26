@@ -1,108 +1,88 @@
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
+import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
 
-// How a team deployment's operation is submitted, shared by a new request
-// and by a queued one dispatched later.
+// How a team change becomes an operation: the document the operation
+// submits, the trace identifiers its commands carry, and what a refused
+// request is reported as.
 
-/**
- * The WS6 seam: the GitHub orchestrator submits a whole desired-state
- * document, which only the Teams developer's builder (with the team's
- * immutable `slug`) can produce. Until it is supplied, GitHub-mode requests
- * fail with `501 desired-state-unavailable`; the mock needs no document.
- * The document's `updatedBy` is always the requester's principal, which the
- * submit workflow requires to equal `requested_by`.
- * @param {(db: import('mongodb').Db, params: {teamId: string, environment: string, modelSlug: string, operationId: string, requestedBy: string, change?: 'add'|'remove'}) => Promise<{document: object, expectedRevision: number}|null>} [buildDesiredState]
- * @param {import('mongodb').Db} db
- * @param {object} params
- * @param {string} principal - `entra:{oid}` of the requester
- * @returns {Promise<{path: string, document: object, expectedRevision: number}>}
- */
-export async function buildSubmission(
-  buildDesiredState,
-  db,
-  params,
-  principal
-) {
-  const desired = buildDesiredState ? await buildDesiredState(db, params) : null
-  const slug = desired?.document?.team?.slug
-
-  if (!slug) {
-    throw boomWithCode(
-      Boom.notImplemented,
-      'The desired-state document for this team cannot be built yet',
-      'desired-state-unavailable'
-    )
-  }
-
-  return {
-    path: `environments/${params.environment}/${slug}.json`,
-    document: { ...desired.document, updatedBy: principal },
-    expectedRevision: desired.expectedRevision ?? 0
-  }
-}
-
-/**
- * What to submit for an operation: for GitHub, the whole desired-state
- * document, built now so it starts from the latest file on `main`; the mock
- * needs none.
- * @param {import('mongodb').Db} db
- * @param {{isGithub: boolean, buildDesiredState?: Function}} mode
- * @param {{teamId: string, environment: string, modelSlug: string, operationId: string, requestedBy: string}} params
- * @param {string} principal
- * @returns {Promise<{path: string|null, document: object|null, expectedRevision: number}>}
- */
-export async function prepareSubmission(
-  db,
-  { isGithub, buildDesiredState },
-  params,
-  principal
-) {
-  return isGithub
-    ? buildSubmission(buildDesiredState, db, params, principal)
-    : { path: null, document: null, expectedRevision: 0 }
-}
-
-/**
- * The GitOps trail a GitHub-mode operation starts with.
- * @param {{path: string, document: object, expectedRevision: number}} submission
- * @param {string} operationId
- * @returns {object}
- */
-export function githubTrailOf(submission, operationId) {
-  return {
-    path: submission.path,
-    branch: `op/${operationId}`,
-    action: 'write',
-    revision: submission.document.revision ?? null,
-    expectedRevision: submission.expectedRevision,
-    submitRunId: null,
-    submitRunUrl: null
-  }
-}
+const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
+const DESIRED_STATE_TOO_LARGE = 'desired-state-too-large'
 
 // A W3C trace context header; anything else is dropped rather than forwarded.
 const W3C_TRACEPARENT = /^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$/
+// What a command's `cdpRequestId` may hold (`command.schema.json`).
+const CDP_REQUEST_ID = /^[A-Za-z0-9._:-]{1,128}$/
 
 /**
- * The orchestrator request that submits an operation's desired state as
- * its requester. Only a well-formed `traceparent` is passed on.
- * @param {{environment: string, operationId: string, principal: string, traceParent?: string}} operation
- * @param {{path: string|null, document: object|null, expectedRevision: number}} submission
- * @returns {import('#/adapters/tenant-orchestrator.js').DeploymentRequest}
+ * The trace identifiers an operation carries into its commands. A value the
+ * command contract would refuse is dropped, never forwarded.
+ * @param {{traceParent?: string, cdpRequestId?: string}} headers
+ * @returns {{traceparent: string|null, cdpRequestId: string|null}}
  */
-export function submissionRequest(
-  { environment, operationId, principal, traceParent },
-  submission
-) {
+export function traceOf({ traceParent, cdpRequestId }) {
   return {
-    environment,
-    path: submission.path,
-    document: submission.document,
-    operationId,
-    requestedBy: principal,
-    expectedRevision: submission.expectedRevision,
-    action: 'write',
-    traceParent: W3C_TRACEPARENT.test(traceParent ?? '')
-      ? traceParent
-      : undefined
+    traceparent: W3C_TRACEPARENT.test(traceParent ?? '') ? traceParent : null,
+    cdpRequestId: CDP_REQUEST_ID.test(cdpRequestId ?? '') ? cdpRequestId : null
   }
+}
+
+/**
+ * Creates the function the operations build their document with: the whole
+ * desired-state document for the operation's items, built from `main` now so
+ * it starts from the latest file, as the next revision of the file it was
+ * built from (`expectedRevision`). The document's `updatedBy` is the
+ * operation's requester, which the submit workflow requires to equal
+ * `requested_by`. A team the builder cannot build for fails with
+ * `501 desired-state-unavailable`.
+ * @param {import('mongodb').Db} db
+ * @param {{buildDesiredState?: (db: import('mongodb').Db, params: {teamId: string, environment: string, items: object[], operationId: string}) => Promise<{document: object, expectedRevision: number}|null>}} [deps]
+ * @returns {(operation: object) => Promise<{document: object, expectedRevision: number}>}
+ */
+export function createDocumentBuilder(
+  db,
+  { buildDesiredState = teamDesiredStateBuilder } = {}
+) {
+  return async function buildDocument(operation) {
+    const desired = await buildDesiredState(db, {
+      teamId: operation.teamId,
+      environment: operation.environment,
+      items: operation.items,
+      operationId: operation._id
+    })
+
+    if (!desired?.document?.team?.slug) {
+      throw boomWithCode(
+        Boom.notImplemented,
+        'The desired-state document for this team cannot be built yet',
+        'desired-state-unavailable'
+      )
+    }
+
+    return {
+      document: { ...desired.document, updatedBy: operation.requestedBy },
+      expectedRevision: desired.expectedRevision ?? 0
+    }
+  }
+}
+
+/**
+ * The error a refused request is reported as: a refusal that already is an
+ * API error (a policy refusal, a busy file) as it is, a document too large
+ * as `422`, anything else as `502 upstream-unavailable`.
+ * @param {Error & {code?: string}} error
+ * @param {string} message - the `502` message
+ * @returns {import('@hapi/boom').Boom}
+ */
+export function refusalOf(error, message) {
+  if (error?.isBoom) {
+    return error
+  }
+
+  return error?.code === DESIRED_STATE_TOO_LARGE
+    ? boomWithCode(
+        Boom.badData,
+        'The desired-state document is too large to submit',
+        DESIRED_STATE_TOO_LARGE
+      )
+    : boomWithCode(Boom.badGateway, message, UPSTREAM_UNAVAILABLE)
 }

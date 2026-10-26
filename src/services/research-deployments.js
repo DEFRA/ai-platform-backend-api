@@ -19,7 +19,7 @@ function researchFilePath() {
 
 async function readDeployedSlugs(registry, path) {
   try {
-    const { document } = await registry.orchestrator.getCurrentDocument({
+    const { document } = await registry.reader.getCurrentDocument({
       path
     })
 
@@ -96,7 +96,7 @@ export async function readResearchDeployments({
 
 /**
  * Forgets the cached research deployments, so the next read goes to the
- * orchestrator. For tests.
+ * team file reader. For tests.
  */
 export function clearResearchDeploymentsCache() {
   cached = null

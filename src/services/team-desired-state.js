@@ -93,6 +93,27 @@ function withModelRemoved({ held, granted }, modelSlug) {
   }
 }
 
+// The file's models after each change in turn: an add is idempotent for a
+// slug already held, and a remove for one it does not hold.
+async function withItemsApplied(db, models, items, environment) {
+  let next = models
+
+  for (const { modelSlug, change } of items) {
+    next =
+      change === 'remove'
+        ? withModelRemoved(
+            { held: next.deployments, granted: next.allowedDeployments },
+            modelSlug
+          )
+        : withModelAdded(
+            { held: next.deployments, granted: next.allowedDeployments },
+            deploymentOf(await findModelBySlug(db, modelSlug), environment)
+          )
+  }
+
+  return next
+}
+
 // The fields a new file keeps from the one on `main`, when there is one.
 function carriedOver(current) {
   return {
@@ -110,6 +131,32 @@ async function findTeam(db, teamId) {
 }
 
 /**
+ * Where a team's file is: its repository, team slug and path, as the
+ * operation carries them (the file is `environments/{env}/{slug}.json` in
+ * `ai-platform-tenants`). A team with no slug cannot have a file built yet.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, environment: string}} params
+ * @returns {Promise<{repository: string, team: string, path: string}>}
+ */
+export async function resolveTeamTarget(db, { teamId, environment }) {
+  const team = await findTeam(db, teamId)
+
+  if (!team?.slug) {
+    throw boomWithCode(
+      Boom.notImplemented,
+      'The desired-state document for this team cannot be built yet',
+      'desired-state-unavailable'
+    )
+  }
+
+  return {
+    repository: config.get('gitops.tenantsRepo'),
+    team: team.slug,
+    path: teamFilePath(environment, team.slug)
+  }
+}
+
+/**
  * The team's tenant file in each environment this instance deploys to
  * (`TEAM_ENVIRONMENTS`, in order) that has one on `main`. Environments the
  * team has no file in are left out.
@@ -124,7 +171,7 @@ export async function readTeamEnvironments(registry, slug, excluding = []) {
     .filter((environment) => !excluding.includes(environment))
   const files = await Promise.all(
     environments.map(async (environment) => {
-      const { document } = await registry.orchestrator.getCurrentDocument({
+      const { document } = await registry.reader.getCurrentDocument({
         path: teamFilePath(environment, slug)
       })
 
@@ -157,16 +204,17 @@ async function limitsFor({ current, registry, team, environment, model }) {
 }
 
 /**
- * Creates the WS6 builder the GitHub orchestrator submits with. Returns the
- * whole next revision of the team's file and the revision it was built from,
- * which `submit` compares with `main` and refuses as `revision-conflict` if
- * another change has landed meanwhile. `change` is `add` (the default) or
- * `remove`: a removal is the file without the model's deployment and grant,
- * which the next apply destroys (design C #deletion); it never touches the
- * team's other models, limits or OAuth block, and needs no eligible model,
- * so a deprecated or retired model can still be removed. `updatedBy` is left
- * out: the caller sets it to the requester's principal, which the workflow
- * requires to equal `requested_by`.
+ * Creates the builder the operations submit with. Returns the whole next
+ * revision of the team's file and the revision it was built from, which
+ * `submit` compares with `main` and refuses as `stale-revision` if another
+ * change has landed meanwhile. `items` are the operation's changes, each
+ * `{modelSlug, change}` with `change` `add` or `remove`: a removal is the
+ * file without the model's deployment and grant, which the next apply
+ * destroys (design C #deletion); it never touches the team's other models,
+ * limits or OAuth block, and needs no eligible model, so a deprecated or
+ * retired model can still be removed. `updatedBy` is left out: the caller
+ * sets it to the requester's principal, which the workflow requires to equal
+ * `requested_by`.
  * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry}} [deps]
  */
 export function createTeamDesiredStateBuilder({
@@ -174,7 +222,7 @@ export function createTeamDesiredStateBuilder({
 } = {}) {
   return async function buildTeamDesiredState(
     db,
-    { teamId, environment, modelSlug, operationId, change = 'add' }
+    { teamId, environment, items, operationId }
   ) {
     const team = await findTeam(db, teamId)
 
@@ -183,18 +231,23 @@ export function createTeamDesiredStateBuilder({
     }
 
     const path = teamFilePath(environment, team.slug)
-    const { document: current } =
-      await registry.orchestrator.getCurrentDocument({ path })
+    const { document: current } = await registry.reader.getCurrentDocument({
+      path
+    })
     const expectedRevision = current?.revision ?? 0
-    const models = {
-      held: current?.deployments ?? [],
-      granted: current?.gateway?.allowedDeployments ?? []
-    }
-    const model = change === 'add' ? await findModelBySlug(db, modelSlug) : null
-    const { deployments, allowedDeployments } =
-      change === 'remove'
-        ? withModelRemoved(models, modelSlug)
-        : withModelAdded(models, deploymentOf(model, environment))
+    const { deployments, allowedDeployments } = await withItemsApplied(
+      db,
+      {
+        deployments: current?.deployments ?? [],
+        allowedDeployments: current?.gateway?.allowedDeployments ?? []
+      },
+      items,
+      environment
+    )
+    const firstAdd = items.find(({ change }) => change !== 'remove')
+    const model = firstAdd
+      ? await findModelBySlug(db, firstAdd.modelSlug)
+      : null
 
     const document = {
       ...carriedOver(current),

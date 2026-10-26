@@ -72,15 +72,22 @@ describe('#createTeamDesiredStateBuilder', () => {
     await server.stop({ timeout: 0 })
   })
 
-  function orchestrator(document = null) {
+  function reader(document = null) {
     return {
       getCurrentDocument: vi.fn(async () => ({ document }))
     }
   }
 
+  // The builder takes the operation's items; most tests name one model and
+  // its change, so this wraps it for them.
+  function forOneModel(builder) {
+    return (database, { modelSlug, change = 'add', ...params }) =>
+      builder(database, { ...params, items: [{ modelSlug, change }] })
+  }
+
   function build(current) {
-    const registry = { orchestrator: orchestrator(current) }
-    const builder = createTeamDesiredStateBuilder({ registry })
+    const registry = { reader: reader(current) }
+    const builder = forOneModel(createTeamDesiredStateBuilder({ registry }))
 
     return { builder, registry }
   }
@@ -118,7 +125,7 @@ describe('#createTeamDesiredStateBuilder', () => {
   test('builds revision 1 for a team with no file on main', async () => {
     const { result, slug, registry } = await buildFor(null)
 
-    expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledWith({
+    expect(registry.reader.getCurrentDocument).toHaveBeenCalledWith({
       path: `environments/infradev/${slug}.json`
     })
     expect(result.expectedRevision).toBe(0)
@@ -300,9 +307,11 @@ describe('#createTeamDesiredStateBuilder', () => {
 
         return { document: filesByEnvironment[env] ?? null }
       })
-      const builder = createTeamDesiredStateBuilder({
-        registry: { orchestrator: { getCurrentDocument } }
-      })
+      const builder = forOneModel(
+        createTeamDesiredStateBuilder({
+          registry: { reader: { getCurrentDocument } }
+        })
+      )
       const { document } = await builder(db, {
         teamId,
         environment,
@@ -613,5 +622,135 @@ describe('#createTeamDesiredStateBuilder', () => {
     })
 
     expect(result).toBeNull()
+  })
+
+  describe('an operation with several items', () => {
+    const SECOND = 'second-desired'
+    const THIRD = 'third-desired'
+
+    beforeAll(async () => {
+      await db
+        .collection('models')
+        .insertMany([SECOND, THIRD].map((slug) => ({ ...TEAM_MODEL, slug })))
+      invalidateModelsCache()
+    })
+
+    async function buildItems(current, items) {
+      const { teamId, slug } = await team()
+      const builder = createTeamDesiredStateBuilder({
+        registry: { reader: reader(current) }
+      })
+      const result = await builder(db, {
+        teamId,
+        environment: 'infradev',
+        items,
+        operationId: '651f2c0f5c1b4a0012ab34d0'
+      })
+
+      return { result, slug }
+    }
+
+    test('writes the whole file once, with every model added, as one revision', async () => {
+      const { result } = await buildItems(null, [
+        { modelSlug: TEAM_MODEL.slug, change: 'add' },
+        { modelSlug: SECOND, change: 'add' },
+        { modelSlug: THIRD, change: 'add' }
+      ])
+
+      expect(result.expectedRevision).toBe(0)
+      expect(result.document.revision).toBe(1)
+      expect(result.document.deployments.map(({ slug }) => slug)).toEqual([
+        TEAM_MODEL.slug,
+        SECOND,
+        THIRD
+      ])
+      expect(result.document.gateway.allowedDeployments).toEqual([
+        TEAM_MODEL.slug,
+        SECOND,
+        THIRD
+      ])
+      expect(schemaProblems(result.document)).toEqual([])
+    })
+
+    test('applies each change in turn, so an add and a remove of other models share one file', async () => {
+      const held = (slug) => ({
+        slug,
+        sku: 'DataZoneStandard',
+        capacity: 1,
+        status: 'active'
+      })
+      const { result } = await buildItems(
+        {
+          schemaVersion: 1,
+          revision: 3,
+          environment: 'infradev',
+          status: 'active',
+          deployments: [held(TEAM_MODEL.slug), held(SECOND)],
+          gateway: {
+            credentialType: 'oauth',
+            allowedDeployments: [TEAM_MODEL.slug, SECOND],
+            limits: { tokensPerMinute: 1000, requestsPerMinute: 60 }
+          },
+          oauth: { federations: [], externalClients: [], secretsAllowed: true }
+        },
+        [
+          { modelSlug: SECOND, change: 'remove' },
+          { modelSlug: THIRD, change: 'add' }
+        ]
+      )
+
+      expect(result.expectedRevision).toBe(3)
+      expect(result.document.revision).toBe(4)
+      expect(result.document.deployments.map(({ slug }) => slug)).toEqual([
+        TEAM_MODEL.slug,
+        THIRD
+      ])
+      expect(result.document.gateway.allowedDeployments).toEqual([
+        TEAM_MODEL.slug,
+        THIRD
+      ])
+    })
+
+    test('refuses the whole operation when one model cannot be added', async () => {
+      await expect(
+        buildItems(null, [
+          { modelSlug: TEAM_MODEL.slug, change: 'add' },
+          { modelSlug: 'unknown-model-desired', change: 'add' }
+        ])
+      ).rejects.toMatchObject({ data: { code: 'model-not-eligible' } })
+    })
+  })
+
+  describe('#resolveTeamTarget', () => {
+    let resolveTeamTarget
+
+    beforeAll(async () => {
+      ;({ resolveTeamTarget } =
+        await import('#/services/team-desired-state.js'))
+    })
+
+    test('names the repository, the team and the path of the team file', async () => {
+      const { teamId, slug } = await team()
+
+      expect(
+        await resolveTeamTarget(db, { teamId, environment: 'infradev' })
+      ).toEqual({
+        repository: 'DEFRA/ai-platform-tenants',
+        team: slug,
+        path: `environments/infradev/${slug}.json`
+      })
+    })
+
+    test.each([
+      ['an id that is not a team', 'not-an-object-id'],
+      ['a team that does not exist', '651f2c0f5c1b4a0012ab34ff']
+    ])('refuses %s as desired-state-unavailable', async (_name, teamId) => {
+      await expect(
+        resolveTeamTarget(db, { teamId, environment: 'infradev' })
+      ).rejects.toMatchObject({
+        output: { statusCode: 501 },
+        data: { code: 'desired-state-unavailable' }
+      })
+    })
   })
 })

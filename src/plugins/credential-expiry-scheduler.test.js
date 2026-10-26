@@ -1,3 +1,30 @@
+function fakeServer(overrides = {}) {
+  return {
+    db: {},
+    locker: {},
+    logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
+    events: { on: vi.fn() },
+    ...overrides
+  }
+}
+
+// The sweep's services, mocked: each test says what they find.
+function mockServices({
+  expire = { expired: 0, suspended: 0 },
+  reconcile = { reconciled: 0, vaultReconciled: 0 },
+  credentials = 0,
+  strays = 0
+} = {}) {
+  vi.doMock('#/services/maintenance-service.js', () => ({
+    expireCredentials: vi.fn().mockResolvedValue(expire),
+    reconcilePendingCredentials: vi.fn().mockResolvedValue(reconcile),
+    flagStraySubscriptions: vi.fn().mockResolvedValue(strays)
+  }))
+  vi.doMock('#/services/team-credential-grant.js', () => ({
+    recoverTeamCredentials: vi.fn().mockResolvedValue(credentials)
+  }))
+}
+
 describe('#credentialExpiryScheduler', () => {
   afterEach(() => {
     vi.resetModules()
@@ -5,42 +32,30 @@ describe('#credentialExpiryScheduler', () => {
     vi.useRealTimers()
   })
 
-  test('runs an expiry sweep on each interval tick and logs a non-zero result', async () => {
+  function enableEveryTick() {
     vi.useFakeTimers()
     vi.stubEnv('MAINTENANCE_SCHEDULER_ENABLED', 'true')
     vi.stubEnv('MAINTENANCE_SCHEDULER_INTERVAL_MS', '1000')
+  }
 
-    vi.doMock('#/services/maintenance-service.js', () => ({
-      expireCredentials: vi
-        .fn()
-        .mockResolvedValue({ expired: 1, suspended: 1 }),
-      reconcilePendingCredentials: vi
-        .fn()
-        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
-      pollTeamDeployments: vi.fn().mockResolvedValue({
-        polled: 2,
-        transitioned: 1,
-        abandoned: 0,
-        credentials: 0
-      }),
-      flagStraySubscriptions: vi.fn().mockResolvedValue(1)
-    }))
+  test('runs an expiry sweep on each interval tick and logs a non-zero result', async () => {
+    enableEveryTick()
+    mockServices({
+      expire: { expired: 1, suspended: 1 },
+      credentials: 1,
+      strays: 1
+    })
 
     const { credentialExpiryScheduler } =
       await import('#/plugins/credential-expiry-scheduler.js')
     const {
       expireCredentials,
       reconcilePendingCredentials,
-      pollTeamDeployments,
       flagStraySubscriptions
     } = await import('#/services/maintenance-service.js')
-
-    const server = {
-      db: {},
-      locker: {},
-      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
-      events: { on: vi.fn() }
-    }
+    const { recoverTeamCredentials } =
+      await import('#/services/team-credential-grant.js')
+    const server = fakeServer()
 
     credentialExpiryScheduler.plugin.register(server)
 
@@ -56,10 +71,7 @@ describe('#credentialExpiryScheduler', () => {
       suspended: 1,
       reconciled: 0,
       vaultReconciled: 0,
-      polled: 2,
-      transitioned: 1,
-      abandoned: 0,
-      credentials: 0,
+      credentials: 1,
       straySubscriptions: 1
     }
 
@@ -73,11 +85,10 @@ describe('#credentialExpiryScheduler', () => {
       server.db,
       server.locker
     )
-    expect(pollTeamDeployments).toHaveBeenCalledWith(
-      server.db,
-      server.locker,
-      server.logger
-    )
+    expect(recoverTeamCredentials).toHaveBeenCalledWith(server.db, {
+      locker: server.locker,
+      logger: server.logger
+    })
     expect(flagStraySubscriptions).toHaveBeenCalledWith(server.logger)
     expect(server.logger.debug).toHaveBeenCalledWith(
       result,
@@ -89,42 +100,43 @@ describe('#credentialExpiryScheduler', () => {
     )
   })
 
-  test('logs only at debug when a sweep changed nothing', async () => {
-    vi.useFakeTimers()
-    vi.stubEnv('MAINTENANCE_SCHEDULER_ENABLED', 'true')
-    vi.stubEnv('MAINTENANCE_SCHEDULER_INTERVAL_MS', '1000')
-
-    vi.doMock('#/services/maintenance-service.js', () => ({
-      expireCredentials: vi
-        .fn()
-        .mockResolvedValue({ expired: 0, suspended: 0 }),
-      reconcilePendingCredentials: vi
-        .fn()
-        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
-      pollTeamDeployments: vi.fn().mockResolvedValue({
-        polled: 3,
-        transitioned: 0,
-        abandoned: 0,
-        credentials: 0
-      }),
-      flagStraySubscriptions: vi.fn().mockResolvedValue(0)
-    }))
+  test('does not poll team deployments: they move on events and the operations sweeper', async () => {
+    enableEveryTick()
+    mockServices()
 
     const { credentialExpiryScheduler } =
       await import('#/plugins/credential-expiry-scheduler.js')
-
-    const server = {
-      db: {},
-      locker: {},
-      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
-      events: { on: vi.fn() }
-    }
+    const server = fakeServer()
 
     credentialExpiryScheduler.plugin.register(server)
     await vi.advanceTimersByTimeAsync(1000)
 
     expect(server.logger.debug).toHaveBeenCalledWith(
-      expect.objectContaining({ polled: 3, transitioned: 0 }),
+      {
+        expired: 0,
+        suspended: 0,
+        reconciled: 0,
+        vaultReconciled: 0,
+        credentials: 0,
+        straySubscriptions: 0
+      },
+      'Credential expiry sweep ran'
+    )
+  })
+
+  test('logs only at debug when a sweep changed nothing', async () => {
+    enableEveryTick()
+    mockServices()
+
+    const { credentialExpiryScheduler } =
+      await import('#/plugins/credential-expiry-scheduler.js')
+    const server = fakeServer()
+
+    credentialExpiryScheduler.plugin.register(server)
+    await vi.advanceTimersByTimeAsync(1000)
+
+    expect(server.logger.debug).toHaveBeenCalledWith(
+      expect.objectContaining({ credentials: 0 }),
       'Credential expiry sweep ran'
     )
     expect(server.logger.info).not.toHaveBeenCalledWith(
@@ -134,35 +146,12 @@ describe('#credentialExpiryScheduler', () => {
   })
 
   test('logs at info when the only change is a team credential created for an active deployment', async () => {
-    vi.useFakeTimers()
-    vi.stubEnv('MAINTENANCE_SCHEDULER_ENABLED', 'true')
-    vi.stubEnv('MAINTENANCE_SCHEDULER_INTERVAL_MS', '1000')
-
-    vi.doMock('#/services/maintenance-service.js', () => ({
-      expireCredentials: vi
-        .fn()
-        .mockResolvedValue({ expired: 0, suspended: 0 }),
-      reconcilePendingCredentials: vi
-        .fn()
-        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
-      pollTeamDeployments: vi.fn().mockResolvedValue({
-        polled: 0,
-        transitioned: 0,
-        abandoned: 0,
-        credentials: 2
-      }),
-      flagStraySubscriptions: vi.fn().mockResolvedValue(0)
-    }))
+    enableEveryTick()
+    mockServices({ credentials: 2 })
 
     const { credentialExpiryScheduler } =
       await import('#/plugins/credential-expiry-scheduler.js')
-
-    const server = {
-      db: {},
-      locker: {},
-      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
-      events: { on: vi.fn() }
-    }
+    const server = fakeServer()
 
     credentialExpiryScheduler.plugin.register(server)
     await vi.advanceTimersByTimeAsync(1000)
@@ -175,24 +164,13 @@ describe('#credentialExpiryScheduler', () => {
 
   test('does not schedule a sweep when disabled', async () => {
     vi.stubEnv('MAINTENANCE_SCHEDULER_ENABLED', 'false')
-
-    vi.doMock('#/services/maintenance-service.js', () => ({
-      expireCredentials: vi.fn(),
-      reconcilePendingCredentials: vi.fn(),
-      pollTeamDeployments: vi.fn()
-    }))
+    mockServices()
 
     const { credentialExpiryScheduler } =
       await import('#/plugins/credential-expiry-scheduler.js')
     const { expireCredentials } =
       await import('#/services/maintenance-service.js')
-
-    const server = {
-      db: {},
-      locker: {},
-      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
-      events: { on: vi.fn() }
-    }
+    const server = fakeServer()
 
     credentialExpiryScheduler.plugin.register(server)
 
@@ -204,25 +182,19 @@ describe('#credentialExpiryScheduler', () => {
   })
 
   test('logs and keeps running when a sweep throws', async () => {
-    vi.useFakeTimers()
-    vi.stubEnv('MAINTENANCE_SCHEDULER_ENABLED', 'true')
-    vi.stubEnv('MAINTENANCE_SCHEDULER_INTERVAL_MS', '1000')
-
+    enableEveryTick()
     vi.doMock('#/services/maintenance-service.js', () => ({
       expireCredentials: vi.fn().mockRejectedValue(new Error('mongo down')),
       reconcilePendingCredentials: vi.fn(),
-      pollTeamDeployments: vi.fn()
+      flagStraySubscriptions: vi.fn()
+    }))
+    vi.doMock('#/services/team-credential-grant.js', () => ({
+      recoverTeamCredentials: vi.fn()
     }))
 
     const { credentialExpiryScheduler } =
       await import('#/plugins/credential-expiry-scheduler.js')
-
-    const server = {
-      db: {},
-      locker: {},
-      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
-      events: { on: vi.fn() }
-    }
+    const server = fakeServer()
 
     credentialExpiryScheduler.plugin.register(server)
 
@@ -235,19 +207,8 @@ describe('#credentialExpiryScheduler', () => {
   })
 
   test('clears the interval when the server stop event fires', async () => {
-    vi.useFakeTimers()
-    vi.stubEnv('MAINTENANCE_SCHEDULER_ENABLED', 'true')
-    vi.stubEnv('MAINTENANCE_SCHEDULER_INTERVAL_MS', '1000')
-
-    vi.doMock('#/services/maintenance-service.js', () => ({
-      expireCredentials: vi
-        .fn()
-        .mockResolvedValue({ expired: 0, suspended: 0 }),
-      reconcilePendingCredentials: vi
-        .fn()
-        .mockResolvedValue({ reconciled: 0, vaultReconciled: 0 }),
-      pollTeamDeployments: vi.fn()
-    }))
+    enableEveryTick()
+    mockServices()
 
     const { credentialExpiryScheduler } =
       await import('#/plugins/credential-expiry-scheduler.js')
@@ -255,16 +216,13 @@ describe('#credentialExpiryScheduler', () => {
       await import('#/services/maintenance-service.js')
 
     let stopHandler
-    const server = {
-      db: {},
-      locker: {},
-      logger: { info: vi.fn(), debug: vi.fn(), error: vi.fn() },
+    const server = fakeServer({
       events: {
         on: vi.fn((event, handler) => {
           stopHandler = handler
         })
       }
-    }
+    })
 
     credentialExpiryScheduler.plugin.register(server)
     stopHandler()
