@@ -136,10 +136,34 @@ async function isStaleRefusal({ controls }, operation, event, run, paused) {
   return paused && !control.paused && control.runStartedAt > startedAt
 }
 
+// A revert refused for a stale base or a conflict ends at once: it carries the
+// rollback it was built with, so the same refusal is certain again. It
+// alerts, and the failed parent keeps the file until an engineer acts
+// (plan 5, "Revert"). Only a pause holds a revert.
+async function endRevertRefused(deps, operation, decision, event) {
+  const ended = await advanceWrite(
+    deps,
+    operation,
+    { state: CHECKS_FAILED, facts: decision.facts },
+    event
+  )
+
+  if (ended) {
+    await deps.operations.finish(ended)
+  }
+
+  return ended
+}
+
 async function holdWrite(deps, operation, decision, event, run) {
   const { ctx, operations } = deps
   const code = decision.code
   const paused = code === 'paused'
+
+  if (!paused && operation.type === OPERATION_TYPES.REVERT) {
+    return endRevertRefused(deps, operation, decision, event)
+  }
+
   const dueAt = holdDueAt(ctx.settings, operation, paused)
 
   if (!paused && !dueAt) {
@@ -368,12 +392,18 @@ async function afterDeployFailed(deps, operation, event) {
   return operations.finish(operation)
 }
 
-async function afterDeployed({ ctx, verifier }, written, decision) {
+// A parent that recovers cancels a revert not yet committed; only one that
+// was committed needs an engineer to check the file.
+async function afterDeployed({ ctx, operations, verifier }, written, decision) {
   if (decision.recovered && written.revertId) {
-    ctx.logger?.error(
-      { operationId: written._id, alert: true },
-      'The apply recovered after its revert was committed; an engineer should check the file'
-    )
+    const revert = await operations.settleRecoveredRevert(written)
+
+    if (revert === 'committed') {
+      ctx.logger?.error(
+        { operationId: written._id, alert: true },
+        'The apply recovered after its revert was committed; an engineer should check the file'
+      )
+    }
   }
 
   await verifier.verify(written._id)

@@ -11,7 +11,10 @@ import {
   resubmit,
   retry
 } from '#/operations/operations-retry.js'
-import { startRevert } from '#/operations/operations-revert.js'
+import {
+  settleRecoveredRevert,
+  startRevert
+} from '#/operations/operations-revert.js'
 
 // The principal the backend's own operations (a revert) are attributed to.
 export { SYSTEM_ACTOR as SYSTEM_PRINCIPAL } from '#/services/team-deployment-entries.js'
@@ -49,6 +52,7 @@ export function createOperationsService(deps) {
     publishApply: bindTo(ctx, publishApply),
     reconcile: bindTo(ctx, reconcile),
     startRevert: bindTo(ctx, startRevert),
+    settleRecoveredRevert: bindTo(ctx, settleRecoveredRevert),
     retry: bindTo(ctx, retry),
     endRefused: bindTo(ctx, endRefused)
   }

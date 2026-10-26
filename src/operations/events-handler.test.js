@@ -103,6 +103,31 @@ describe('events-handler', () => {
     })
   }
 
+  // The revert of a failed apply, as the backend created it.
+  function seedRevertChild(overrides = {}) {
+    return insertOperation(db, {
+      ...buildOperation({
+        type: 'team-file.revert',
+        state: 'queued',
+        teamId: `team-${teams}`,
+        environment: 'infradev',
+        target: {
+          repository: 'DEFRA/ai-platform-tenants',
+          team: 'alpha',
+          path: 'environments/infradev/alpha.json'
+        },
+        items: [],
+        parentId: OP_ID,
+        slot: 'revert',
+        action: 'revert',
+        requestedBy: 'backend'
+      }),
+      _id: 'op-revert',
+      held: { code: 'paused', since: '2026-10-26T11:30:00Z' },
+      ...overrides
+    })
+  }
+
   function build(database = db, operations = service) {
     return createEventsHandler({
       ctx: { db: database, settings, logger },
@@ -789,6 +814,60 @@ describe('events-handler', () => {
       }
     )
 
+    describe('of a revert', () => {
+      async function seedRequestedRevert() {
+        await seed('deploy-failed', { revertId: 'op-revert' })
+        await seedRevertChild({ state: 'requested', held: undefined })
+      }
+
+      test.each([
+        ['stale-revision', STALE_REFUSAL],
+        ['commit-conflict', { ...STALE_REFUSAL, code: 'commit-conflict' }]
+      ])(
+        'ends at once on %s, alerting, and leaves the file with the failed parent',
+        async (_code, failureReason) => {
+          await seedRequestedRevert()
+
+          await handler.handle(
+            refusal(failureReason, { operationId: 'op-revert' })
+          )
+
+          const child = await stored('op-revert')
+          const parent = await stored()
+
+          expect(child).toMatchObject({
+            state: 'checks-failed',
+            error: { code: 'operation-checks-failed', retryable: false }
+          })
+          expect(child.slot).toBeUndefined()
+          expect(child.held).toBeUndefined()
+          expect(parent).toMatchObject({ slot: 'active', revertFailed: true })
+          expect(parent.revertId).toBeUndefined()
+          expect(logger.error).toHaveBeenCalledWith(
+            expect.objectContaining({ operationId: OP_ID }),
+            expect.stringContaining('The revert did not complete')
+          )
+        }
+      )
+
+      test('is held for a paused refusal, as any write is', async () => {
+        await seedRequestedRevert()
+        await setControl({ paused: true })
+
+        await handler.handle(
+          refusal(PAUSED_REFUSAL, { operationId: 'op-revert' })
+        )
+
+        const child = await stored('op-revert')
+
+        expect(child).toMatchObject({
+          state: 'queued',
+          slot: 'revert',
+          held: { code: 'paused' }
+        })
+      })
+    })
+
     test('ends timed-out once the resubmissions are used up, alerting an engineer', async () => {
       await seed('requested', { resubmitCount: RESUBMIT_MAX })
 
@@ -1259,6 +1338,11 @@ describe('events-handler', () => {
         gitops: { commitSha: SHA, applyRunId: APPLY_RUN },
         revertId: 'op-revert'
       })
+      await seedRevertChild({
+        state: 'committed',
+        held: undefined,
+        gitops: { commitSha: SHA }
+      })
 
       await handler.handle(event('deployed', { runId: RETRY_RUN }))
 
@@ -1266,7 +1350,47 @@ describe('events-handler', () => {
         expect.objectContaining({ operationId: OP_ID, alert: true }),
         'The apply recovered after its revert was committed; an engineer should check the file'
       )
+      expect((await stored('op-revert')).slot).toBe('revert')
       expect(verifier.verify).toHaveBeenCalledWith(OP_ID)
+    })
+
+    test('cancels a revert that is not committed when the apply recovers, without an alert', async () => {
+      await seed('deploy-failed', {
+        gitops: { commitSha: SHA, applyRunId: APPLY_RUN },
+        revertId: 'op-revert'
+      })
+      await seedRevertChild()
+      relay.publishOperation.mockClear()
+
+      await handler.handle(event('deployed', { runId: RETRY_RUN }))
+
+      const child = await stored('op-revert')
+
+      expect(child).toMatchObject({
+        state: 'checks-failed',
+        outboxPending: false,
+        error: { code: 'operation-revert-cancelled' }
+      })
+      expect(child.slot).toBeUndefined()
+      expect(child.held).toBeUndefined()
+      expect(logger.error).not.toHaveBeenCalled()
+      expect(relay.publishOperation).not.toHaveBeenCalled()
+      expect(verifier.verify).toHaveBeenCalledWith(OP_ID)
+    })
+
+    test('does not publish a held revert on resume once its parent has recovered', async () => {
+      await setControl({ paused: true })
+      await seed('deployed', { revertId: 'op-revert' })
+      await seedRevertChild()
+      relay.publishOperation.mockClear()
+
+      await handler.handle(pauseEvent('resumed'))
+
+      const child = await stored('op-revert')
+
+      expect(child.state).toBe('checks-failed')
+      expect(child.slot).toBeUndefined()
+      expect(relay.publishOperation).not.toHaveBeenCalled()
     })
 
     test('ignores a deployed from a run older than the failed apply', async () => {

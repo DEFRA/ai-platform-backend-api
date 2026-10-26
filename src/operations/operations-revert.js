@@ -22,10 +22,6 @@ import {
 import { publish } from '#/operations/operations-support.js'
 import { SYSTEM_ACTOR } from '#/services/team-deployment-entries.js'
 
-// How many held periods the advisory pause flag is trusted for before the
-// revert probes the pause itself.
-const TRUSTED_PASSES = 1
-
 // The revert of a failed write (plan 5). Each function takes the service's
 // context ({db, settings, logger, relay, buildDocument, reader, controls}).
 
@@ -106,6 +102,10 @@ async function cancelRevert(ctx, parentId) {
   )
 }
 
+// While the environment is paused no revert starts (plan 5, "Pause"), however
+// long: re-armed at each held deadline, the pause re-checked, with the
+// held-work alarm (`GITOPS_HELD_ALARM_MS`) raising a pause or a lost `resumed`
+// event that outlasts its threshold.
 async function rearmRevert(ctx, parent) {
   const passes = (parent.heldPasses ?? 0) + 1
 
@@ -115,16 +115,79 @@ async function rearmRevert(ctx, parent) {
   })
 }
 
-// The advisory pause flag is trusted once, for one held period: a `resumed`
-// event can be lost, and the failed parent keeps its file while it waits. At
-// the next deadline the revert is published and its own submit reads the
-// pause the workflows hold (plan 5, "Pause"; AC25); it answers `paused`
-// again if the pause stands.
-async function holdsForPause(ctx, parent) {
-  return (
-    (parent.heldPasses ?? 0) < TRUSTED_PASSES &&
-    ctx.controls.isPaused(parent.environment)
+// A revert child ended because its parent no longer holds the failure it
+// reverts: nothing publishes it, and the parent is left as it is.
+function cancelChild(ctx, child) {
+  return writeWithRetry(ctx, child._id, (current) =>
+    current.slot
+      ? {
+          state: 'checks-failed',
+          set: {
+            error: {
+              code: FAILURE_CODES.REVERT_CANCELLED,
+              message: 'The revert was cancelled: the failed apply moved on',
+              retryable: false
+            },
+            outboxPending: false
+          },
+          unset: ['slot', 'held', 'deferred'],
+          deadlineAt: null,
+          source: 'backend'
+        }
+      : null
   )
+}
+
+async function cancelledChild(ctx, child) {
+  const cancelled = await cancelChild(ctx, child)
+
+  if (cancelled) {
+    ctx.logger?.warn(
+      { operationId: child._id, code: FAILURE_CODES.REVERT_CANCELLED },
+      'The revert was cancelled: the failed apply moved on'
+    )
+  }
+
+  return cancelled
+}
+
+/**
+ * Cancels a revert child whose parent no longer holds the failure it
+ * reverts (recovered, or a newer attempt running), so it is never
+ * resubmitted or published over the parent's change (plan 5, "Revert").
+ * @param {object} ctx
+ * @param {object} child - a `team-file.revert` operation
+ * @returns {Promise<object|null>} The cancelled child, or null when the parent still holds the failure.
+ */
+export async function cancelStaleRevert(ctx, child) {
+  const parent = await findOperation(ctx.db, child.parentId)
+
+  return parent && isStillFailed(parent) ? null : cancelledChild(ctx, child)
+}
+
+/**
+ * What a parent that recovered does about its revert: one that is not
+ * committed is cancelled; one that is committed is left, and the caller alerts
+ * an engineer.
+ * @param {object} ctx
+ * @param {object} parent - the operation that recovered, as written
+ * @returns {Promise<'committed'|'cancelled'|'none'>}
+ */
+export async function settleRecoveredRevert(ctx, parent) {
+  const child =
+    parent.revertId && (await findOperation(ctx.db, parent.revertId))
+
+  if (!child?.slot) {
+    return 'none'
+  }
+
+  if (child.gitops?.commitSha) {
+    return 'committed'
+  }
+
+  await cancelledChild(ctx, child)
+
+  return 'cancelled'
 }
 
 // The claim on the still-failed parent, made before the child exists, so a
@@ -212,10 +275,11 @@ async function completeClaim(ctx, parent) {
  * attempt running, and only then is the child created and published, so a
  * parent that recovers or is retried during the read of GitHub never has
  * its stale rollback published. A claim a stop left unfinished is completed
- * on the next call. While the environment is paused the revert is re-armed
- * once, then published at the held deadline (its submit reads the pause
- * itself); otherwise it is cancelled. The child takes no slot of the file;
- * the parent keeps its, and the child carries on the parent's backoff.
+ * on the next call. While the environment is paused no revert starts: it is
+ * re-armed at each held deadline until the pause ends (the held-work alarm
+ * covers a lost `resumed`); a parent that moved on cancels it. The child
+ * takes no slot of the file; the parent keeps its, and the child carries on
+ * the parent's backoff.
  * @param {object} ctx
  * @param {object} parent
  * @returns {Promise<'started'|'cancelled'|'re-armed'>}
@@ -231,7 +295,7 @@ export async function startRevert(ctx, parent) {
     return 'cancelled'
   }
 
-  if (await holdsForPause(ctx, parent)) {
+  if (await ctx.controls.isPaused(parent.environment)) {
     await rearmRevert(ctx, parent)
 
     return 're-armed'

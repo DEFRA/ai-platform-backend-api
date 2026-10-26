@@ -1042,6 +1042,71 @@ describe('operations-service', () => {
         expect(persisted.document).toBeUndefined()
         expect(entryTypes(persisted)).toEqual(['submit', 'submit'])
       })
+
+      describe('when the parent no longer holds the failure', () => {
+        async function expectCancelled(child) {
+          relay.publishOperation.mockClear()
+
+          const written = await service.resubmit(child._id)
+
+          const persisted = await stored(child._id)
+          const parent = await stored(child.parentId)
+
+          expect(written._id).toBe(child._id)
+          expect(persisted).toMatchObject({
+            state: 'checks-failed',
+            outboxPending: false,
+            deadlineAt: null,
+            error: {
+              code: 'operation-revert-cancelled',
+              retryable: false
+            }
+          })
+          expect(persisted.slot).toBeUndefined()
+          expect(persisted.held).toBeUndefined()
+          expect(entryTypes(persisted)).toEqual(['submit'])
+          expect(relay.publishOperation).not.toHaveBeenCalled()
+          expect(parent.revertFailed).toBeUndefined()
+          expect(logger.warn).toHaveBeenCalledWith(
+            { operationId: child._id, code: 'operation-revert-cancelled' },
+            'The revert was cancelled: the failed apply moved on'
+          )
+        }
+
+        test('cancels the held revert instead of resubmitting it when the parent recovered', async () => {
+          const child = await refusedRevert({
+            environment: 'infradev',
+            revision: 3
+          })
+          await db
+            .collection('operations')
+            .updateOne(
+              { _id: child.parentId },
+              { $set: { state: 'deployed' }, $inc: { stateVersion: 1 } }
+            )
+
+          await expectCancelled(child)
+        })
+
+        test('cancels the held revert when a newer apply attempt is running', async () => {
+          const child = await refusedRevert({
+            environment: 'infradev',
+            revision: 3
+          })
+          await db.collection('operations').updateOne(
+            { _id: child.parentId },
+            {
+              $set: {
+                'gitops.applyRunId': 25000000099,
+                lastFailure: { runId: 25000000011, runAttempt: 1 }
+              },
+              $inc: { stateVersion: 1 }
+            }
+          )
+
+          await expectCancelled(child)
+        })
+      })
     })
 
     test('rethrows a failure to build that is not a refusal', async () => {
@@ -1360,20 +1425,27 @@ describe('operations-service', () => {
       expect(await childOf(parent)).toBeNull()
     })
 
-    test('probes the pause at the held deadline, so a lost resumed event cannot hold the file for ever, and keeps the backoff', async () => {
+    test('keeps re-arming with a doubling deadline while the environment is paused, however long (plan 5 Pause; the held alarm covers a lost resume)', async () => {
       paused = true
       const parent = await failedParent({ heldPasses: 1 })
+      const before = Date.now()
 
       const outcome = await service.startRevert(parent)
 
-      const child = await childOf(parent)
       const persisted = await stored(parent._id)
 
-      expect(outcome).toBe('started')
-      expect(child).toMatchObject({ state: 'requested', heldPasses: 1 })
-      expect(persisted).toMatchObject({ revertId: child._id, deadlineAt: null })
-      expect(persisted.deferred).toBeUndefined()
-      expect(relay.publishOperation).toHaveBeenCalledWith(child._id)
+      expect(outcome).toBe('re-armed')
+      expect(persisted).toMatchObject({ heldPasses: 2, deferred: 'revert' })
+      expectDueIn(persisted.deadlineAt, HELD_MS * 4, before)
+      expect(await childOf(parent)).toBeNull()
+      expect(relay.publishOperation).not.toHaveBeenCalled()
+    })
+
+    test('carries the parent’s backoff to the revert it publishes once the pause has ended', async () => {
+      const parent = await failedParent({ heldPasses: 2 })
+
+      expect(await service.startRevert(parent)).toBe('started')
+      expect(await childOf(parent)).toMatchObject({ heldPasses: 2 })
     })
 
     describe('a claim on the failed parent', () => {

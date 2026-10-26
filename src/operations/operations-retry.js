@@ -18,6 +18,7 @@ import {
   writeWithRetry
 } from '#/operations/operation-writer.js'
 import { endRefused, finish } from '#/operations/operations-slots.js'
+import { cancelStaleRevert } from '#/operations/operations-revert.js'
 import {
   MAX_TRIES,
   busyConflict,
@@ -55,12 +56,15 @@ function resubmitRecord(operation, { counted, passed }) {
 }
 
 // What a resubmission submits: a revert its own rollback, built once when it
-// was created, so a refusal never swaps it for the file as it is now; any
-// other write is rebuilt from main. A request that can no longer be built
-// comes back as the refusal that ends it.
+// was created, so a refusal never swaps it for the file as it is now, and
+// only while its parent still holds the failure (else it is `ended`,
+// cancelled); any other write is rebuilt from main. A request that can no
+// longer be built comes back as the refusal that ends it.
 async function resubmission(ctx, operation) {
   if (operation.type === OPERATION_TYPES.REVERT) {
-    return { submit: withHeldSubmit(operation) }
+    const ended = await cancelStaleRevert(ctx, operation)
+
+    return ended ? { ended } : { submit: withHeldSubmit(operation) }
   }
 
   try {
@@ -96,7 +100,11 @@ export async function resubmit(
       return null
     }
 
-    const { submit, refusal } = await resubmission(ctx, operation)
+    const { submit, refusal, ended } = await resubmission(ctx, operation)
+
+    if (ended) {
+      return ended
+    }
 
     if (refusal) {
       return endRefused(ctx, operation, refusal)
