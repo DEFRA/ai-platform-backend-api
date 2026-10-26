@@ -38,7 +38,6 @@ describe('team-credential-grant', () => {
       modelSlug: 'gpt-4o',
       status: 'active',
       operationId: randomUUID(),
-      orchestrator: 'github',
       requestedBy: 'requester-1',
       ...fields
     }
@@ -551,7 +550,7 @@ describe('team-credential-grant', () => {
       const ensureCredential = vi.fn().mockResolvedValue({ created: true })
       const revoked = await insertDocument(activeEntry())
       const notActive = await insertDocument(
-        deploymentEntry({ status: 'merged' })
+        deploymentEntry({ status: 'deploying' })
       )
 
       await insertCredential(revoked, {

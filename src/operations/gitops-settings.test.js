@@ -53,7 +53,7 @@ describe('gitops-settings', () => {
       verifyMaxAttempts: originals['gitops.verifyMaxAttempts'],
       outboxSweepMs: originals['gitops.outboxSweepMs'],
       sweepIntervalMs: originals['gitops.sweepIntervalMs'],
-      claimLeaseMs: 30000
+      outboxLeaseMs: 30000
     })
   })
 
@@ -88,15 +88,15 @@ describe('gitops-settings', () => {
     expect(settings.repositories.tenants).toBe('DEFRA/other-tenants')
   })
 
-  test('lets an override replace any setting, claimLeaseMs included', () => {
+  test('lets an override replace any setting, outboxLeaseMs included', () => {
     const settings = gitopsSettings({
-      claimLeaseMs: 20,
+      outboxLeaseMs: 20,
       verifyMaxAttempts: 2,
       environments: ['infradev']
     })
 
     expect(settings).toMatchObject({
-      claimLeaseMs: 20,
+      outboxLeaseMs: 20,
       verifyMaxAttempts: 2,
       environments: ['infradev']
     })

@@ -71,7 +71,7 @@ describe('outbox-relay', () => {
     return createOutboxRelay({
       db,
       publisher,
-      settings: gitopsSettings({ claimLeaseMs: LEASE_MS }),
+      settings: gitopsSettings({ outboxLeaseMs: LEASE_MS }),
       logger,
       ...overrides
     })
@@ -291,7 +291,7 @@ describe('outbox-relay', () => {
     test('does not retry before the claim lapses', async () => {
       const operation = await seedOperation(['submit'])
       const relay = relayWith({
-        settings: gitopsSettings({ claimLeaseMs: 60_000 })
+        settings: gitopsSettings({ outboxLeaseMs: 60_000 })
       })
 
       publisher.setAvailable(false)

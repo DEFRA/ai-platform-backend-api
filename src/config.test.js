@@ -226,10 +226,7 @@ describe('#config tenant orchestrator and GitOps', () => {
     expect(config.get('gitops')).toEqual({
       tenantsRepo: 'DEFRA/ai-platform-tenants',
       deploymentsRepo: 'DEFRA/ai-platform-deployments',
-      pollMinIntervalMs: 30000,
-      claimLeaseMs: 600000,
       verifyMaxAttempts: 5,
-      stallWarnAfterMs: 1800000,
       commandsQueueUrl: null,
       eventsQueueUrl: null,
       awsSqsEndpoint: null,
@@ -303,20 +300,24 @@ describe('#config tenant orchestrator and GitOps', () => {
     ).rejects.toThrow(/subscriptionId/)
   })
 
-  test('the github orchestrator requires GitHub App credentials, not a PAT', async () => {
+  test('refuses the github orchestrator, which no longer exists', async () => {
     await expect(
-      loadConfig({ TENANT_ORCHESTRATOR: 'github', GITHUB_TOKEN: 'pat' })
-    ).rejects.toThrow('TENANT_ORCHESTRATOR=github requires GITHUB_CLIENT_ID')
+      loadConfig({
+        TENANT_ORCHESTRATOR: 'github',
+        GITHUB_APP_ID: '1',
+        GITHUB_APP_INSTALLATION_ID: '2',
+        GITHUB_APP_PRIVATE_KEY: 'cGxhY2Vob2xkZXI='
+      })
+    ).rejects.toThrow('must be one of the possible values: ["mock","sqs"]')
   })
 
-  test('accepts the github orchestrator with GitHub App credentials', async () => {
-    const { config } = await loadConfig({
-      TENANT_ORCHESTRATOR: 'github',
-      GITHUB_CLIENT_ID: 'Iv1.placeholder',
-      GITHUB_APP_INSTALLATION_ID: '1',
-      GITHUB_APP_PRIVATE_KEY: 'cGxhY2Vob2xkZXI='
-    })
+  test.each([
+    ['GITOPS_POLL_MIN_INTERVAL_MS', 'pollMinIntervalMs'],
+    ['GITOPS_CLAIM_LEASE_MS', 'claimLeaseMs'],
+    ['GITOPS_STALL_WARN_AFTER_MS', 'stallWarnAfterMs']
+  ])('has no %s setting any more', async (name, key) => {
+    const { config } = await loadConfig({ [name]: '1' })
 
-    expect(config.get('tenantOrchestrator')).toBe('github')
+    expect(config.get('gitops')).not.toHaveProperty(key)
   })
 })

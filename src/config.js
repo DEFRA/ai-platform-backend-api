@@ -192,47 +192,29 @@ export const config = convict({
     }
   },
   tenantOrchestrator: {
-    doc: 'How team deployments reach the GitOps state repositories: mock stages events on a timer; sqs publishes commands to the GitOps worker and reads its events; github dispatches submit.yml directly (replaced by sqs in this change)',
-    format: ['mock', 'github', 'sqs'],
+    doc: 'How team deployments reach the GitOps state repositories: mock stages events on a timer; sqs publishes commands to the GitOps worker and reads its events',
+    format: ['mock', 'sqs'],
     default: 'mock',
     env: 'TENANT_ORCHESTRATOR'
   },
   gitops: {
     tenantsRepo: {
-      doc: 'owner/repo holding team files (environments/{env}/{slug}.json), dispatched when tenantOrchestrator is github',
+      doc: 'owner/repo holding team files (environments/{env}/{slug}.json), read for the current and previous document',
       format: String,
       default: 'DEFRA/ai-platform-tenants',
       env: 'GITOPS_TENANTS_REPO'
     },
     deploymentsRepo: {
-      doc: 'owner/repo holding platform pins (environments/{env}/platform.json), dispatched when tenantOrchestrator is github',
+      doc: "owner/repo holding platform pins (environments/{env}/platform.json), read for a pin's blob SHA",
       format: String,
       default: 'DEFRA/ai-platform-deployments',
       env: 'GITOPS_DEPLOYMENTS_REPO'
-    },
-    pollMinIntervalMs: {
-      doc: 'Minimum time in ms between two GitHub/ARM status polls of the same operation',
-      format: 'nat',
-      default: 30000,
-      env: 'GITOPS_POLL_MIN_INTERVAL_MS'
-    },
-    claimLeaseMs: {
-      doc: 'How long in ms a claimed GitOps step (retry apply, revert, abandon) waits for its dispatch before another poll may claim it again',
-      format: 'nat',
-      default: 600000,
-      env: 'GITOPS_CLAIM_LEASE_MS'
     },
     verifyMaxAttempts: {
       doc: 'How many times ARM may fail to confirm a deployed team before the deployment fails for good with the verifier reason; a Platform Admin retry starts the count again',
       format: 'nat',
       default: 5,
       env: 'GITOPS_VERIFY_MAX_ATTEMPTS'
-    },
-    stallWarnAfterMs: {
-      doc: 'How long in ms a deployment may stay merged or deploying before the backend warns and audits that it looks stalled, once per status; 0 turns it off. It never changes the deployment',
-      format: 'nat',
-      default: 1800000,
-      env: 'GITOPS_STALL_WARN_AFTER_MS'
     },
     commandsQueueUrl: {
       doc: 'URL of aip-gitops-commands.fifo, which the backend sends commands to; required when tenantOrchestrator is sqs',
@@ -629,14 +611,6 @@ if (isGithubAppAuth && !config.get('github.installationId')) {
 if (isGithubAppAuth && !config.get('github.privateKey')) {
   throw new Error(
     'GITHUB_APP_ID/GITHUB_CLIENT_ID requires GITHUB_APP_PRIVATE_KEY to be set'
-  )
-}
-
-// Submit and status tokens are down-scoped per use, which only a GitHub App
-// installation token can be - a PAT is never enough for the orchestrator.
-if (config.get('tenantOrchestrator') === 'github' && !isGithubAppAuth) {
-  throw new Error(
-    'TENANT_ORCHESTRATOR=github requires GITHUB_CLIENT_ID or GITHUB_APP_ID (a GitHub App) to be set'
   )
 }
 

@@ -14,14 +14,14 @@ import { buildCommand } from '#/operations/operation-factory.js'
  * compare-and-set before it publishes, so two never publish one entry
  * together; a republish keeps the entry's command ID, which SQS
  * deduplicates for five minutes.
- * @param {{db: import('mongodb').Db, publisher: import('#/adapters/command-publisher.js').CommandPublisher, settings: {claimLeaseMs: number}, logger?: import('pino').Logger}} deps
+ * @param {{db: import('mongodb').Db, publisher: import('#/adapters/command-publisher.js').CommandPublisher, settings: {outboxLeaseMs: number}, logger?: import('pino').Logger}} deps
  */
 export function createOutboxRelay({ db, publisher, settings, logger }) {
   async function publishEntry(operation, entry) {
     const claimed = await claimOutboxEntry(db, {
       operationId: operation._id,
       commandId: entry.commandId,
-      leaseMs: settings.claimLeaseMs
+      leaseMs: settings.outboxLeaseMs
     })
 
     if (!claimed) {

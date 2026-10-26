@@ -4,7 +4,7 @@ import { config } from '#/config.js'
  * The settings the operations modules share, read from configuration (plan 5,
  * "Configuration"). Pass `overrides` to change any in a test.
  * @param {object} [overrides]
- * @returns {{repositories: {tenants: string, deployments: string}, environments: string[], deadlines: Record<string, number>, reconcileGraceMs: number, resubmitMax: number, revertGraceMs: number, deadlineHeldMs: number, heldAlarmMs: number, verifyMaxAttempts: number, outboxSweepMs: number, sweepIntervalMs: number, claimLeaseMs: number}}
+ * @returns {{repositories: {tenants: string, deployments: string}, environments: string[], deadlines: Record<string, number>, reconcileGraceMs: number, resubmitMax: number, revertGraceMs: number, deadlineHeldMs: number, heldAlarmMs: number, verifyMaxAttempts: number, outboxSweepMs: number, sweepIntervalMs: number, outboxLeaseMs: number}}
  */
 export function gitopsSettings(overrides = {}) {
   return {
@@ -28,7 +28,7 @@ export function gitopsSettings(overrides = {}) {
     outboxSweepMs: config.get('gitops.outboxSweepMs'),
     sweepIntervalMs: config.get('gitops.sweepIntervalMs'),
     // How long an instance owns an outbox entry it is publishing (plan 5).
-    claimLeaseMs: 30000,
+    outboxLeaseMs: 30000,
     ...overrides
   }
 }
