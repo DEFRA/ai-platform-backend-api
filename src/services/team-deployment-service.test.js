@@ -1468,13 +1468,11 @@ describe('team-deployment-service (operations)', () => {
       await expect(
         remove(member, id, undefined, {
           operations: {
-            request: vi
-              .fn()
-              .mockRejectedValue(
-                Object.assign(new Error('E11000 duplicate key'), {
-                  code: 11000
-                })
-              )
+            request: vi.fn().mockRejectedValue(
+              Object.assign(new Error('E11000 duplicate key'), {
+                code: 11000
+              })
+            )
           }
         })
       ).rejects.toMatchObject({
