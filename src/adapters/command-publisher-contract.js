@@ -39,15 +39,15 @@ export function describeCommandPublisherContract(
 
       const command = exampleCommand({ unexpected: true })
 
-      const error = await createPublisher()
+      const refusal = await createPublisher()
         .publish(command)
         .then(
           () => undefined,
-          (rejection) => rejection
+          (error) => error
         )
 
-      expect(error).toBeInstanceOf(Error)
-      expect(error.message).not.toContain(command.document)
+      expect(refusal).toBeInstanceOf(Error)
+      expect(refusal.message).not.toContain(command.document)
     })
   })
 }
