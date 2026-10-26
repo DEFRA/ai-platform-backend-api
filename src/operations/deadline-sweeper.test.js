@@ -193,6 +193,19 @@ describe('deadline-sweeper', () => {
   })
 
   describe('an operation past its deadline', () => {
+    test('finishes a verified operation by verifying it again, not by reconciling or timing it out', async () => {
+      const operation = await seed({ state: 'verified', reconcileCount: 1 })
+
+      await sweeper.sweep()
+
+      const swept = await findOperation(db, operation._id)
+
+      expect(verifier.verify).toHaveBeenCalledWith(operation._id)
+      expect(swept.state).toBe('verified')
+      expect(swept.outbox).toEqual([])
+      expect(relay.publishOperation).not.toHaveBeenCalled()
+    })
+
     test('is reconciled first: a reconcile command is published and the deadline moves 10 minutes on', async () => {
       const operation = await seed()
       const before = Date.now()

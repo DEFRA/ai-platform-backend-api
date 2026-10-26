@@ -8,6 +8,7 @@ import { FAILURE_CODES } from '#/operations/operation-projection.js'
 import {
   QUEUED,
   TIMED_OUT,
+  VERIFIED,
   overdueAction
 } from '#/operations/operation-state-machine.js'
 import { writeOperation } from '#/operations/operation-writer.js'
@@ -102,6 +103,12 @@ async function resolveDeferred(deps, operation) {
 }
 
 async function sweepOverdue(deps, operation) {
+  // A verified operation is only waiting to be ended: finish it, never
+  // reconcile or time it out.
+  if (operation.state === VERIFIED) {
+    return deps.verifier.verify(operation._id)
+  }
+
   if (operation.state === QUEUED && operation.held) {
     return resolveHeld(deps, operation)
   }

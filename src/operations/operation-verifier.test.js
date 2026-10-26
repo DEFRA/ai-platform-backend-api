@@ -68,9 +68,10 @@ describe('operation-verifier', () => {
       .toArray()
   }
 
-  // A database whose `nth` write to the operations collection is lost to
-  // another writer, as a concurrent instance would win it.
+  // A database whose `nth` write (or each of several) to the operations
+  // collection is lost to another writer, as a concurrent instance would win it.
   function losingWrite(nth) {
+    const lost = [nth].flat()
     let count = 0
 
     return {
@@ -83,7 +84,7 @@ describe('operation-verifier', () => {
           collection.findOneAndUpdate = async (filter, ...rest) => {
             count += 1
 
-            if (count === nth) {
+            if (lost.includes(count)) {
               await collection.updateOne(
                 { _id: filter._id },
                 { $inc: { stateVersion: 1 } }
@@ -464,16 +465,72 @@ describe('operation-verifier', () => {
         expect(grantCredentials).not.toHaveBeenCalled()
       })
 
-      test('does not finish or grant when the write ending it is lost', async () => {
+      test('still ends the operation when the write ending it loses the version check', async () => {
         const operation = await seedDeployed()
 
         const result = await build({ database: losingWrite(2) }).verify(
           operation._id
         )
 
+        expect(result).toMatchObject({ state: 'active', deadlineAt: null })
+        expect(operations.finish).toHaveBeenCalledTimes(1)
+        expect(grantCredentials).toHaveBeenCalledTimes(1)
+        expect(await findOperation(db, operation._id)).toMatchObject({
+          state: 'active'
+        })
+      })
+
+      test('does not finish or grant when another writer moved the operation on instead', async () => {
+        const operation = await seedDeployed()
+        let count = 0
+        const moving = {
+          collection(name) {
+            const collection = db.collection(name)
+
+            if (name === 'operations') {
+              const original = collection.findOneAndUpdate.bind(collection)
+
+              collection.findOneAndUpdate = async (filter, ...rest) => {
+                count += 1
+
+                if (count === 2) {
+                  await collection.updateOne(
+                    { _id: filter._id },
+                    { $inc: { stateVersion: 1 }, $set: { state: 'active' } }
+                  )
+                }
+
+                return original(filter, ...rest)
+              }
+            }
+
+            return collection
+          }
+        }
+
+        const result = await build({ database: moving }).verify(operation._id)
+
         expect(result).toBeNull()
         expect(operations.finish).not.toHaveBeenCalled()
         expect(grantCredentials).not.toHaveBeenCalled()
+      })
+
+      test('leaves a verified operation with a deadline for the sweep when the ending write keeps losing', async () => {
+        const operation = await seedDeployed()
+        const before = Date.now()
+
+        const result = await build({
+          database: losingWrite([2, 3, 4])
+        }).verify(operation._id)
+
+        const stuck = await findOperation(db, operation._id)
+
+        expect(result).toBeNull()
+        expect(stuck.state).toBe('verified')
+        expect(Date.parse(stuck.deadlineAt)).toBeGreaterThanOrEqual(
+          before + settings.sweepIntervalMs
+        )
+        expect(operations.finish).not.toHaveBeenCalled()
       })
 
       test('lets only one of two concurrent verifications finish it', async () => {
@@ -489,6 +546,35 @@ describe('operation-verifier', () => {
         expect(operations.finish).toHaveBeenCalledTimes(1)
         expect(grantCredentials).toHaveBeenCalledTimes(1)
         expect((await findOperation(db, operation._id)).state).toBe('active')
+      })
+    })
+
+    describe('a verified operation, left so by a restart', () => {
+      test('is ended active, finished and granted, without reading ARM again', async () => {
+        const operation = await seedDeployed({
+          state: 'verified',
+          deadlineAt: '2026-10-26T12:00:00.000Z'
+        })
+
+        const ended = await build().verify(operation._id)
+
+        expect(verifier.verify).not.toHaveBeenCalled()
+        expect(ended).toMatchObject({ state: 'active', deadlineAt: null })
+        expect(operations.finish).toHaveBeenCalledWith(ended)
+        expect(grantCredentials).toHaveBeenCalledWith(ended)
+      })
+
+      test('is ended removed for a removal, granting nothing', async () => {
+        const operation = await seedDeployed({
+          state: 'verified',
+          items: [REMOVE]
+        })
+
+        const ended = await build().verify(operation._id)
+
+        expect(ended.state).toBe('removed')
+        expect(operations.finish).toHaveBeenCalledWith(ended)
+        expect(grantCredentials).not.toHaveBeenCalled()
       })
     })
   })

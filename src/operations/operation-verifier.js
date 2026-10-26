@@ -28,10 +28,12 @@ import { auditDeployment } from '#/services/team-deployment-entries.js'
 export function createOperationVerifier(deps) {
   return {
     /**
-     * Verifies a `deployed` operation once. Safe to call from the handler and
-     * the sweeper together: only one write of a version wins.
+     * Verifies a `deployed` operation once, or ends a `verified` one that a
+     * lost write or a restart left short of `active` (or `removed`). Safe to
+     * call from the handler and the sweeper together: only one write of a
+     * version wins.
      * @param {string} operationId
-     * @returns {Promise<object|null>} The operation as written, or null when it was not `deployed` any longer.
+     * @returns {Promise<object|null>} The operation as written, or null when it was neither `deployed` nor `verified` any longer, or lost the write.
      */
     verify: (operationId) => verifyOperation(deps, operationId)
   }
@@ -46,30 +48,75 @@ function needsReadBack(operation) {
   )
 }
 
-async function complete({ ctx, operations, grantCredentials }, operation) {
-  const verified = await writeOperation(ctx, operation, { state: VERIFIED })
+function isRemoval(operation) {
+  return (
+    operation.items.length > 0 &&
+    operation.items.every(({ change }) => change === 'remove')
+  )
+}
+
+// A verified operation holds its file until it is ended, so it has a
+// deadline of its own: if the handler stops here (a lost write, a restart),
+// the sweep finishes it.
+function markVerified({ ctx }, operation) {
+  return writeOperation(ctx, operation, {
+    state: VERIFIED,
+    deadlineAt: new Date(
+      Date.now() + ctx.settings.sweepIntervalMs
+    ).toISOString()
+  })
+}
+
+// Ends a verified operation. When another writer wins the version check it
+// reads the operation again and tries again while it is still `verified`;
+// if it keeps losing, the deadline set when it was verified brings the
+// sweep back to it.
+async function endVerified({ ctx }, first) {
+  let operation = first
+
+  for (let attempt = 0; attempt < MAX_END_ATTEMPTS; attempt += 1) {
+    const ended = await writeOperation(ctx, operation, {
+      state: isRemoval(operation) ? REMOVED : ACTIVE,
+      set: { verify: { attempts: 0, nextAt: null } },
+      deadlineAt: null
+    })
+
+    if (ended) {
+      return ended
+    }
+
+    operation = await findOperation(ctx.db, operation._id)
+
+    if (operation?.state !== VERIFIED) {
+      return null
+    }
+  }
+
+  return null
+}
+
+// Finalisation resumes from `deployed` or from `verified`, so a lost write
+// or a restart between the two transitions cannot strand the operation.
+async function complete(deps, operation) {
+  const verified =
+    operation.state === VERIFIED
+      ? operation
+      : await markVerified(deps, operation)
 
   if (!verified) {
     return null
   }
 
-  const removal =
-    verified.items.length > 0 &&
-    verified.items.every(({ change }) => change === 'remove')
-  const ended = await writeOperation(ctx, verified, {
-    state: removal ? REMOVED : ACTIVE,
-    set: { verify: { attempts: 0, nextAt: null } },
-    deadlineAt: null
-  })
+  const ended = await endVerified(deps, verified)
 
   if (!ended) {
     return null
   }
 
-  await operations.finish(ended)
+  await deps.operations.finish(ended)
 
-  if (!removal) {
-    await grantCredentials(ended)
+  if (ended.state === ACTIVE) {
+    await deps.grantCredentials(ended)
   }
 
   return ended
@@ -160,14 +207,20 @@ async function failed(deps, operation, reason) {
   return endVerification(deps, operation, verifyState)
 }
 
+const MAX_END_ATTEMPTS = 3
+
+// The states the finalisation resumes from.
+const FINALISABLE = new Set([DEPLOYED, VERIFIED])
+
 async function verifyOperation(deps, operationId) {
   const operation = await findOperation(deps.ctx.db, operationId)
 
-  if (operation?.state !== DEPLOYED) {
+  if (!operation || !FINALISABLE.has(operation.state)) {
     return null
   }
 
-  if (!needsReadBack(operation)) {
+  // Already verified: only the ending is left.
+  if (operation.state === VERIFIED || !needsReadBack(operation)) {
     return complete(deps, operation)
   }
 
