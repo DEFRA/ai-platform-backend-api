@@ -1,0 +1,231 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "command.schema.json",
+  "title": "AI Platform GitOps command",
+  "description": "aip.gitops.command/1: a request the backend sends to aip-gitops-commands.fifo for the GitOps worker. SQS group: {environment}/{team}. SQS deduplication ID: commandId. Additive changes only; a breaking change is a new identifier, aip.gitops.command/2. Date-times use the date-time format, so a validator needs ajv-formats or its equivalent.",
+  "type": "object",
+  "additionalProperties": false,
+  "required": [
+    "schema",
+    "type",
+    "commandId",
+    "operationId",
+    "environment",
+    "team",
+    "repository",
+    "path",
+    "attempt",
+    "requestedBy",
+    "traceparent",
+    "cdpRequestId",
+    "createdAt"
+  ],
+  "properties": {
+    "schema": { "const": "aip.gitops.command/1" },
+    "type": { "enum": ["submit", "apply", "reconcile"] },
+    "commandId": {
+      "description": "A UUIDv7 created with the operation's outbox entry and kept when that entry is republished. Also the SQS deduplication ID, so every new send is delivered and only a republish collapses. Consumers still deduplicate by operationId and state.",
+      "type": "string",
+      "pattern": "^[0-9a-f]{8}-[0-9a-f]{4}-7[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$"
+    },
+    "operationId": {
+      "description": "The operation; null only for an apply that is for no operation.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/operationId" }]
+    },
+    "environment": { "$ref": "#/$defs/environment" },
+    "team": {
+      "description": "The team slug, or platform or tenants for a pin; null only for an apply that is for no operation.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/teamSlug" }]
+    },
+    "repository": { "$ref": "#/$defs/repository" },
+    "path": {
+      "description": "environments/{env}/{slug}.json or environments/{env}/platform.json; null only for an apply that is for no operation.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/path" }]
+    },
+    "action": {
+      "description": "submit, and reconcile from requested: write, remove or revert. The worker passes it as the input action.",
+      "enum": ["write", "remove", "revert"]
+    },
+    "document": {
+      "description": "The whole canonical document for a write; empty or absent for a remove. At most the 65,535 characters a dispatch input holds.",
+      "type": "string",
+      "maxLength": 65535
+    },
+    "expectedRevision": {
+      "description": "A team file only: the revision the backend last read, 0 for a new file.",
+      "type": "integer",
+      "minimum": 0
+    },
+    "expectedBase": {
+      "description": "A pin only: the pin file's blob SHA on main the backend last read; null for an environment's first pin, which has no blob.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/sha" }]
+    },
+    "attempt": {
+      "description": "The backend's attempt.",
+      "type": "integer",
+      "minimum": 1
+    },
+    "state": {
+      "description": "reconcile only: the operation's state.",
+      "enum": [
+        "queued",
+        "requested",
+        "committed",
+        "deploying",
+        "deployed",
+        "verified",
+        "active",
+        "removed",
+        "checks-failed",
+        "deploy-failed",
+        "timed-out"
+      ]
+    },
+    "requestedBy": { "$ref": "#/$defs/principal" },
+    "traceparent": {
+      "description": "The W3C traceparent of the request; null when it carried none.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/traceparent" }]
+    },
+    "cdpRequestId": {
+      "description": "The CDP request ID of the request; null when it carried none.",
+      "oneOf": [{ "type": "null" }, { "$ref": "#/$defs/cdpRequestId" }]
+    },
+    "createdAt": { "$ref": "#/$defs/dateTime" }
+  },
+  "allOf": [
+    {
+      "description": "An apply dispatches the apply workflow with the environment alone.",
+      "if": {
+        "required": ["type"],
+        "properties": { "type": { "const": "apply" } }
+      },
+      "then": {
+        "properties": {
+          "action": false,
+          "document": false,
+          "expectedRevision": false,
+          "expectedBase": false,
+          "state": false
+        }
+      }
+    },
+    {
+      "description": "A submit is for one operation, and has no state.",
+      "if": {
+        "required": ["type"],
+        "properties": { "type": { "const": "submit" } }
+      },
+      "then": {
+        "required": ["action"],
+        "properties": {
+          "operationId": { "type": "string" },
+          "team": { "type": "string" },
+          "path": { "type": "string" },
+          "state": false
+        }
+      }
+    },
+    {
+      "description": "A reconcile is for one operation, in a state.",
+      "if": {
+        "required": ["type"],
+        "properties": { "type": { "const": "reconcile" } }
+      },
+      "then": {
+        "required": ["state"],
+        "properties": {
+          "operationId": { "type": "string" },
+          "team": { "type": "string" },
+          "path": { "type": "string" }
+        }
+      }
+    },
+    {
+      "description": "A reconcile from requested carries what the submit it stands for needs.",
+      "if": {
+        "required": ["type", "state"],
+        "properties": {
+          "type": { "const": "reconcile" },
+          "state": { "const": "requested" }
+        }
+      },
+      "then": { "required": ["action"] }
+    },
+    {
+      "description": "What a submit, or a reconcile from requested, carries.",
+      "if": {
+        "required": ["action"]
+      },
+      "then": {
+        "allOf": [
+          {
+            "if": { "properties": { "action": { "const": "write" } } },
+            "then": {
+              "required": ["document"],
+              "properties": {
+                "document": { "type": "string", "minLength": 2 }
+              }
+            }
+          },
+          {
+            "if": { "properties": { "action": { "const": "remove" } } },
+            "then": {
+              "properties": {
+                "document": { "type": "string", "maxLength": 0 }
+              }
+            }
+          },
+          {
+            "if": {
+              "required": ["team"],
+              "properties": { "team": { "enum": ["platform", "tenants"] } }
+            },
+            "then": {
+              "required": ["expectedBase"],
+              "properties": { "expectedRevision": false }
+            },
+            "else": {
+              "required": ["expectedRevision"],
+              "properties": { "expectedBase": false }
+            }
+          }
+        ]
+      }
+    }
+  ],
+  "$defs": {
+    "environment": { "type": "string", "pattern": "^[a-z][a-z0-9]{1,15}$" },
+    "teamSlug": {
+      "type": "string",
+      "pattern": "^[a-z][a-z0-9-]{1,22}[a-z0-9]$"
+    },
+    "path": {
+      "type": "string",
+      "pattern": "^environments/[a-z][a-z0-9]{1,15}/[a-z][a-z0-9-]{1,22}[a-z0-9]\\.json$"
+    },
+    "operationId": {
+      "type": "string",
+      "pattern": "^[a-z0-9][a-z0-9-]{7,63}$"
+    },
+    "principal": {
+      "description": "Exactly one identity, never a name or an email address: entra:{object ID}, github:{user ID} or app:{name}.",
+      "type": "string",
+      "pattern": "^(entra:[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}|github:[1-9][0-9]{0,19}|app:[a-z][a-z0-9-]{0,38})$"
+    },
+    "repository": {
+      "description": "owner/name of the state repository.",
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
+    },
+    "traceparent": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{2}-[0-9a-f]{32}-[0-9a-f]{16}-[0-9a-f]{2}$"
+    },
+    "cdpRequestId": {
+      "type": "string",
+      "pattern": "^[A-Za-z0-9._:-]{1,128}$"
+    },
+    "sha": { "type": "string", "pattern": "^[0-9a-f]{40}$" },
+    "dateTime": { "type": "string", "format": "date-time" }
+  }
+}

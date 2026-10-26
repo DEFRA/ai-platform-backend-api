@@ -74,6 +74,37 @@ describe('#mongoDb', () => {
       await client.close()
     })
 
+    test('creates the operations indexes of the B28 design', async () => {
+      // Dynamic import needed due to config being updated by vitest-mongodb
+      const { config } = await import('#/config.js')
+      const client = await MongoClient.connect(config.get('mongo.mongoUrl'))
+      const db = client.db(config.get('mongo.databaseName'))
+      const { createServer } = await import('#/server.js')
+      const created = await createServer()
+      await created.initialize()
+
+      const indexes = await db.collection('operations').indexes()
+      const slot = indexes.find(
+        (index) => index.name === 'environment_1_teamId_1_slot_1'
+      )
+
+      expect(slot).toMatchObject({
+        unique: true,
+        partialFilterExpression: { slot: { $exists: true } }
+      })
+      expect(indexes.map((index) => index.name)).toEqual(
+        expect.arrayContaining([
+          'teamId_1_idempotencyKeys_1',
+          'outboxPending_1',
+          'deadlineAt_1',
+          'verify.nextAt_1'
+        ])
+      )
+
+      await created.stop({ timeout: 1000 })
+      await client.close()
+    })
+
     test('replaces the adapter/status credentials index with gateway/status', async () => {
       // Dynamic import needed due to config being updated by vitest-mongodb
       const { config } = await import('#/config.js')

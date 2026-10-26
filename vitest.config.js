@@ -19,7 +19,20 @@ export default defineConfig({
         lines: 97.3,
         functions: 98.55,
         branches: 92.54,
-        statements: 97.34
+        statements: 97.34,
+        // New and changed code holds 95 (plan 8): the operations domain, the
+        // queue adapters, the vendored contracts' code and the team file reader.
+        ...Object.fromEntries(
+          [
+            'src/operations/**',
+            'src/adapters/sqs/**',
+            'src/contracts/**',
+            'src/adapters/github/github-team-file-reader.js'
+          ].map((glob) => [
+            glob,
+            { lines: 95, functions: 95, branches: 95, statements: 95 }
+          ])
+        )
       },
       // Shared CredentialIssuer and TenantOrchestrator contract suites, not
       // application code - they are exercised (and so already covered) via

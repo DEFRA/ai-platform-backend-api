@@ -6,6 +6,7 @@ import { createFileCatalogueSource } from '#/adapters/file-catalogue-source.js'
 import { createGithubCatalogueSource } from '#/adapters/github/github-catalogue-source.js'
 import { syncCatalogue } from '#/services/catalogue-service.js'
 import { runBackfills } from '#/common/backfills/run-backfills.js'
+import { createOperationIndexes } from '#/operations/operation-repository.js'
 
 function resolveCatalogueSource() {
   return config.get('catalogue.source') === 'github'
@@ -186,6 +187,7 @@ async function createIndexes(db) {
   await dropIndexIfExists(db.collection('credentials'), 'adapter_1_status_1')
 
   await db.collection('auditEvents').createIndex({ actorUserId: 1, at: 1 })
+  await createOperationIndexes(db)
   // `at` must be a BSON Date (not an ISO string) for this TTL index to expire documents
   await db
     .collection('auditEvents')
