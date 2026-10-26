@@ -1460,6 +1460,33 @@ describe('team-deployment-service (operations)', () => {
       })
       expect(await operationsOf(member.teamId)).toEqual([])
     })
+
+    test('reports a file taken by a concurrent request as busy', async () => {
+      const member = await signedInMember()
+      const id = await seededActive(member)
+
+      await expect(
+        remove(member, id, undefined, {
+          operations: {
+            request: vi
+              .fn()
+              .mockRejectedValue(
+                Object.assign(new Error('E11000 duplicate key'), {
+                  code: 11000
+                })
+              )
+          }
+        })
+      ).rejects.toMatchObject({
+        output: { statusCode: 409 },
+        data: { code: 'team-file-busy' }
+      })
+      expect(
+        (await auditOf(id)).find(
+          ({ action }) => action === 'teamDeployment.remove'
+        )
+      ).toMatchObject({ outcome: 'failure', code: 'team-file-busy' })
+    })
   })
 
   describe('redispatchApply', () => {
