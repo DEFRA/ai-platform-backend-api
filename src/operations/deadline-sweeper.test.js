@@ -412,44 +412,6 @@ describe('deadline-sweeper', () => {
       expect(relay.publishOperation).not.toHaveBeenCalled()
     })
 
-    test('doubles the deadline when paused and the environment is still paused', async () => {
-      await pause()
-      const operation = await seedHeld('paused')
-      const before = Date.now()
-
-      await sweeper.sweep()
-
-      const swept = await findOperation(db, operation._id)
-
-      expect(swept).toMatchObject({ state: 'queued', heldPasses: 1 })
-      expect(swept.held.code).toBe('paused')
-      expect(Date.parse(swept.deadlineAt)).toBeGreaterThanOrEqual(
-        before + HELD_MS * 2
-      )
-      expect(Date.parse(swept.deadlineAt)).toBeLessThanOrEqual(
-        Date.now() + HELD_MS * 2
-      )
-      expect(relay.publishOperation).not.toHaveBeenCalled()
-    })
-
-    test('doubles again on the next pass, up to the four hour ceiling', async () => {
-      await pause()
-      const operation = await seedHeld('paused', { heldPasses: 3 })
-
-      await sweeper.sweep()
-
-      const swept = await findOperation(db, operation._id)
-      const fourHours = 4 * HOUR_MS
-
-      expect(swept.heldPasses).toBe(4)
-      expect(Date.parse(swept.deadlineAt)).toBeLessThanOrEqual(
-        Date.now() + fourHours
-      )
-      expect(Date.parse(swept.deadlineAt)).toBeGreaterThan(
-        Date.now() + fourHours - 60000
-      )
-    })
-
     test('resubmits a paused write, uncounted, when the environment is no longer paused', async () => {
       const operation = await seedHeld('paused', { resubmitCount: 1 })
 
@@ -476,6 +438,43 @@ describe('deadline-sweeper', () => {
       await sweeper.sweep()
 
       expect((await findOperation(db, operation._id)).state).toBe('requested')
+    })
+
+    test('resubmits a paused write even while the cached flag says paused, so a lost resume cannot hold it for ever', async () => {
+      await pause()
+      const since = ago(5000)
+      const operation = await seedHeld('paused', {
+        held: { code: 'paused', since },
+        heldPasses: 2
+      })
+
+      await sweeper.sweep()
+
+      const swept = await findOperation(db, operation._id)
+
+      expect(swept).toMatchObject({
+        state: 'requested',
+        heldPasses: 3,
+        heldSince: since
+      })
+      expect(swept.held).toBeUndefined()
+      expect(entryTypes(swept)).toEqual(['submit'])
+      expect(relay.publishOperation).toHaveBeenCalledWith(operation._id)
+    })
+
+    test('keeps the first hold time through the passes, so the alarm still counts from it', async () => {
+      await pause()
+      const since = ago(2 * HOUR_MS)
+      const operation = await seedHeld('paused', {
+        held: { code: 'paused', since },
+        heldSince: ago(3 * HOUR_MS)
+      })
+
+      await sweeper.sweep()
+
+      expect((await findOperation(db, operation._id)).heldSince).toBe(
+        operation.heldSince
+      )
     })
   })
 
@@ -519,7 +518,16 @@ describe('deadline-sweeper', () => {
       expect(relay.publishOperation).toHaveBeenCalledWith(operation._id)
     })
 
-    test('doubles the deadline of a deferred retry while the environment is paused', async () => {
+    test('counts the first pass of a paused deferred retry from none', async () => {
+      await pause()
+      const operation = await seed({ state: 'deploying', deferred: 'retry' })
+
+      await sweeper.sweep()
+
+      expect((await findOperation(db, operation._id)).heldPasses).toBe(1)
+    })
+
+    test('publishes the apply of a deferred retry even while the cached flag says paused, so a lost resume cannot defer it for ever', async () => {
       await pause()
       const operation = await seed({
         state: 'deploying',
@@ -531,20 +539,10 @@ describe('deadline-sweeper', () => {
 
       const swept = await findOperation(db, operation._id)
 
-      expect(swept).toMatchObject({ deferred: 'retry', heldPasses: 2 })
-      expect(Date.parse(swept.deadlineAt)).toBeGreaterThan(
-        Date.now() + HELD_MS * 3
-      )
-      expect(swept.outbox).toEqual([])
-    })
-
-    test('counts the first pass of a paused deferred retry from none', async () => {
-      await pause()
-      const operation = await seed({ state: 'deploying', deferred: 'retry' })
-
-      await sweeper.sweep()
-
-      expect((await findOperation(db, operation._id)).heldPasses).toBe(1)
+      expect(swept).toMatchObject({ heldPasses: 2, retrying: true })
+      expect(swept.deferred).toBeUndefined()
+      expect(entryTypes(swept)).toEqual(['apply'])
+      expect(relay.publishOperation).toHaveBeenCalledWith(operation._id)
     })
   })
 

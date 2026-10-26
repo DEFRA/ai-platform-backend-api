@@ -807,6 +807,22 @@ describe('events-handler', () => {
       expectDueIn((await stored()).deadlineAt, HELD_MS * 4, before)
     })
 
+    test('holds a paused refusal after a held-deadline resubmit from the first hold time', async () => {
+      const since = '2026-10-26T09:00:00.000Z'
+
+      await seed('requested', { heldPasses: 3, heldSince: since })
+      await setControl({ paused: true })
+
+      await handler.handle(refusal(PAUSED_REFUSAL))
+
+      const held = await stored()
+
+      expect(held.held).toEqual({ code: 'paused', since })
+      expect(Date.parse(held.deadlineAt)).toBeGreaterThan(
+        Date.now() + 3.9 * 3600000
+      )
+    })
+
     test('holds a paused refusal when the environment has never been paused', async () => {
       await seed('requested')
 

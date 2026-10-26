@@ -144,7 +144,12 @@ async function holdWrite(deps, operation, decision, event, run) {
     source: event.source,
     eventId: event.eventId,
     eventAt: event.timestamp,
-    set: { held: { code, since: new Date().toISOString() } },
+    set: {
+      held: {
+        code,
+        since: operation.heldSince ?? new Date().toISOString()
+      }
+    },
     deadlineAt: dueAt
   })
 
@@ -237,7 +242,7 @@ function failureFields(state, event) {
 
 function advanceUnset(operation, decision) {
   const failed = [CHECKS_FAILED, DEPLOY_FAILED].includes(decision.state)
-  const unset = ['held', 'deferred']
+  const unset = ['held', 'deferred', 'heldSince']
 
   if (decision.recovered) {
     unset.push('error', 'retrying', 'lastFailure')

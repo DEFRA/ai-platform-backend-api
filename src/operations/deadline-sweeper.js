@@ -8,7 +8,6 @@ import { FAILURE_CODES } from '#/operations/operation-projection.js'
 import {
   QUEUED,
   TIMED_OUT,
-  heldDeadline,
   overdueAction
 } from '#/operations/operation-state-machine.js'
 import { writeOperation } from '#/operations/operation-writer.js'
@@ -28,7 +27,6 @@ const LOCK_NAME = 'gitops-deadline-sweeper'
  * @param {import('mongo-locks').LockManager} deps.locker
  * @param {object} deps.operations - the operations service
  * @param {{verify: (id: string) => Promise<object|null>}} deps.verifier
- * @param {{isPaused: (environment: string) => Promise<boolean>}} deps.controls
  */
 export function createDeadlineSweeper(deps) {
   return {
@@ -72,47 +70,35 @@ async function timeOut({ ctx }, operation) {
   return written
 }
 
-// Still paused: look again later, one pass further out.
-function extendHold({ ctx }, operation) {
-  const passes = (operation.heldPasses ?? 0) + 1
-
-  return writeOperation(ctx, operation, {
-    deadlineAt: heldDeadline(ctx.settings.deadlineHeldMs, passes),
-    set: { heldPasses: passes }
-  })
-}
-
 // A held write at its deadline: a refused write is rebuilt and resubmitted
 // (counted, up to the bound, then timed out); a paused one is resubmitted
 // too, because the workflows' own read of the pause is authoritative and
-// the `resumed` event may have been lost (plan 5, "Pause").
+// the `resumed` event may have been lost (plan 5, "Pause"). The submit
+// answers `paused` again if the pause stands, and the hold then doubles.
 async function resolveHeld(deps, operation) {
-  const { ctx, controls, operations } = deps
+  const { ctx, operations } = deps
   const paused = operation.held.code === 'paused'
 
   if (!paused && (operation.resubmitCount ?? 0) >= ctx.settings.resubmitMax) {
     return timeOut(deps, { ...operation, state: 'requested' })
   }
 
-  if (paused && (await controls.isPaused(operation.environment))) {
-    return extendHold(deps, operation)
-  }
-
-  return operations.resubmit(operation._id, { counted: !paused })
+  return operations.resubmit(operation._id, {
+    counted: !paused,
+    passed: paused
+  })
 }
 
+// Deferred work at its deadline: a revert re-checks itself; a retry is
+// published at once, and its own pause check answers if the pause stands.
 async function resolveDeferred(deps, operation) {
-  const { controls, operations } = deps
+  const { operations } = deps
 
   if (operation.deferred === 'revert') {
     return operations.startRevert(operation)
   }
 
-  if (await controls.isPaused(operation.environment)) {
-    return extendHold(deps, operation)
-  }
-
-  return operations.publishApply(operation._id)
+  return operations.publishApply(operation._id, { passed: true })
 }
 
 async function sweepOverdue(deps, operation) {

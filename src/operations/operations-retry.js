@@ -27,16 +27,44 @@ import {
 // admin retry. Each function takes the service's context
 // ({db, settings, logger, relay, buildDocument, reader, controls}).
 
+// What a resubmission records besides the new submit. At a held deadline
+// (`passed`) it counts the pass, so the next hold doubles, and keeps the
+// first hold time for the alarm; any other resubmission starts afresh.
+function resubmitRecord(operation, { counted, passed }) {
+  const set = {
+    resubmitCount: (operation.resubmitCount ?? 0) + (counted ? 1 : 0)
+  }
+
+  if (!passed) {
+    return { set, unset: ['held', 'deferred', 'heldSince'] }
+  }
+
+  return {
+    set: {
+      ...set,
+      heldPasses: (operation.heldPasses ?? 0) + 1,
+      heldSince:
+        operation.heldSince ?? operation.held?.since ?? new Date().toISOString()
+    },
+    unset: ['held', 'deferred']
+  }
+}
+
 /**
  * Rebuilds a held write from main and publishes it again: after a
  * `stale-revision` or `commit-conflict` (counted, at most
- * `GITOPS_RESUBMIT_MAX`), a resume, or the held deadline.
+ * `GITOPS_RESUBMIT_MAX`), a resume, or the held deadline (`passed`: the
+ * submit reads the pause itself and, if it stands, the hold doubles).
  * @param {object} ctx
  * @param {string} operationId
- * @param {{counted?: boolean}} [options]
+ * @param {{counted?: boolean, passed?: boolean}} [options]
  * @returns {Promise<object|null>}
  */
-export async function resubmit(ctx, operationId, { counted = false } = {}) {
+export async function resubmit(
+  ctx,
+  operationId,
+  { counted = false, passed = false } = {}
+) {
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const operation = await findOperation(ctx.db, operationId)
 
@@ -57,15 +85,13 @@ export async function resubmit(ctx, operationId, { counted = false } = {}) {
     }
 
     const submit = withSubmit(operation, submission)
+    const record = resubmitRecord(operation, { counted, passed })
     const written = await writeOperation(ctx, operation, {
       state: 'requested',
       source: 'backend',
       ...submit,
-      set: {
-        ...submit.set,
-        resubmitCount: (operation.resubmitCount ?? 0) + (counted ? 1 : 0)
-      },
-      unset: ['held', 'deferred']
+      set: { ...submit.set, ...record.set },
+      unset: record.unset
     })
 
     if (written) {
@@ -78,34 +104,37 @@ export async function resubmit(ctx, operationId, { counted = false } = {}) {
   throw new Error(`Operation ${operationId} kept moving; try again`)
 }
 
+// The change that publishes a fresh apply. At a deferred deadline (`passed`)
+// it counts the pass, so a paused apply's next deferral doubles.
+function applyChange(operation, { attempt, state, reset, passed }) {
+  const next = attempt ?? operation.attempt
+
+  return {
+    ...(state ? { state, source: 'backend' } : {}),
+    set: {
+      attempt: next,
+      retrying: true,
+      outboxPending: true,
+      ...(passed ? { heldPasses: (operation.heldPasses ?? 0) + 1 } : {}),
+      ...(reset ? { verify: { attempts: 0, nextAt: null } } : {})
+    },
+    unset: ['deferred', 'held', ...(reset ? ['error'] : [])],
+    push: { outbox: newOutboxEntry('apply', { attempt: next }) }
+  }
+}
+
 /**
  * Publishes a fresh apply for an operation, at `attempt`: the one D14 retry,
  * an admin's retry, or a deferred retry re-armed.
  * @param {object} ctx
  * @param {string} operationId
- * @param {{attempt?: number, state?: string, reset?: boolean}} [options]
+ * @param {{attempt?: number, state?: string, reset?: boolean, passed?: boolean}} [options]
  * @returns {Promise<object|null>}
  */
-export async function publishApply(
-  ctx,
-  operationId,
-  { attempt, state, reset } = {}
-) {
-  const written = await writeWithRetry(ctx, operationId, (operation) => {
-    const next = attempt ?? operation.attempt
-
-    return {
-      ...(state ? { state, source: 'backend' } : {}),
-      set: {
-        attempt: next,
-        retrying: true,
-        outboxPending: true,
-        ...(reset ? { verify: { attempts: 0, nextAt: null } } : {})
-      },
-      unset: ['deferred', 'held', ...(reset ? ['error'] : [])],
-      push: { outbox: newOutboxEntry('apply', { attempt: next }) }
-    }
-  })
+export async function publishApply(ctx, operationId, options = {}) {
+  const written = await writeWithRetry(ctx, operationId, (operation) =>
+    applyChange(operation, options)
+  )
 
   if (written) {
     await publish(ctx, operationId)

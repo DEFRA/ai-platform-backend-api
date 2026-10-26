@@ -77,8 +77,7 @@ export function createOperationsRuntime({
     ctx,
     locker,
     operations,
-    verifier: operationVerifier,
-    controls
+    verifier: operationVerifier
   })
 
   return {
