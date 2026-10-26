@@ -197,7 +197,9 @@ export async function recoverTeamCredentials(db, deps = {}) {
 
   // Sequential by design: one team's attempt holds its credential lock.
   for (const doc of docs) {
-    if (await retryTeamCredential(db, doc, deps)) {
+    const retried = await retryTeamCredential(db, doc, deps) // NOSONAR: sequential by design, see above
+
+    if (retried) {
       created += 1
     }
   }

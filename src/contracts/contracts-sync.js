@@ -79,9 +79,9 @@ export async function syncContracts({
 
   await mkdir(dir, { recursive: true })
 
-  for (const [file, bytes] of downloaded) {
-    await writeFile(`${dir}${file}`, bytes)
-  }
+  await Promise.all(
+    downloaded.map(([file, bytes]) => writeFile(`${dir}${file}`, bytes))
+  )
 
   await writeFile(`${dir}${VERSION_FILE}`, `${ref}\n`)
 
@@ -100,15 +100,12 @@ export async function checkContracts({
 } = {}) {
   const ref = await readVersion(dir)
   const downloaded = await downloadContracts(ref, fetchFn)
-  const differing = []
-
-  for (const [file, expected] of downloaded) {
-    const vendored = await readFile(`${dir}${file}`).catch(() => null)
-
-    if (!vendored?.equals(expected)) {
-      differing.push(file)
-    }
-  }
+  const vendored = await Promise.all(
+    downloaded.map(([file]) => readFile(`${dir}${file}`).catch(() => null))
+  )
+  const differing = downloaded
+    .filter(([, expected], index) => !vendored[index]?.equals(expected))
+    .map(([file]) => file)
 
   return { ref, differing }
 }

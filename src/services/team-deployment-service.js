@@ -339,14 +339,16 @@ async function submitOperation(
       )
     }
 
-    for (const entry of fresh) {
-      await auditDeployment(db, entry, {
-        action: REQUEST_ACTION,
-        actorUserId: requestedBy,
-        outcome: 'failure',
-        code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
-      })
-    }
+    await Promise.all(
+      fresh.map((entry) =>
+        auditDeployment(db, entry, {
+          action: REQUEST_ACTION,
+          actorUserId: requestedBy,
+          outcome: 'failure',
+          code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
+        })
+      )
+    )
 
     throw refusal
   }

@@ -280,7 +280,7 @@ async function play(stages, command, operation, steps) {
 
     const facts = factsOf(status, command, { sha, committedAt })
 
-    await handle(eventOf(now, command, operation, status, run, facts))
+    await handle(eventOf(now, command, operation, status, run, facts)) // NOSONAR: the events must arrive in pipeline order
   }
 }
 
@@ -340,7 +340,7 @@ export function createMockGitopsWorker({
      */
     async idle() {
       while (pending.size > 0) {
-        await Promise.all(pending)
+        await Promise.all(pending) // NOSONAR: a command accepted meanwhile joins `pending`, so look again
       }
     },
 

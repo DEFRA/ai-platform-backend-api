@@ -115,26 +115,29 @@ export async function writeOperation(ctx, operation, change) {
 async function auditTransition({ db, logger }, before, written, change) {
   const failed = FAILED.has(written.state)
 
-  for (const { entryId } of written.items ?? []) {
-    try {
-      await auditDeployment(
-        db,
-        { id: entryId },
-        {
-          action: change.audit?.action ?? 'teamDeployment.transition',
-          outcome: change.audit?.outcome ?? (failed ? 'failure' : 'success'),
-          code: change.audit?.code ?? written.state,
-          reason: change.audit?.reason ?? `${before.state} -> ${written.state}`
-        }
-      )
-    } catch (error) {
-      // Diagnostics: a failed audit write never undoes the transition.
-      logger?.warn(
-        { operationId: written._id, message: error.message },
-        'The operation transition could not be audited'
-      )
-    }
-  }
+  await Promise.all(
+    (written.items ?? []).map(async ({ entryId }) => {
+      try {
+        await auditDeployment(
+          db,
+          { id: entryId },
+          {
+            action: change.audit?.action ?? 'teamDeployment.transition',
+            outcome: change.audit?.outcome ?? (failed ? 'failure' : 'success'),
+            code: change.audit?.code ?? written.state,
+            reason:
+              change.audit?.reason ?? `${before.state} -> ${written.state}`
+          }
+        )
+      } catch (error) {
+        // Diagnostics: a failed audit write never undoes the transition.
+        logger?.warn(
+          { operationId: written._id, message: error.message },
+          'The operation transition could not be audited'
+        )
+      }
+    })
+  )
 }
 
 /**

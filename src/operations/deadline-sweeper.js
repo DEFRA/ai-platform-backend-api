@@ -165,13 +165,15 @@ async function sweepLocked(deps) {
   const { db } = deps.ctx
   const totals = { overdue: 0, verified: 0, alarms: 0 }
 
+  // One operation at a time: each may call GitHub or ARM, and the sweep runs
+  // under the lock, so its load stays bounded.
   for (const operation of await findOverdue(db)) {
-    await sweepOverdue(deps, operation)
+    await sweepOverdue(deps, operation) // NOSONAR: sequential by design, see above
     totals.overdue += 1
   }
 
   for (const { _id } of await findVerificationDue(db)) {
-    await deps.verifier.verify(_id)
+    await deps.verifier.verify(_id) // NOSONAR: sequential by design, see above
     totals.verified += 1
   }
 

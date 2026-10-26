@@ -43,7 +43,7 @@ export function describeCommandPublisherContract(
         .publish(command)
         .then(
           () => undefined,
-          (rejection) => rejection
+          (error_) => error_
         )
 
       expect(error).toBeInstanceOf(Error)

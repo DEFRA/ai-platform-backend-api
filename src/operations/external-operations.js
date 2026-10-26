@@ -84,7 +84,7 @@ async function advanceExternal(ctx, first, event) {
       return { outcome: 'advanced', operation: written }
     }
 
-    operation = await findOperation(ctx.db, operation._id)
+    operation = await findOperation(ctx.db, operation._id) // NOSONAR: sequential compare-and-set retry
   }
 
   throw new Error(`Operation ${operation._id} kept moving; try again`)

@@ -126,18 +126,20 @@ async function report({ ctx }, operation, reason, attempts, final) {
   const { db, settings, logger } = ctx
   const max = settings.verifyMaxAttempts
 
-  for (const { entryId } of operation.items) {
-    await auditDeployment(
-      db,
-      { id: entryId },
-      {
-        action: 'teamDeployment.verificationFailed',
-        outcome: 'failure',
-        code: reason,
-        reason: `attempt ${attempts} of ${max}`
-      }
+  await Promise.all(
+    operation.items.map(({ entryId }) =>
+      auditDeployment(
+        db,
+        { id: entryId },
+        {
+          action: 'teamDeployment.verificationFailed',
+          outcome: 'failure',
+          code: reason,
+          reason: `attempt ${attempts} of ${max}`
+        }
+      )
     )
-  }
+  )
 
   logger?.[final ? 'error' : 'warn'](
     {

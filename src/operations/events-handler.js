@@ -70,10 +70,21 @@ async function handlePause(deps, event) {
   return result
 }
 
+// What an operation held or deferred does when the environment resumes.
+function resumeOne({ ctx, operations }, operation) {
+  if (operation.held) {
+    return operations.resubmit(operation._id)
+  }
+
+  return operation.deferred === 'retry'
+    ? operations.publishApply(operation._id)
+    : makeDue(ctx, operation._id)
+}
+
 // On resume, held writes are rebuilt from main and resubmitted, and
 // deferred work is re-armed (plan 5, "Pause").
-async function resumeHeld({ ctx, operations }, event) {
-  const held = await ctx.db
+async function resumeHeld(deps, event) {
+  const held = await deps.ctx.db
     .collection('operations')
     .find({
       environment: event.environment,
@@ -82,14 +93,10 @@ async function resumeHeld({ ctx, operations }, event) {
     })
     .toArray()
 
+  // One at a time by design: a failure stops the resume and the redelivery
+  // finds the rest still held.
   for (const operation of held) {
-    if (operation.held) {
-      await operations.resubmit(operation._id)
-    } else if (operation.deferred === 'retry') {
-      await operations.publishApply(operation._id)
-    } else {
-      await makeDue(ctx, operation._id)
-    }
+    await resumeOne(deps, operation) // NOSONAR: sequential by design, see above
   }
 }
 
@@ -461,6 +468,8 @@ async function handleOperationEvent(deps, event, first) {
   let operation = first
   let verdict = null
 
+  // Each pass reads the operation as it is now and writes by compare-and-set,
+  // so the passes cannot overlap.
   for (let attempt = 0; attempt < MAX_TRIES; attempt += 1) {
     const decision = decideEvent(operation, event)
 
@@ -468,7 +477,7 @@ async function handleOperationEvent(deps, event, first) {
       // A redelivery repairs what the first delivery did not finish: the
       // projection, and the follow-up persisted with the transition (the
       // freeing of the file, or the retry of an apply).
-      await projectOperation(db, operation)
+      await projectOperation(db, operation) // NOSONAR: sequential compare-and-set retry
 
       if (operation.followUp) {
         await deps.operations.completeFollowUp(operation)

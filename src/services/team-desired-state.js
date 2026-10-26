@@ -96,9 +96,14 @@ function withModelRemoved({ held, granted }, modelSlug) {
 // The file's models after each change in turn: an add is idempotent for a
 // slug already held, and a remove for one it does not hold.
 async function withItemsApplied(db, models, items, environment) {
+  const added = await Promise.all(
+    items.map(({ modelSlug, change }) =>
+      change === 'remove' ? null : findModelBySlug(db, modelSlug)
+    )
+  )
   let next = models
 
-  for (const { modelSlug, change } of items) {
+  items.forEach(({ modelSlug, change }, index) => {
     next =
       change === 'remove'
         ? withModelRemoved(
@@ -107,9 +112,9 @@ async function withItemsApplied(db, models, items, environment) {
           )
         : withModelAdded(
             { held: next.deployments, granted: next.allowedDeployments },
-            deploymentOf(await findModelBySlug(db, modelSlug), environment)
+            deploymentOf(added[index], environment)
           )
-  }
+  })
 
   return next
 }

@@ -62,8 +62,15 @@ export function createOutboxRelay({ db, publisher, settings, logger }) {
     const operation = await findOperation(db, operationId)
     let published = 0
 
-    for (const entry of operation?.outbox ?? []) {
-      if (!entry.publishedAt && (await publishEntry(operation, entry))) {
+    const unpublished = (operation?.outbox ?? []).filter(
+      ({ publishedAt }) => !publishedAt
+    )
+
+    // In order: an operation's commands are delivered in the order written.
+    for (const entry of unpublished) {
+      const sent = await publishEntry(operation, entry) // NOSONAR: sequential by design, see above
+
+      if (sent) {
         published += 1
       }
     }
@@ -79,8 +86,10 @@ export function createOutboxRelay({ db, publisher, settings, logger }) {
   async function sweep() {
     let published = 0
 
+    // One operation at a time, so a backlog after an outage reaches SQS at a
+    // bounded rate.
     for (const { _id } of await findPendingOutbox(db)) {
-      published += await publishOperation(_id)
+      published += await publishOperation(_id) // NOSONAR: sequential by design, see above
     }
 
     return published
