@@ -15,7 +15,10 @@ import {
   heldDeadline,
   nextResubmitAt
 } from '#/operations/operation-state-machine.js'
-import { writeOperation } from '#/operations/operation-writer.js'
+import {
+  writeOperation,
+  writeWithRetry
+} from '#/operations/operation-writer.js'
 
 const MAX_TRIES = 4
 
@@ -84,11 +87,17 @@ async function resumeHeld({ ctx, operations }, event) {
     } else if (operation.deferred === 'retry') {
       await operations.publishApply(operation._id)
     } else {
-      await writeOperation(ctx, operation, {
-        deadlineAt: new Date().toISOString()
-      })
+      await makeDue(ctx, operation._id)
     }
   }
+}
+
+// A deferred revert is made due at once for the sweeper; the write is tried
+// again when another writer moved the operation first.
+function makeDue(ctx, operationId) {
+  return writeWithRetry(ctx, operationId, (current) =>
+    current.deferred ? { deadlineAt: new Date().toISOString() } : null
+  )
 }
 
 function needsCorroboration(event) {
@@ -267,6 +276,15 @@ async function advanceWrite({ ctx }, operation, decision, event) {
   })
 }
 
+// A follow-up to a counted failure is written again on what another writer
+// left, so the event is never acknowledged with it lost; it stops when the
+// operation has moved off `deploy-failed`.
+function followUp(ctx, operationId, changeOf) {
+  return writeWithRetry(ctx, operationId, (current) =>
+    current.state === DEPLOY_FAILED ? changeOf(current) : null
+  )
+}
+
 async function retryApplyAfterFailure(
   { ctx, operations, controls },
   operation
@@ -276,14 +294,14 @@ async function retryApplyAfterFailure(
   if (paused) {
     // The retry's attempt is counted now and used on resume, so a failure
     // after the pause still leads to the revert; a pause alone counts nothing.
-    return writeOperation(ctx, operation, {
+    return followUp(ctx, operation._id, (current) => ({
       set: {
         deferred: 'retry',
-        deferredAttempt: operation.attempt + 1,
+        deferredAttempt: current.attempt + 1,
         retrying: true
       },
       deadlineAt: heldDeadline(ctx.settings.deadlineHeldMs)
-    })
+    }))
   }
 
   return operations.publishApply(operation._id, {
@@ -311,12 +329,12 @@ async function afterDeployFailed(deps, operation, event) {
   }
 
   if (policy === 'revert') {
-    return writeOperation(ctx, operation, {
+    return followUp(ctx, operation._id, () => ({
       set: { deferred: 'revert' },
       deadlineAt: new Date(
         Date.now() + ctx.settings.revertGraceMs
       ).toISOString()
-    })
+    }))
   }
 
   ctx.logger?.error(

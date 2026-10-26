@@ -188,6 +188,100 @@ describe('external-operations', () => {
     })
 
     describe('an event for a run already recorded', () => {
+      // A database that loses the first write to a competing writer, which
+      // records `competing` (an event ID) when given.
+      function racingDb(competing) {
+        let lost = false
+
+        return {
+          collection(name) {
+            const collection = db.collection(name)
+
+            if (name === 'operations') {
+              const original = collection.findOneAndUpdate.bind(collection)
+
+              collection.findOneAndUpdate = async (filter, ...rest) => {
+                if (!lost) {
+                  lost = true
+                  await collection.updateOne(
+                    { _id: filter._id },
+                    {
+                      $inc: { stateVersion: 1 },
+                      ...(competing
+                        ? { $push: { history: { eventId: competing } } }
+                        : {})
+                    }
+                  )
+                }
+
+                return original(filter, ...rest)
+              }
+            }
+
+            return collection
+          }
+        }
+      }
+
+      test('reads the operation again and applies the event when another writer moved it first', async () => {
+        const requested = externalEvent('requested')
+        const committed = externalEvent('committed', {
+          runId: requested.runId
+        })
+
+        await external.record(requested)
+
+        const result = await build({ db: racingDb() }).record(committed)
+        const [stored] = await operations()
+
+        expect(result.outcome).toBe('advanced')
+        expect(result.operation.state).toBe('committed')
+        expect(stored).toMatchObject({ state: 'committed', stateVersion: 2 })
+        expect(stored.history.map(({ eventId }) => eventId)).toContain(
+          committed.eventId
+        )
+      })
+
+      test('reports a duplicate when the competing writer recorded the very event', async () => {
+        const requested = externalEvent('requested')
+        const committed = externalEvent('committed', {
+          runId: requested.runId
+        })
+
+        await external.record(requested)
+
+        const result = await build({
+          db: racingDb(committed.eventId)
+        }).record(committed)
+
+        expect(result.outcome).toBe('duplicate')
+      })
+
+      test('does not report an event advanced when its write kept losing, so the message is redelivered', async () => {
+        const requested = externalEvent('requested')
+
+        await external.record(requested)
+
+        const always = {
+          collection(name) {
+            const collection = db.collection(name)
+
+            if (name === 'operations') {
+              collection.findOneAndUpdate = async () => null
+            }
+
+            return collection
+          }
+        }
+
+        await expect(
+          build({ db: always }).record(
+            externalEvent('committed', { runId: requested.runId })
+          )
+        ).rejects.toThrow('kept moving')
+        expect((await operations())[0].state).toBe('requested')
+      })
+
       test('advances the operation by rank', async () => {
         const requested = externalEvent('requested')
         const committed = externalEvent('committed', {

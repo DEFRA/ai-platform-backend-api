@@ -141,10 +141,12 @@ describe('events-handler', () => {
     expect(Date.parse(deadlineAt)).toBeLessThanOrEqual(Date.now() + ms)
   }
 
-  // A database that loses the first `losses` writes to another writer; with
-  // `eventId` the other writer has recorded that same event.
-  function racingDb(losses, eventId) {
+  // A database that loses `losses` writes to another writer, after letting
+  // `skip` writes through; with `eventId` the other writer has recorded that
+  // same event.
+  function racingDb(losses, eventId, skip = 0, moved = null) {
     let remaining = losses
+    let skipped = skip
 
     return {
       collection(name) {
@@ -154,12 +156,15 @@ describe('events-handler', () => {
           const original = collection.findOneAndUpdate.bind(collection)
 
           collection.findOneAndUpdate = async (filter, ...rest) => {
-            if (remaining > 0) {
+            if (skipped > 0) {
+              skipped -= 1
+            } else if (remaining > 0) {
               remaining -= 1
               await collection.updateOne(
                 { _id: filter._id },
                 {
                   $inc: { stateVersion: 1 },
+                  ...(moved ? { $set: moved } : {}),
                   ...(eventId
                     ? { $push: { history: { state: 'x', eventId } } }
                     : {})
@@ -416,6 +421,32 @@ describe('events-handler', () => {
         expect(rearmed.deferred).toBe('revert')
         expect(Date.parse(rearmed.deadlineAt)).toBeGreaterThanOrEqual(before)
         expect(Date.parse(rearmed.deadlineAt)).toBeLessThanOrEqual(Date.now())
+      })
+
+      test('makes a deferred revert due even when another writer moves it first', async () => {
+        await seed('deploy-failed', {
+          deferred: 'revert',
+          deadlineAt: '2099-01-01T00:00:00.000Z'
+        })
+
+        await build(racingDb(1)).handle(pauseEvent('resumed'))
+
+        expect(Date.parse((await stored()).deadlineAt)).toBeLessThanOrEqual(
+          Date.now()
+        )
+      })
+
+      test('leaves a deferred revert alone when another writer finished it first', async () => {
+        await seed('deploy-failed', {
+          deferred: 'revert',
+          deadlineAt: '2099-01-01T00:00:00.000Z'
+        })
+
+        await build(racingDb(1, undefined, 0, { deferred: null })).handle(
+          pauseEvent('resumed')
+        )
+
+        expect((await stored()).deadlineAt).toBe('2099-01-01T00:00:00.000Z')
       })
 
       test('leaves other environments, and operations holding nothing, alone', async () => {
@@ -991,6 +1022,44 @@ describe('events-handler', () => {
       expect(resumed.outbox).toEqual([
         expect.objectContaining({ type: 'apply', attempt: 1 })
       ])
+    })
+
+    test('still defers the retry when another writer moves the operation just after the failure is counted', async () => {
+      await seedDeploying()
+      await setControl({ paused: true })
+
+      await build(racingDb(1, undefined, 1)).handle(failed())
+
+      expect(await stored()).toMatchObject({
+        state: 'deploy-failed',
+        deferred: 'retry',
+        deferredAttempt: 2
+      })
+    })
+
+    test('still defers the revert when another writer moves the operation just after the second failure is counted', async () => {
+      await seedDeploying({ attempt: 2 })
+
+      await build(racingDb(1, undefined, 1)).handle(failed())
+
+      expect(await stored()).toMatchObject({
+        state: 'deploy-failed',
+        deferred: 'revert'
+      })
+    })
+
+    test('leaves a follow-up alone when the operation moved off deploy-failed meanwhile', async () => {
+      await seedDeploying()
+      await setControl({ paused: true })
+
+      await build(racingDb(1, undefined, 1, { state: 'deployed' })).handle(
+        failed()
+      )
+
+      const moved = await stored()
+
+      expect(moved.state).toBe('deployed')
+      expect(moved.deferred).toBeUndefined()
     })
 
     test('defers the revert after the retry failed too, for the revert grace', async () => {

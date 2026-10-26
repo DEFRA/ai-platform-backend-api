@@ -1,5 +1,6 @@
 import { uuidv7 } from '#/common/helpers/uuid-v7.js'
 import {
+  findOperation,
   insertOperation,
   isDuplicateKey,
   operationsOf
@@ -55,6 +56,40 @@ function newExternal(event, { type, externalKey }) {
   }
 }
 
+const MAX_ATTEMPTS = 4
+
+// A later event of a run already recorded moves it on by the same rank
+// rule, and has no other effect. When another writer moves the operation
+// first the decision is made again on what it wrote; an event whose update
+// was never persisted is never reported as advanced, so it is redelivered.
+async function advanceExternal(ctx, first, event) {
+  let operation = first
+
+  for (let attempt = 0; attempt < MAX_ATTEMPTS; attempt += 1) {
+    const decision = decideEvent(operation, event)
+
+    if (['duplicate', 'ignore'].includes(decision.kind)) {
+      return { outcome: 'duplicate', operation }
+    }
+
+    const written = await writeOperation(ctx, operation, {
+      state: decision.kind === 'advance' ? decision.state : undefined,
+      facts: decision.facts,
+      source: event.source,
+      eventId: event.eventId,
+      eventAt: event.timestamp
+    })
+
+    if (written) {
+      return { outcome: 'advanced', operation: written }
+    }
+
+    operation = await findOperation(ctx.db, operation._id)
+  }
+
+  throw new Error(`Operation ${operation._id} kept moving; try again`)
+}
+
 /**
  * Records runs and commits the portal did not start.
  * @param {{db: import('mongodb').Db, corroborator: object, settings: object, logger?: import('pino').Logger}} deps
@@ -77,24 +112,8 @@ export function createExternalOperations({
     })
   }
 
-  // A later event of a run already recorded moves it on by the same rank
-  // rule, and has no other effect.
-  async function advance(operation, event) {
-    const decision = decideEvent(operation, event)
-
-    if (['duplicate', 'ignore'].includes(decision.kind)) {
-      return { outcome: 'duplicate', operation }
-    }
-
-    const written = await writeOperation({ db, settings, logger }, operation, {
-      state: decision.kind === 'advance' ? decision.state : undefined,
-      facts: decision.facts,
-      source: event.source,
-      eventId: event.eventId,
-      eventAt: event.timestamp
-    })
-
-    return { outcome: 'advanced', operation: written ?? operation }
+  function advance(operation, event) {
+    return advanceExternal({ db, settings, logger }, operation, event)
   }
 
   async function recordOnce(event, { type, externalKey, verdict }) {
