@@ -10,6 +10,7 @@ import {
   DEPLOY_FAILED,
   OPERATION_TYPES,
   QUEUED,
+  RETRY_APPLY,
   decideEvent,
   failurePolicy,
   heldDeadline,
@@ -249,9 +250,11 @@ function failureFields(state, event) {
   return {}
 }
 
-function advanceUnset(operation, decision) {
+function advanceUnset(operation, decision, pending) {
   const failed = [CHECKS_FAILED, DEPLOY_FAILED].includes(decision.state)
-  const unset = ['held', 'deferred', 'deferredAttempt', 'heldSince']
+  const unset = ['held', 'deferred', 'deferredAttempt', 'heldSince'].filter(
+    (field) => !(field in pending.set)
+  )
 
   if (decision.recovered) {
     unset.push('error', 'retrying', 'lastFailure', 'followUp')
@@ -279,53 +282,54 @@ function endsTheFile(operation, decision, event) {
   )
 }
 
+// What a counted `deploy-failed` leads to, persisted with the failure so a
+// redelivery or the sweep can do it if the handler stopped first: the retry's
+// attempt with `followUp: 'retry-apply'` (done at the next sweep), or the
+// revert deferred for its grace.
+function pendingAction(operation, decision, event, settings) {
+  const none = { set: {} }
+
+  if (
+    decision.state !== DEPLOY_FAILED ||
+    endsTheFile(operation, decision, event)
+  ) {
+    return none
+  }
+
+  if (failurePolicy(operation, event) === 'retry-apply') {
+    return {
+      set: {
+        followUp: RETRY_APPLY,
+        deferredAttempt: operation.attempt + 1
+      },
+      deadlineAt: new Date(Date.now() + settings.sweepIntervalMs).toISOString()
+    }
+  }
+
+  return {
+    set: { deferred: 'revert' },
+    deadlineAt: new Date(Date.now() + settings.revertGraceMs).toISOString()
+  }
+}
+
 async function advanceWrite({ ctx }, operation, decision, event) {
+  const pending = pendingAction(operation, decision, event, ctx.settings)
+
   return writeOperation(ctx, operation, {
     state: decision.state,
     facts: decision.facts,
-    set: failureFields(decision.state, event),
-    unset: advanceUnset(operation, decision),
+    set: { ...failureFields(decision.state, event), ...pending.set },
+    unset: advanceUnset(operation, decision, pending),
     source: event.source,
     eventId: event.eventId,
     eventAt: event.timestamp,
-    finishes: endsTheFile(operation, decision, event)
+    finishes: endsTheFile(operation, decision, event),
+    ...(pending.deadlineAt ? { deadlineAt: pending.deadlineAt } : {})
   })
 }
 
-// A follow-up to a counted failure is written again on what another writer
-// left, so the event is never acknowledged with it lost; it stops when the
-// operation has moved off `deploy-failed`.
-function followUp(ctx, operationId, changeOf) {
-  return writeWithRetry(ctx, operationId, (current) =>
-    current.state === DEPLOY_FAILED ? changeOf(current) : null
-  )
-}
-
-async function retryApplyAfterFailure(
-  { ctx, operations, controls },
-  operation
-) {
-  const { paused } = await controls.get(operation.environment)
-
-  if (paused) {
-    // The retry's attempt is counted now and used on resume, so a failure
-    // after the pause still leads to the revert; a pause alone counts nothing.
-    return followUp(ctx, operation._id, (current) => ({
-      set: {
-        deferred: 'retry',
-        deferredAttempt: current.attempt + 1,
-        retrying: true
-      },
-      deadlineAt: heldDeadline(ctx.settings.deadlineHeldMs)
-    }))
-  }
-
-  return operations.publishApply(operation._id, {
-    attempt: operation.attempt + 1
-  })
-}
-
-// What a counted `deploy-failed` leads to (plan 5, "Rules").
+// What a counted `deploy-failed` leads to (plan 5, "Rules"); the retry and
+// the revert were persisted with the failure.
 async function afterDeployFailed(deps, operation, event) {
   const { ctx, operations } = deps
 
@@ -341,16 +345,11 @@ async function afterDeployFailed(deps, operation, event) {
   const policy = failurePolicy(operation, event)
 
   if (policy === 'retry-apply') {
-    return retryApplyAfterFailure(deps, operation)
+    return operations.completeFollowUp(operation)
   }
 
   if (policy === 'revert') {
-    return followUp(ctx, operation._id, () => ({
-      set: { deferred: 'revert' },
-      deadlineAt: new Date(
-        Date.now() + ctx.settings.revertGraceMs
-      ).toISOString()
-    }))
+    return operation
   }
 
   ctx.logger?.error(
@@ -433,11 +432,12 @@ async function handleOperationEvent(deps, event, first) {
 
     if (isRepeat(decision)) {
       // A redelivery repairs what the first delivery did not finish: the
-      // projection, and the freeing of the file of an operation it ended.
+      // projection, and the follow-up persisted with the transition (the
+      // freeing of the file, or the retry of an apply).
       await projectOperation(db, operation)
 
       if (operation.followUp) {
-        await deps.operations.finish(operation)
+        await deps.operations.completeFollowUp(operation)
       }
 
       return { outcome: decision.kind }

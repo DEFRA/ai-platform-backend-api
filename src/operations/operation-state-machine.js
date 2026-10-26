@@ -15,6 +15,9 @@ export const CHECKS_FAILED = 'checks-failed'
 export const DEPLOY_FAILED = 'deploy-failed'
 export const TIMED_OUT = 'timed-out'
 
+// The `followUp` of a counted failure whose fresh apply is not published yet.
+export const RETRY_APPLY = 'retry-apply'
+
 /**
  * Each state's rank (plan 5). `timed-out` has none of its own: it ranks as
  * the state it left (`leftState`).

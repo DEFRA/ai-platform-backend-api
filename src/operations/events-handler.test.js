@@ -103,10 +103,10 @@ describe('events-handler', () => {
     })
   }
 
-  function build(database = db) {
+  function build(database = db, operations = service) {
     return createEventsHandler({
       ctx: { db: database, settings, logger },
-      operations: service,
+      operations,
       verifier,
       corroborator,
       controls,
@@ -1051,10 +1051,17 @@ describe('events-handler', () => {
     test('leaves a follow-up alone when the operation moved off deploy-failed meanwhile', async () => {
       await seedDeploying()
       await setControl({ paused: true })
+      const racing = racingDb(1, undefined, 1, { state: 'deployed' })
+      const racingService = createOperationsService({
+        db: racing,
+        settings,
+        relay,
+        reader: mockTeamFileReader,
+        controls,
+        logger
+      })
 
-      await build(racingDb(1, undefined, 1, { state: 'deployed' })).handle(
-        failed()
-      )
+      await build(racing, racingService).handle(failed())
 
       const moved = await stored()
 
@@ -1371,6 +1378,90 @@ describe('events-handler', () => {
       expect(retrying.slot).toBe('active')
       expect(retrying.followUp).toBeUndefined()
       expect((await stored('op-waiting')).slot).toBe('waiting')
+    })
+
+    test('persists the retry of a first attributable failure, and publishes the apply once when the failure is redelivered', async () => {
+      await seedDeploying()
+      const failure = event('deploy-failed', { runId: APPLY_RUN })
+      const racing = build(failingProjection())
+      const before = Date.now()
+
+      await expect(racing.handle(failure)).rejects.toThrow('projection down')
+
+      const pending = await stored()
+
+      expect(pending).toMatchObject({
+        state: 'deploy-failed',
+        attempt: 1,
+        followUp: 'retry-apply',
+        deferredAttempt: 2,
+        slot: 'active'
+      })
+      expect(pending.outbox).toEqual([])
+      expect(Date.parse(pending.deadlineAt)).toBeGreaterThan(before)
+
+      expect(await racing.handle(failure)).toEqual({ outcome: 'duplicate' })
+      expect(await racing.handle(failure)).toEqual({ outcome: 'duplicate' })
+
+      const retried = await stored()
+
+      expect(retried).toMatchObject({ attempt: 2, retrying: true })
+      expect(retried.followUp).toBeUndefined()
+      expect(retried.deferredAttempt).toBeUndefined()
+      expect(retried.deadlineAt).toBeNull()
+      expect(retried.outbox).toEqual([
+        expect.objectContaining({ type: 'apply', attempt: 2 })
+      ])
+    })
+
+    test('persists the revert of a second attributable failure, and leaves it pending when the failure is redelivered', async () => {
+      await seedDeploying({ attempt: 2 })
+      const failure = event('deploy-failed', { runId: APPLY_RUN })
+      const racing = build(failingProjection())
+      const before = Date.now()
+
+      await expect(racing.handle(failure)).rejects.toThrow('projection down')
+
+      const pending = await stored()
+
+      expect(pending).toMatchObject({
+        state: 'deploy-failed',
+        attempt: 2,
+        deferred: 'revert',
+        slot: 'active'
+      })
+      expectDueIn(pending.deadlineAt, REVERT_GRACE_MS, before)
+
+      expect(await racing.handle(failure)).toEqual({ outcome: 'duplicate' })
+
+      const again = await stored()
+
+      expect(again).toMatchObject({ deferred: 'revert' })
+      expect(again.outbox).toEqual([])
+      expect(again.deadlineAt).toBe(pending.deadlineAt)
+    })
+
+    test('defers a persisted retry while the environment is paused when the failure is redelivered', async () => {
+      await seedDeploying()
+      await setControl({ paused: true })
+      const failure = event('deploy-failed', { runId: APPLY_RUN })
+      const racing = build(failingProjection())
+      const before = Date.now()
+
+      await expect(racing.handle(failure)).rejects.toThrow('projection down')
+      await racing.handle(failure)
+
+      const deferred = await stored()
+
+      expect(deferred).toMatchObject({
+        attempt: 1,
+        deferred: 'retry',
+        deferredAttempt: 2,
+        retrying: true
+      })
+      expect(deferred.followUp).toBeUndefined()
+      expect(deferred.outbox).toEqual([])
+      expectDueIn(deferred.deadlineAt, HELD_MS, before)
     })
   })
 

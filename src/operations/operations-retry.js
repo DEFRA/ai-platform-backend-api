@@ -8,13 +8,15 @@ import {
   DEPLOYING,
   DEPLOY_FAILED,
   RANK,
-  TIMED_OUT
+  RETRY_APPLY,
+  TIMED_OUT,
+  heldDeadline
 } from '#/operations/operation-state-machine.js'
 import {
   writeOperation,
   writeWithRetry
 } from '#/operations/operation-writer.js'
-import { endRefused } from '#/operations/operations-slots.js'
+import { endRefused, finish } from '#/operations/operations-slots.js'
 import {
   MAX_TRIES,
   busyConflict,
@@ -105,12 +107,14 @@ export async function resubmit(
 }
 
 // The change that publishes a fresh apply. At a deferred deadline (`passed`)
-// it counts the pass, so a paused apply's next deferral doubles.
-function applyChange(operation, { attempt, state, reset, passed }) {
+// it counts the pass, so a paused apply's next deferral doubles. Completing
+// a persisted retry (`pending`) also ends the deadline that fell due for it.
+function applyChange(operation, { attempt, state, reset, passed, pending }) {
   const next = attempt ?? operation.deferredAttempt ?? operation.attempt
 
   return {
     ...(state ? { state, source: 'backend' } : {}),
+    ...(pending ? { deadlineAt: null } : {}),
     set: {
       attempt: next,
       retrying: true,
@@ -131,15 +135,19 @@ function applyChange(operation, { attempt, state, reset, passed }) {
 
 /**
  * Publishes a fresh apply for an operation, at `attempt`: the one D14 retry,
- * an admin's retry, or a deferred retry re-armed.
+ * an admin's retry, or a deferred retry re-armed. With `pending` it does so
+ * only while that follow-up is still persisted, so a redelivery and the
+ * sweep together publish the apply once.
  * @param {object} ctx
  * @param {string} operationId
- * @param {{attempt?: number, state?: string, reset?: boolean, passed?: boolean}} [options]
+ * @param {{attempt?: number, state?: string, reset?: boolean, passed?: boolean, pending?: boolean}} [options]
  * @returns {Promise<object|null>}
  */
 export async function publishApply(ctx, operationId, options = {}) {
   const written = await writeWithRetry(ctx, operationId, (operation) =>
-    applyChange(operation, options)
+    options.pending && !isRetryPending(operation)
+      ? null
+      : applyChange(operation, options)
   )
 
   if (written) {
@@ -147,6 +155,42 @@ export async function publishApply(ctx, operationId, options = {}) {
   }
 
   return written
+}
+
+function isRetryPending(operation) {
+  return operation.followUp === RETRY_APPLY && operation.state === DEPLOY_FAILED
+}
+
+// The retry persisted with a counted failure, done: paused, it is deferred
+// to the held deadline (its attempt already counted, so a failure after the
+// pause still leads to the revert); otherwise its apply is published.
+async function completeRetry(ctx, operation) {
+  if (await ctx.controls.isPaused(operation.environment)) {
+    return writeWithRetry(ctx, operation._id, (current) =>
+      isRetryPending(current)
+        ? {
+            set: { deferred: 'retry', retrying: true },
+            unset: ['followUp'],
+            deadlineAt: heldDeadline(ctx.settings.deadlineHeldMs)
+          }
+        : null
+    )
+  }
+
+  return publishApply(ctx, operation._id, { pending: true })
+}
+
+/**
+ * Completes the follow-up persisted with a transition: the retry of a failed
+ * apply, or the freeing of an ended operation's file. Safe to run again.
+ * @param {object} ctx
+ * @param {object} operation
+ * @returns {Promise<unknown>}
+ */
+export function completeFollowUp(ctx, operation) {
+  return operation.followUp === RETRY_APPLY
+    ? completeRetry(ctx, operation)
+    : finish(ctx, operation)
 }
 
 /**

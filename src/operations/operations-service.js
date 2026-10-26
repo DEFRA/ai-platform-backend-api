@@ -5,6 +5,7 @@ import {
   requestOperation
 } from '#/operations/operations-slots.js'
 import {
+  completeFollowUp,
   publishApply,
   reconcile,
   resubmit,
@@ -43,6 +44,7 @@ export function createOperationsService(deps) {
     request: bindTo(ctx, requestOperation),
     promoteWaiting: bindTo(ctx, promoteWaiting),
     finish: bindTo(ctx, finish),
+    completeFollowUp: bindTo(ctx, completeFollowUp),
     resubmit: bindTo(ctx, resubmit),
     publishApply: bindTo(ctx, publishApply),
     reconcile: bindTo(ctx, reconcile),

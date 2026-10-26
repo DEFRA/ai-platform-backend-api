@@ -105,10 +105,10 @@ async function resolveDeferred(deps, operation) {
 }
 
 async function sweepOverdue(deps, operation) {
-  // An ended operation whose follow-up was left undone: free its file and
-  // promote the waiting request.
+  // A follow-up left undone: the retry of a failed apply, or the freeing of
+  // an ended operation's file and the promotion of the waiting request.
   if (operation.followUp) {
-    return deps.operations.finish(operation)
+    return deps.operations.completeFollowUp(operation)
   }
 
   // A verified operation is only waiting to be ended: finish it, never

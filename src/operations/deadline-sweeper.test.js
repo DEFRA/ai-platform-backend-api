@@ -623,6 +623,63 @@ describe('deadline-sweeper', () => {
     })
   })
 
+  describe('a failed apply whose retry was left undone', () => {
+    function seedPendingRetry(overrides = {}) {
+      return seed({
+        state: 'deploy-failed',
+        attempt: 1,
+        followUp: 'retry-apply',
+        deferredAttempt: 2,
+        gitops: { applyRunId: 7 },
+        lastFailure: { runId: 7, runAttempt: 1 },
+        ...overrides
+      })
+    }
+
+    test('publishes the apply once, at the attempt it was persisted for, and clears the follow-up and the deadline', async () => {
+      const operation = await seedPendingRetry()
+
+      await sweeper.sweep()
+      await sweeper.sweep()
+
+      const swept = await findOperation(db, operation._id)
+
+      expect(swept).toMatchObject({
+        attempt: 2,
+        retrying: true,
+        deadlineAt: null
+      })
+      expect(swept.followUp).toBeUndefined()
+      expect(swept.deferredAttempt).toBeUndefined()
+      expect(swept.outbox).toEqual([
+        expect.objectContaining({ type: 'apply', attempt: 2 })
+      ])
+      expect(relay.publishOperation).toHaveBeenCalledWith(operation._id)
+    })
+
+    test('defers the retry for the held deadline while the environment is paused', async () => {
+      await pause()
+      const operation = await seedPendingRetry()
+      const before = Date.now()
+
+      await sweeper.sweep()
+
+      const swept = await findOperation(db, operation._id)
+
+      expect(swept).toMatchObject({
+        attempt: 1,
+        deferred: 'retry',
+        deferredAttempt: 2,
+        retrying: true
+      })
+      expect(swept.followUp).toBeUndefined()
+      expect(swept.outbox).toEqual([])
+      expect(Date.parse(swept.deadlineAt)).toBeGreaterThanOrEqual(
+        before + HELD_MS
+      )
+    })
+  })
+
   describe('verification retries', () => {
     test('verifies a deployed operation whose verify.nextAt has passed', async () => {
       const due = await seed({
