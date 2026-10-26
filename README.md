@@ -20,7 +20,7 @@ Core delivery platform Node.js Backend Template.
   - [MongoDB Locks](#mongodb-locks)
   - [Schema backfills](#schema-backfills)
   - [Proxy](#proxy)
-  - [GitOps tenant orchestrator](#gitops-tenant-orchestrator)
+  - [GitOps operations](#gitops-operations)
   - [Testing against live Azure resources (sandbox)](#testing-against-live-azure-resources-sandbox)
 - [Docker](#docker)
   - [Development image](#development-image)
@@ -302,25 +302,67 @@ APIM, not a new gateway. A genuinely new gateway needs its issuer and vault adap
 `credential-vault-registry.js`, and its required config keys added to
 `REQUIRED_CONFIG_BY_GATEWAY` in `config.js`. Nothing in the services changes.
 
-### GitOps tenant orchestrator
+### GitOps operations
 
-Team deployments go through the `TenantOrchestrator` port
-([`src/adapters/tenant-orchestrator.js`](src/adapters/tenant-orchestrator.js)). `mock` walks the
-GitOps states on a timer. `github` follows the
-[GitOps contract](../ai-platform-infra/docs/gitops-contract.md): it dispatches `submit.yml` with the
-whole canonical document (never committing), then polls the submit run, the `op/{operationId}` pull
-request and `validate-desired-state / validate`, the GitHub Deployment and the apply's run report, and confirms the
-team's resources through ARM (`PROVISIONING_MODE=live`) before `active`. An apply failure gets one
-fresh apply, then a revert or an engineer alert (D14); a failed check gets `abandon`. Reverts and
-abandons are polled to their end; one that fails is audited and logged for an engineer, never retried,
-and a failed revert's pull request stays open, keeping the team file locked, until the engineer acts
-(direction 14 October 2026).
+A change to a team's GitOps file is an **operation**: one per request per file, stored in the `operations`
+collection and shown on the team deployment entry as `operation {id, state, attempt, runUrl, commitSha, failureReason}`.
+The backend never writes to GitHub. It publishes **commands** (`submit`, `apply`, `reconcile`) to the FIFO queue
+`aip-gitops-commands.fifo`; the GitOps worker (`ai-platform-gitops-worker`) and the `v2` workflows do the GitHub work and
+send **events** (`requested`, `committed`, `deploying`, `deployed`, `checks-failed`, `deploy-failed`, `paused`, `resumed`)
+to `aip-gitops-events.fifo`, which the backend reads. Each queue has a dead-letter queue (`-deadletter.fifo`, after 3
+receives). The design is
+[`async-operations-plan.md`](../ai-platform-discovery-docs/docs/async-operations-plan.md); the workflow interface is the
+[GitOps contract](../ai-platform-infra/docs/gitops-contract.md).
+
+| Part                                                                                                               | Role                                                                                                                                                                                                                            |
+| :----------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| [`operation-state-machine.js`](src/operations/operation-state-machine.js)                                          | The one state table: `queued`, `requested`, `committed`, `deploying`, `deployed`, `verified`, `active` or `removed`, `checks-failed`, `deploy-failed`, `timed-out`. An event is applied only at a higher rank                   |
+| [`operations-service.js`](src/operations/operations-service.js)                                                    | Takes the file's slot (one active and one waiting operation per file; later requests merge into the waiting one), builds the whole canonical document and writes the operation and its outbox entry in one document             |
+| [`outbox-relay.js`](src/operations/outbox-relay.js)                                                                | Publishes outbox entries the request path did not (claimed by compare-and-set, lease 30 s), so an SQS outage never loses a command. `commandId` (UUIDv7) is the SQS deduplication ID and is kept when an entry is republished   |
+| [`events-consumer.js`](src/operations/events-consumer.js), [`events-handler.js`](src/operations/events-handler.js) | Long-poll the events queue, validate each event against the vendored schema, apply it. The handler is idempotent (`eventId` is the deduplication ID) and throws only for transient failures, which retry and then reach the DLQ |
+| [`corroborator.js`](src/operations/corroborator.js)                                                                | Before acting on `checks-failed`, `deploy-failed`, `paused`, `resumed` or an unknown operation, reads the run with the read token and drops an event that does not match                                                        |
+| [`deadline-sweeper.js`](src/operations/deadline-sweeper.js)                                                        | Every `GITOPS_SWEEP_INTERVAL_MS`, under a MongoDB lock, acts on overdue operations and due verification retries                                                                                                                 |
+
+Deadlines run from entering a state: `requested` 10 minutes, `committed` 30, `deploying` 45, `deployed` 15. Past one, the sweeper
+publishes `reconcile` (the worker reports what GitHub holds) and extends the deadline by 10 minutes; a second time with no
+progress the operation is `timed-out`, keeping the file's slot until an event moves it on or a Platform Admin retries.
+After `deployed` the backend verifies the team's resources through ARM (`PROVISIONING_MODE=live`) once in the handler,
+then at 30, 60, 120 and 240 seconds, up to `GITOPS_VERIFY_MAX_ATTEMPTS`, before `deploy-failed` with
+`operation-verify-failed`; verified, a team's credential is issued and the operation is `active`. An attributable apply
+failure gets one fresh apply (attempt 2), then a revert (a child `team-file.revert` operation published after
+`GITOPS_REVERT_GRACE_MS` unless the apply recovered) or an engineer alert (D14); a refusal as `stale-revision` or
+`commit-conflict` is rebuilt from `main` and resubmitted up to `GITOPS_RESUBMIT_MAX` times.
+
+An admin pauses an environment with `AIP_PAUSED` and `pause.yml`; the workflows' own read of the variable is authoritative
+and the backend's `environmentControls` record only spares a dispatch that would be refused. A paused environment holds
+automatic writes, retries and reverts (they keep their slot and show as Waiting), resubmitted on `resumed` or at
+`GITOPS_DEADLINE_HELD_MS`.
+
+**Local and mock mode.** `TENANT_ORCHESTRATOR=mock` (the default; prod refuses it) uses an in-memory publisher and a mock
+worker that sends the events one stage at a time, `TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS` apart, and a mock team file
+reader (it serves a `research.json` with only `gpt-4o` deployed, as in infradev). It forces a failure for a requester whose
+Entra object ID starts `entra:00000000-0000-0000-0001-` (`checks-failed`, nothing committed) or
+`entra:00000000-0000-0000-0002-` (`deploy-failed`, not attributable, so final; an admin retry's second attempt succeeds),
+and, for journey tests that sign in as real users, a request whose `purpose` contains `[mock:checks-failed]` or
+`[mock:deploy-failed]`; the markers have no effect with `sqs`. `TENANT_ORCHESTRATOR=sqs` needs both queue URLs and the
+GitHub App, and `AWS_SQS_ENDPOINT` for the Floci queues that `compose/floci/start.d/20-gitops-queues.sh` creates (see
+[Docker Compose](#docker-compose)).
+
+**Message contracts.** `src/contracts/aip-gitops/` holds the command and event JSON Schemas vendored from
+`ai-platform-infra` at the ref in its `VERSION` file, validated with Ajv. They are additive-only and never edited by hand:
+`npm run contracts:sync -- {ref}` downloads them and `npm run contracts:check` (in CI) fails on any difference.
+
+**GitHub identity.** One App, `ai-platform-orchestrator`. The backend only reads: `createGithubAppClient` requires explicit
+`repositoryNames` and `permissions`, refuses any permission outside `contents`, `actions` and `metadata` at `read`, and
+refuses any request that is not a GET or HEAD, so the backend's token can read the catalogue (`ai-platform-infra`), team
+files and `research.json` (`ai-platform-tenants`), pins (`ai-platform-deployments`) and run reports, and cannot write.
+Dispatch is the worker's. The change needs no schema backfill: nothing was live, so the old states and fields are deleted,
+not mapped.
+
 A team's file takes one operation at a time, so a request made while another for the same team and
-environment is still in progress (or being reverted or abandoned) is stored as `queued` and dispatched,
-its document built then, once that one ends.
+environment is in progress is stored as `queued` and submitted, its document built then, once that one ends.
 `POST /v1/teams/{teamId}/deployments` takes `{modelSlugs: [...], environment}` (1 to 20 models) and
-returns `{deployments}` in the order asked: one entry and operation per model, the first in flight
-and the rest queued, so one that fails never holds back the others. The request is all or nothing up
+returns `{deployments}` in the order asked: one entry per model, all following the request's one operation. The request is all or nothing up
 front (a model a team cannot have in that environment is refused as `400 model-not-eligible`, and one the team already
 has as `409 deployment-exists` with `existing`; a model the team removed may be asked for again) and
 idempotent by `Idempotency-Key`: a replay returns its entries and finishes any a crashed attempt did
@@ -331,20 +373,21 @@ the environment ([`teamSkuOf` and `isTeamEligible`](src/services/catalogue-servi
 research (on-your-own) credentials need the same of a `research` SKU (`researchSkuOf`, `isResearchEligible`)
 **and** the model deployed in the research environment: an `active` deployment in that environment's
 platform-owned `environments/{RESEARCH_ENVIRONMENT}/research.json` on `ai-platform-tenants`, matched by `slug`
-([`research-deployments.js`](src/services/research-deployments.js); read through the tenant orchestrator,
+([`research-deployments.js`](src/services/research-deployments.js); read through the team file reader,
 cached for `RESEARCH_DEPLOYMENTS_CACHE_MS`). Otherwise issuing is `403 model-not-eligible` (not offered to
 research) or `403 model-not-deployed` (offered, but not deployed there); a failed read of the file is
 `502 research-deployments-unavailable`, never an empty or stale answer. `GET /v1/models?tier=team` (optionally
 `&environment=`) and `?tier=research` list only those; the plain list is unchanged except that each model also
 carries a flat boolean `researchAvailable` (research-eligible **and** deployed), so a page need not work it out,
-and it too answers `502 research-deployments-unavailable` when the file cannot be read. In mock mode the
-orchestrator serves a `research.json` (only `gpt-4o` deployed, as in infradev) so local runs work.
+and it too answers `502 research-deployments-unavailable` when the file cannot be read.
 Each deployment's `progressSteps` are `{label, state, at}`: the third label names the model ("Setting up
 GPT-4o in Azure"), and `at` is when a done step finished or the current one started (ISO time, from
 the entry's `statusTimes`), null for one not reached.
 Platform Admins
 (users whose `roles` include `platform-admin`; nothing assigns it yet) can
-`POST /v1/admin/team-deployments/{id}/retry` or `/reconcile`.
+`POST /v1/admin/team-deployments/{id}/retry` or `/reconcile` (403 for anyone else): `retry` publishes `submit` before
+`committed` and `apply` after it (a fresh attempt from `deploy-failed`; a `timed-out` operation resumes from the state it
+left), and `reconcile` asks the worker to report what GitHub holds.
 
 The document itself is built by
 [`team-desired-state.js`](src/services/team-desired-state.js) (WS6), always from the file `main`
@@ -372,8 +415,7 @@ credentials (only `tier: research`; `team` is refused with `400`). A later model
 environment reuses it, and a different environment gets its own. If creating it fails (for example
 no gateway issues team credentials in `live` mode without `MOCK_TIERS=team`, or the vault write
 fails) the activation stands and the failure is logged and audited against the deployment
-(`teamDeployment.credential`). The maintenance sweep, and any later poll of an active deployment,
-retries (at most once per poll interval, serialised with revocation under the credential's own lock)
+(`teamDeployment.credential`). The maintenance sweep retries (at most once per 30 seconds, serialised with revocation under the credential's own lock)
 while the team has no active credential and its latest attempt is unfinished, missing, or was revoked
 before the newest activation (a revocation after it is left alone); an unfinished attempt's document
 is reused, never duplicated. Any team member
@@ -385,13 +427,27 @@ credential keeps what it covered when it was revoked; a later model activation c
 
 | Variable                           | Default                         | Purpose                                                                                                                                                                                                    |
 | :--------------------------------- | :------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `github`. Prod refuses `mock`; `github` needs the GitHub App (`GITHUB_CLIENT_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`)                                                        |
+| `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `sqs`. Prod refuses `mock`; `sqs` needs both queue URLs and the GitHub App (`GITHUB_CLIENT_ID` or `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`)                       |
 | `TEAM_ENVIRONMENTS`                | `infradev`                      | Comma-separated environments this instance may deploy a team's models to (D1): `infradev` on the CDP dev instance, `sandbox` on test; anything else is `403 environment-not-available`                     |
 | `GITOPS_TENANTS_REPO`              | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                                                                               |
 | `GITOPS_DEPLOYMENTS_REPO`          | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                                                                          |
-| `GITOPS_POLL_MIN_INTERVAL_MS`      | `30000`                         | Minimum gap between two GitHub or ARM polls of one operation                                                                                                                                               |
-| `GITOPS_CLAIM_LEASE_MS`            | `600000`                        | How long a claimed retry, revert or abandon waits for its dispatch before another poll may claim it again                                                                                                  |
-| `GITOPS_STALL_WARN_AFTER_MS`       | `1800000`                       | How long a deployment may stay merged or deploying before one warning log and audit event say it looks stalled (`0` turns it off); it never changes the deployment                                         |
+| `GITOPS_COMMANDS_QUEUE_URL`        | none                            | `aip-gitops-commands.fifo`, where the backend sends commands; required for `sqs`                                                                                                                           |
+| `GITOPS_EVENTS_QUEUE_URL`          | none                            | `aip-gitops-events.fifo`, where the backend reads events; required for `sqs`                                                                                                                               |
+| `AWS_SQS_ENDPOINT`                 | none                            | SQS endpoint override for local runs (Floci); unset on CDP. `AWS_REGION` defaults to `eu-west-2`                                                                                                           |
+| `HANDLER_TIMEOUT_MS`               | `30000`                         | How long the events handler may take for one message; the queue's visibility timeout (60 s) must stay above it                                                                                             |
+| `SQS_WAIT_TIME_SECONDS`            | `20`                            | Long-polling wait for the events queue                                                                                                                                                                     |
+| `GITOPS_OUTBOX_SWEEP_MS`           | `2000`                          | How often the relay publishes outbox entries the request path did not                                                                                                                                      |
+| `GITOPS_SWEEP_INTERVAL_MS`         | `15000`                         | How often the sweeper looks for overdue operations and due verification retries                                                                                                                            |
+| `GITOPS_RECONCILE_GRACE_MS`        | `600000`                        | How long an operation gets after a `reconcile` before it times out with no progress                                                                                                                        |
+| `GITOPS_DEADLINE_REQUESTED_MS`     | `600000`                        | Deadline from entering `requested`                                                                                                                                                                         |
+| `GITOPS_DEADLINE_COMMITTED_MS`     | `1800000`                       | Deadline from entering `committed`                                                                                                                                                                         |
+| `GITOPS_DEADLINE_DEPLOYING_MS`     | `2700000`                       | Deadline from entering `deploying`                                                                                                                                                                         |
+| `GITOPS_DEADLINE_DEPLOYED_MS`      | `900000`                        | Deadline from entering `deployed`, ARM verification included                                                                                                                                               |
+| `GITOPS_VERIFY_MAX_ATTEMPTS`       | `5`                             | How many times ARM may fail to confirm a deployed team before `deploy-failed` with `operation-verify-failed`; a Platform Admin retry starts the count again                                                |
+| `GITOPS_RESUBMIT_MAX`              | `3`                             | How many times a `stale-revision` or `commit-conflict` write is rebuilt from `main` and resubmitted (after 10, 30 and 90 s) before it times out                                                            |
+| `GITOPS_REVERT_GRACE_MS`           | `300000`                        | How long a revert waits before it is published, in case the failed apply recovers                                                                                                                          |
+| `GITOPS_DEADLINE_HELD_MS`          | `1800000`                       | Deadline of an operation held while its environment is paused, doubling up to 4 hours                                                                                                                      |
+| `GITOPS_HELD_ALARM_MS`             | `3600000`                       | How long an operation may stay held or deferred before the alarm                                                                                                                                           |
 | `TEAM_DEFAULT_TOKENS_PER_MINUTE`   | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                                                                               |
 | `TEAM_DEFAULT_REQUESTS_PER_MINUTE` | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                                                                             |
 | `AIP_ENVIRONMENTS`                 | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group, and research keys are issued into the entry named by `RESEARCH_ENVIRONMENT` |
@@ -410,11 +466,9 @@ credential keeps what it covered when it was revoked; a later model activation c
 }
 ```
 
-Every GitHub request sends `X-GitHub-Api-Version: 2026-03-10`, and each use gets its own
-installation token: Actions write on one repository to dispatch, and Actions, Checks, Contents,
-Deployments and Pull requests read to poll. Polls are conditional on ETags, at most one per
-operation per interval, back off on rate limits and skip finished operations; the maintenance
-scheduler also sweeps operations nobody is watching.
+Every GitHub request sends `X-GitHub-Api-Version: 2026-03-10`, and each client gets its own installation token scoped to
+one repository with read permissions only (see GitOps operations above). Reads are conditional on ETags and back off on
+rate limits.
 
 ### Testing against live Azure resources
 
@@ -537,6 +591,13 @@ docker compose up --build -d
 ```
 
 Mock AWS resources can be created when Floci starts up by editing the scripts in `./compose/floci/start.d/`.
+`20-gitops-queues.sh` creates the GitOps queues `aip-gitops-commands.fifo` and `aip-gitops-events.fifo` (FIFO,
+content-based deduplication off, 60 s visibility) with their dead-letter queues `aip-gitops-commands-deadletter.fifo` and
+`aip-gitops-events-deadletter.fifo` (redrive after 3 receives). The backend runs with `TENANT_ORCHESTRATOR=mock` unless
+you start compose with `TENANT_ORCHESTRATOR=sqs` and set `GITOPS_COMMANDS_QUEUE_URL`
+(`http://floci:4566/000000000000/aip-gitops-commands.fifo`), `GITOPS_EVENTS_QUEUE_URL`
+(`http://floci:4566/000000000000/aip-gitops-events.fifo`), `AWS_SQS_ENDPOINT=http://floci:4566` and the GitHub App
+credentials.
 MongoDB records can also be created when Mongo starts by editing the scripts in `./compose/mongo/`.
 
 ### Dependabot
