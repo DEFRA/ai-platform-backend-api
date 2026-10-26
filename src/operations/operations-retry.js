@@ -107,7 +107,7 @@ export async function resubmit(
 // The change that publishes a fresh apply. At a deferred deadline (`passed`)
 // it counts the pass, so a paused apply's next deferral doubles.
 function applyChange(operation, { attempt, state, reset, passed }) {
-  const next = attempt ?? operation.attempt
+  const next = attempt ?? operation.deferredAttempt ?? operation.attempt
 
   return {
     ...(state ? { state, source: 'backend' } : {}),
@@ -118,7 +118,7 @@ function applyChange(operation, { attempt, state, reset, passed }) {
       ...(passed ? { heldPasses: (operation.heldPasses ?? 0) + 1 } : {}),
       ...(reset ? { verify: { attempts: 0, nextAt: null } } : {})
     },
-    unset: ['deferred', 'held', ...(reset ? ['error'] : [])],
+    unset: ['deferred', 'deferredAttempt', 'held', ...(reset ? ['error'] : [])],
     push: { outbox: newOutboxEntry('apply', { attempt: next }) }
   }
 }

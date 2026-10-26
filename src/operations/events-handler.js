@@ -242,7 +242,7 @@ function failureFields(state, event) {
 
 function advanceUnset(operation, decision) {
   const failed = [CHECKS_FAILED, DEPLOY_FAILED].includes(decision.state)
-  const unset = ['held', 'deferred', 'heldSince']
+  const unset = ['held', 'deferred', 'deferredAttempt', 'heldSince']
 
   if (decision.recovered) {
     unset.push('error', 'retrying', 'lastFailure')
@@ -274,8 +274,14 @@ async function retryApplyAfterFailure(
   const { paused } = await controls.get(operation.environment)
 
   if (paused) {
+    // The retry's attempt is counted now and used on resume, so a failure
+    // after the pause still leads to the revert; a pause alone counts nothing.
     return writeOperation(ctx, operation, {
-      set: { deferred: 'retry', retrying: true },
+      set: {
+        deferred: 'retry',
+        deferredAttempt: operation.attempt + 1,
+        retrying: true
+      },
       deadlineAt: heldDeadline(ctx.settings.deadlineHeldMs)
     })
   }

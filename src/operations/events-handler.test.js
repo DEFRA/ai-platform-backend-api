@@ -956,6 +956,43 @@ describe('events-handler', () => {
       expectDueIn(deferred.deadlineAt, HELD_MS, before)
     })
 
+    test('resumes a retry deferred by the pause as attempt 2, so a further failure reverts instead of retrying again', async () => {
+      await seedDeploying()
+      await setControl({ paused: true })
+      await handler.handle(failed())
+      await handler.handle(pauseEvent('resumed'))
+
+      const resumed = await stored()
+
+      expect(resumed.attempt).toBe(2)
+      expect(resumed.deferredAttempt).toBeUndefined()
+      expect(resumed.outbox).toEqual([
+        expect.objectContaining({ type: 'apply', attempt: 2 })
+      ])
+
+      await handler.handle(deploying(RETRY_RUN))
+      await handler.handle(failed(RETRY_RUN))
+
+      const second = await stored()
+
+      expect(second).toMatchObject({ attempt: 2, deferred: 'revert' })
+      expect(second.outbox).toHaveLength(1)
+    })
+
+    test('does not count a retry that was only deferred by the pause', async () => {
+      await seedDeploying()
+      await setControl({ paused: true })
+      await handler.handle(failed(APPLY_RUN, { failureReason: PAUSED_REFUSAL }))
+      await handler.handle(pauseEvent('resumed'))
+
+      const resumed = await stored()
+
+      expect(resumed.attempt).toBe(1)
+      expect(resumed.outbox).toEqual([
+        expect.objectContaining({ type: 'apply', attempt: 1 })
+      ])
+    })
+
     test('defers the revert after the retry failed too, for the revert grace', async () => {
       await seedDeploying()
       await handler.handle(failed())

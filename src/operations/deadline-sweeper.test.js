@@ -544,6 +544,25 @@ describe('deadline-sweeper', () => {
       expect(entryTypes(swept)).toEqual(['apply'])
       expect(relay.publishOperation).toHaveBeenCalledWith(operation._id)
     })
+
+    test('publishes the deferred retry at the attempt it was deferred for, not the current one', async () => {
+      const operation = await seed({
+        state: 'deploy-failed',
+        attempt: 1,
+        deferred: 'retry',
+        deferredAttempt: 2
+      })
+
+      await sweeper.sweep()
+
+      const swept = await findOperation(db, operation._id)
+
+      expect(swept.attempt).toBe(2)
+      expect(swept.deferredAttempt).toBeUndefined()
+      expect(swept.outbox).toEqual([
+        expect.objectContaining({ type: 'apply', attempt: 2 })
+      ])
+    })
   })
 
   describe('verification retries', () => {
