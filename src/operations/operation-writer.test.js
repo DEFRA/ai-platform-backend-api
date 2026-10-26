@@ -289,14 +289,16 @@ describe('operation-writer', () => {
       })
 
       test('stamps the update time', async () => {
-        const operation = await seedOperation()
+        const operation = await seedOperation({
+          updatedAt: '2020-01-01T00:00:00.000Z'
+        })
 
         const written = await writeOperation(ctx(), operation, {
           set: { attempt: 2 }
         })
 
         expect(written.updatedAt).not.toBe(operation.updatedAt)
-        expect(Date.parse(written.updatedAt)).toBeGreaterThanOrEqual(
+        expect(Date.parse(written.updatedAt)).toBeGreaterThan(
           Date.parse(operation.updatedAt)
         )
       })
