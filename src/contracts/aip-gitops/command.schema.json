@@ -81,6 +81,10 @@
         "timed-out"
       ]
     },
+    "submittedAt": {
+      "description": "For a reconcile of an operation in the requested state: when the operation's latest submit was queued (the creation time of its latest submit outbox entry). The worker ignores submit runs and refusals that finished before it. Absent: no such filter.",
+      "$ref": "#/$defs/dateTime"
+    },
     "requestedBy": { "$ref": "#/$defs/principal" },
     "traceparent": {
       "description": "The W3C traceparent of the request; null when it carried none.",
@@ -124,7 +128,8 @@
           "document": false,
           "expectedRevision": false,
           "expectedBase": false,
-          "state": false
+          "state": false,
+          "submittedAt": false
         }
       }
     },
@@ -140,7 +145,8 @@
           "operationId": { "type": "string" },
           "team": { "type": "string" },
           "path": { "type": "string" },
-          "state": false
+          "state": false,
+          "submittedAt": false
         }
       }
     },
