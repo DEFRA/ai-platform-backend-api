@@ -1,6 +1,26 @@
 import { gitopsSettings } from '#/operations/gitops-settings.js'
 import { createOperationsRuntime } from '#/operations/operations-runtime.js'
 
+const DRAIN_TIMEOUT_MS = 5000
+
+// Waits for the running sweeps, but never longer than the bound.
+async function drainSweeps(sweeps, timeoutMs) {
+  if (sweeps.size === 0) {
+    return
+  }
+
+  let timer
+  const bound = new Promise((resolve) => {
+    timer = setTimeout(resolve, timeoutMs)
+  })
+
+  try {
+    await Promise.race([Promise.allSettled([...sweeps]), bound])
+  } finally {
+    clearTimeout(timer)
+  }
+}
+
 /**
  * The operations runtime as the server runs it: the wired modules over the
  * orchestrator's transport (the mock worker, or SQS), with the outbox relay
@@ -16,6 +36,7 @@ import { createOperationsRuntime } from '#/operations/operations-runtime.js'
  * @param {Function} deps.buildDocument
  * @param {Function} deps.grantCredentials
  * @param {ReturnType<typeof gitopsSettings>} [deps.settings]
+ * @param {number} [deps.drainTimeoutMs] - how long `stop` waits for a running sweep
  */
 export function createServerOperations({
   db,
@@ -25,7 +46,8 @@ export function createServerOperations({
   verifier,
   buildDocument,
   grantCredentials,
-  settings = gitopsSettings()
+  settings = gitopsSettings(),
+  drainTimeoutMs = DRAIN_TIMEOUT_MS
 }) {
   const transport = registry.createTransport({
     db,
@@ -46,23 +68,29 @@ export function createServerOperations({
   })
 
   const timers = []
+  const inFlight = new Set()
 
   function every(name, intervalMs, task) {
     let running = false
-    const timer = setInterval(async () => {
+    const timer = setInterval(() => {
       if (running) {
         return
       }
 
       running = true
 
-      try {
-        await task()
-      } catch (error) {
-        logger?.error({ message: error.message }, `The ${name} failed`)
-      } finally {
-        running = false
-      }
+      const sweep = (async () => {
+        try {
+          await task()
+        } catch (error) {
+          logger?.error({ message: error.message }, `The ${name} failed`)
+        } finally {
+          running = false
+          inFlight.delete(sweep)
+        }
+      })()
+
+      inFlight.add(sweep)
     }, intervalMs)
 
     // Never holds the process open; the server stops it with the rest.
@@ -87,12 +115,16 @@ export function createServerOperations({
 
     /**
      * Stops the sweeps and the transport, so the server can end gracefully.
+     * A sweep already running is given `drainTimeoutMs` to finish, so the
+     * database is not closed under it; a stuck one never holds shutdown past
+     * that.
      */
     async stop() {
       for (const timer of timers.splice(0)) {
         clearInterval(timer)
       }
 
+      await drainSweeps(inFlight, drainTimeoutMs)
       await transport.stop()
     }
   }

@@ -49,13 +49,14 @@ describe('server-operations', () => {
     }
   }
 
-  function build() {
+  function build(overrides = {}) {
     return createServerOperations({
       db,
       locker,
       logger,
       registry,
       settings,
+      ...overrides,
       verifier: { verify: vi.fn().mockResolvedValue({ verified: true }) },
       buildDocument: vi.fn().mockResolvedValue({
         document: { environment: 'infradev', revision: 1 },
@@ -215,6 +216,62 @@ describe('server-operations', () => {
       await vi.advanceTimersByTimeAsync(100)
 
       expect(ops.relay.sweep).not.toHaveBeenCalled()
+      expect(transport.stop).toHaveBeenCalledTimes(1)
+    })
+
+    test('stop waits for a sweep that is already running before it stops the transport', async () => {
+      vi.useFakeTimers()
+
+      let release
+      vi.spyOn(ops.relay, 'sweep').mockImplementation(
+        () => new Promise((resolve) => (release = resolve))
+      )
+      vi.spyOn(transport, 'stop')
+
+      ops.start()
+      await vi.advanceTimersByTimeAsync(25)
+
+      let stopped = false
+      const stopping = ops.stop().then(() => {
+        stopped = true
+      })
+
+      await vi.advanceTimersByTimeAsync(1000)
+
+      expect(stopped).toBe(false)
+      expect(transport.stop).not.toHaveBeenCalled()
+
+      release(0)
+      await stopping
+
+      expect(stopped).toBe(true)
+      expect(transport.stop).toHaveBeenCalledTimes(1)
+    })
+
+    test('stop does not wait past its bound for a sweep that never finishes', async () => {
+      vi.useFakeTimers()
+      ops = build({ drainTimeoutMs: 50 })
+      vi.spyOn(ops.relay, 'sweep').mockImplementation(
+        () => new Promise(() => {})
+      )
+      vi.spyOn(transport, 'stop')
+
+      ops.start()
+      await vi.advanceTimersByTimeAsync(25)
+
+      let stopped = false
+      const stopping = ops.stop().then(() => {
+        stopped = true
+      })
+
+      await vi.advanceTimersByTimeAsync(49)
+
+      expect(stopped).toBe(false)
+
+      await vi.advanceTimersByTimeAsync(2)
+      await stopping
+
+      expect(stopped).toBe(true)
       expect(transport.stop).toHaveBeenCalledTimes(1)
     })
 
