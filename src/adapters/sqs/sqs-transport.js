@@ -1,16 +1,17 @@
 import { config } from '#/config.js'
 import { createGithubRunReader } from '#/adapters/github/github-run-reader.js'
-import {
-  createSqsClient,
-  createSqsCommandPublisher
-} from '#/adapters/sqs/sqs-command-publisher.js'
+import { createSqsClient } from '#/adapters/sqs/sqs-client.js'
+import { createSnsClient } from '#/adapters/sns/sns-client.js'
+import { createSnsCommandPublisher } from '#/adapters/sns/sns-command-publisher.js'
 import { createEventsConsumer } from '#/operations/events-consumer.js'
 
 /**
- * The SQS transport (the `sqs` orchestrator): commands go to the GitOps
- * commands queue, the events consumer reads the events queue into the events
- * handler, and a failure is corroborated against GitHub with the run reader.
- * Nothing is read from configuration until the transport is created.
+ * The SQS transport (the `sqs` orchestrator): commands are published to the
+ * GitOps commands SNS topic the backend owns (the worker's own queue is
+ * subscribed to it), the events consumer reads the events queue the backend
+ * owns into the events handler, and a failure is corroborated against GitHub
+ * with the run reader. Nothing is read from configuration until the transport
+ * is created.
  * @param {{handle: (event: unknown) => Promise<unknown>, logger?: import('pino').Logger}} deps
  * @param {object} [overrides] - the parts to replace, for a test
  */
@@ -18,21 +19,27 @@ export function createSqsTransport(
   { handle, logger },
   {
     settings = {
-      commandsQueueUrl: config.get('gitops.commandsQueueUrl'),
+      commandsTopicArn: config.get('gitops.commandsTopicArn'),
       eventsQueueUrl: config.get('gitops.eventsQueueUrl'),
-      endpoint: config.get('gitops.awsSqsEndpoint') ?? undefined,
+      sqsEndpoint: config.get('gitops.awsSqsEndpoint') ?? undefined,
+      snsEndpoint: config.get('gitops.awsSnsEndpoint') ?? undefined,
       region: config.get('gitops.awsRegion'),
       handlerTimeoutMs: config.get('gitops.handlerTimeoutMs'),
       waitTimeSeconds: config.get('gitops.sqsWaitTimeSeconds')
     },
     createClient = createSqsClient,
-    createPublisher = createSqsCommandPublisher,
+    createTopicClient = createSnsClient,
+    createPublisher = createSnsCommandPublisher,
     createConsumer = createEventsConsumer,
     createRunReader = createGithubRunReader
   } = {}
 ) {
   const client = createClient({
-    endpoint: settings.endpoint,
+    endpoint: settings.sqsEndpoint,
+    region: settings.region
+  })
+  const topicClient = createTopicClient({
+    endpoint: settings.snsEndpoint,
     region: settings.region
   })
   const consumer = createConsumer({
@@ -48,8 +55,8 @@ export function createSqsTransport(
 
   return {
     publisher: createPublisher({
-      client,
-      queueUrl: settings.commandsQueueUrl
+      client: topicClient,
+      topicArn: settings.commandsTopicArn
     }),
     runReader: createRunReader(),
     start() {

@@ -455,7 +455,7 @@ if (isGithubAppAuth && !config.get('github.privateKey')) {
 }
 
 // The queue mode reads team files and corroborates runs with the App's read
-// tokens, and needs both queues.
+// tokens, and needs the commands topic and the events queue.
 if (config.get('tenantOrchestrator') === 'sqs') {
   if (!isGithubAppAuth) {
     throw new Error(
@@ -464,7 +464,7 @@ if (config.get('tenantOrchestrator') === 'sqs') {
   }
 
   const missingQueues = [
-    ['GITOPS_COMMANDS_QUEUE_URL', 'gitops.commandsQueueUrl'],
+    ['GITOPS_COMMANDS_TOPIC_ARN', 'gitops.commandsTopicArn'],
     ['GITOPS_EVENTS_QUEUE_URL', 'gitops.eventsQueueUrl']
   ].filter(([, key]) => !config.get(key))
 

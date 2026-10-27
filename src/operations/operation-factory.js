@@ -8,7 +8,7 @@ const MAX_DOCUMENT_BYTES = 60 * 1024
 
 /**
  * An outbox entry: a command to publish, with its own ID, which is also its
- * SQS deduplication ID and is kept when the entry is republished (plan 5).
+ * FIFO deduplication ID and is kept when the entry is republished (plan 5).
  * @param {'submit'|'apply'|'reconcile'} type
  * @param {{attempt: number}} operation
  * @param {{state?: string, now?: string}} [options] - `state` is the operation's state, for a reconcile

@@ -10,9 +10,9 @@ import { buildCommand } from '#/operations/operation-factory.js'
  * The relay of the transactional outbox (plan 5, DD2): an operation's
  * commands are written in the same single-document write as its state, then
  * published here, right after the write and again by the sweep, so no
- * request is lost to an SQS outage. An instance claims an entry by
+ * request is lost to an SNS outage. An instance claims an entry by
  * compare-and-set before it publishes, so two never publish one entry
- * together; a republish keeps the entry's command ID, which SQS
+ * together; a republish keeps the entry's command ID, which the FIFO topic
  * deduplicates for five minutes.
  * @param {{db: import('mongodb').Db, publisher: import('#/adapters/command-publisher.js').CommandPublisher, settings: {outboxLeaseMs: number}, logger?: import('pino').Logger}} deps
  */
@@ -86,7 +86,7 @@ export function createOutboxRelay({ db, publisher, settings, logger }) {
   async function sweep() {
     let published = 0
 
-    // One operation at a time, so a backlog after an outage reaches SQS at a
+    // One operation at a time, so a backlog after an outage reaches SNS at a
     // bounded rate.
     for (const { _id } of await findPendingOutbox(db)) {
       published += await publishOperation(_id) // NOSONAR: sequential by design, see above

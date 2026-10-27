@@ -2,9 +2,10 @@ import { config } from '#/config.js'
 import { createSqsTransport } from '#/adapters/sqs/sqs-transport.js'
 
 const SETTINGS = {
-  commandsQueueUrl: 'http://sqs.test:4566/000000000000/commands.fifo',
+  commandsTopicArn: 'arn:aws:sns:eu-west-2:000000000000:commands.fifo',
   eventsQueueUrl: 'http://sqs.test:4566/000000000000/events.fifo',
-  endpoint: 'http://sqs.test:4566',
+  sqsEndpoint: 'http://sqs.test:4566',
+  snsEndpoint: 'http://sns.test:4566',
   region: 'eu-west-2',
   handlerTimeoutMs: 30000,
   waitTimeSeconds: 20
@@ -25,6 +26,7 @@ describe('sqs-transport', () => {
     parts = {
       settings: SETTINGS,
       createClient: vi.fn().mockReturnValue({ client: true }),
+      createTopicClient: vi.fn().mockReturnValue({ topicClient: true }),
       createPublisher: vi.fn().mockReturnValue({ publish: vi.fn() }),
       createConsumer: vi
         .fn()
@@ -33,26 +35,31 @@ describe('sqs-transport', () => {
     }
   })
 
-  test('publishes to the commands queue with one client', () => {
+  test('publishes to the commands topic with the SNS client', () => {
     const transport = create()
 
-    expect(parts.createClient).toHaveBeenCalledTimes(1)
-    expect(parts.createClient).toHaveBeenCalledWith({
-      endpoint: SETTINGS.endpoint,
+    expect(parts.createTopicClient).toHaveBeenCalledTimes(1)
+    expect(parts.createTopicClient).toHaveBeenCalledWith({
+      endpoint: SETTINGS.snsEndpoint,
       region: SETTINGS.region
     })
     expect(parts.createPublisher).toHaveBeenCalledWith({
-      client: { client: true },
-      queueUrl: SETTINGS.commandsQueueUrl
+      client: { topicClient: true },
+      topicArn: SETTINGS.commandsTopicArn
     })
     expect(transport.publisher).toBe(
       parts.createPublisher.mock.results[0].value
     )
   })
 
-  test('reads the events queue into the handler, within the handler timeout', () => {
+  test('reads the events queue into the handler with the SQS client, within the handler timeout', () => {
     create()
 
+    expect(parts.createClient).toHaveBeenCalledTimes(1)
+    expect(parts.createClient).toHaveBeenCalledWith({
+      endpoint: SETTINGS.sqsEndpoint,
+      region: SETTINGS.region
+    })
     expect(parts.createConsumer).toHaveBeenCalledWith({
       queueUrl: SETTINGS.eventsQueueUrl,
       sqs: { client: true },
@@ -85,11 +92,11 @@ describe('sqs-transport', () => {
 
   test('builds a real client, publisher and consumer from the configuration by default', () => {
     const before = [
-      config.get('gitops.commandsQueueUrl'),
+      config.get('gitops.commandsTopicArn'),
       config.get('gitops.eventsQueueUrl')
     ]
 
-    config.set('gitops.commandsQueueUrl', SETTINGS.commandsQueueUrl)
+    config.set('gitops.commandsTopicArn', SETTINGS.commandsTopicArn)
     config.set('gitops.eventsQueueUrl', SETTINGS.eventsQueueUrl)
 
     try {
@@ -99,7 +106,7 @@ describe('sqs-transport', () => {
       expect(transport.runReader.getRun).toEqual(expect.any(Function))
       expect(transport.start).toEqual(expect.any(Function))
     } finally {
-      config.set('gitops.commandsQueueUrl', before[0])
+      config.set('gitops.commandsTopicArn', before[0])
       config.set('gitops.eventsQueueUrl', before[1])
     }
   })

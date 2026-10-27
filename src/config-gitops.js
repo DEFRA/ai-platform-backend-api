@@ -22,15 +22,15 @@ export const gitopsConfigSchema = {
     default: 5,
     env: 'GITOPS_VERIFY_MAX_ATTEMPTS'
   },
-  commandsQueueUrl: {
-    doc: 'URL of aip-gitops-commands.fifo, which the backend sends commands to; required when tenantOrchestrator is sqs',
+  commandsTopicArn: {
+    doc: 'ARN of the backend-owned commands topic (aip_gitops_commands.fifo), which the backend publishes commands to and the worker queue is subscribed to; required when tenantOrchestrator is sqs',
     format: String,
     nullable: true,
     default: null,
-    env: 'GITOPS_COMMANDS_QUEUE_URL'
+    env: 'GITOPS_COMMANDS_TOPIC_ARN'
   },
   eventsQueueUrl: {
-    doc: 'URL of aip-gitops-events.fifo, which the backend reads status events from; required when tenantOrchestrator is sqs',
+    doc: 'URL of the backend-owned events queue (aip_gitops_events.fifo), which the backend reads status events from; the worker topic is subscribed to it and the workflows send to it; required when tenantOrchestrator is sqs',
     format: String,
     nullable: true,
     default: null,
@@ -43,8 +43,15 @@ export const gitopsConfigSchema = {
     default: null,
     env: 'AWS_SQS_ENDPOINT'
   },
+  awsSnsEndpoint: {
+    doc: 'SNS endpoint override for local runs (Floci); unset on CDP',
+    format: String,
+    nullable: true,
+    default: null,
+    env: 'AWS_SNS_ENDPOINT'
+  },
   awsRegion: {
-    doc: 'AWS region of the GitOps queues',
+    doc: 'AWS region of the GitOps queue and topic',
     format: String,
     default: 'eu-west-2',
     env: 'AWS_REGION'

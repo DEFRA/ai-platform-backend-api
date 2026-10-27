@@ -29,7 +29,7 @@ function groupHex(hex) {
 /**
  * A UUID version 7: a 48-bit millisecond timestamp, then random bits, so IDs
  * sort by creation time. Used for operation IDs and command IDs (plan 5),
- * where the command ID is also the SQS deduplication ID.
+ * where the command ID is also the FIFO deduplication ID.
  * @param {number} [now] - milliseconds since the epoch
  * @returns {string}
  */

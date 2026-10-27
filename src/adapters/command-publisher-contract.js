@@ -2,7 +2,7 @@ import { exampleCommand } from '#/common/test-helpers/gitops-messages.js'
 
 /**
  * Shared `CommandPublisher` contract suite, run against every implementation
- * (SQS with a nocked endpoint, the in-memory queue) so a new transport's
+ * (SNS with a nocked endpoint, the in-memory topic) so a new transport's
  * Liskov substitution is an executable test. Every implementation resolves
  * to undefined for a valid command, rejects when its transport fails, and
  * refuses a command that fails the schema without leaking the document.

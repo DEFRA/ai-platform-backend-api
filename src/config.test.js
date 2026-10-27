@@ -227,9 +227,10 @@ describe('#config tenant orchestrator and GitOps', () => {
       tenantsRepo: 'DEFRA/ai-platform-tenants',
       deploymentsRepo: 'DEFRA/ai-platform-deployments',
       verifyMaxAttempts: 5,
-      commandsQueueUrl: null,
+      commandsTopicArn: null,
       eventsQueueUrl: null,
       awsSqsEndpoint: null,
+      awsSnsEndpoint: null,
       awsRegion: 'eu-west-2',
       handlerTimeoutMs: 30000,
       sqsWaitTimeSeconds: 20,
@@ -250,19 +251,20 @@ describe('#config tenant orchestrator and GitOps', () => {
 
   const SQS_ENV = {
     TENANT_ORCHESTRATOR: 'sqs',
-    GITOPS_COMMANDS_QUEUE_URL: 'http://sqs.test/commands.fifo',
+    GITOPS_COMMANDS_TOPIC_ARN:
+      'arn:aws:sns:eu-west-2:000000000000:commands.fifo',
     GITOPS_EVENTS_QUEUE_URL: 'http://sqs.test/events.fifo',
     GITHUB_APP_ID: '1',
     GITHUB_APP_INSTALLATION_ID: '2',
     GITHUB_APP_PRIVATE_KEY: 'cGxhY2Vob2xkZXI='
   }
 
-  test('accepts the sqs orchestrator with both queues and GitHub App credentials', async () => {
+  test('accepts the sqs orchestrator with the commands topic, the events queue and GitHub App credentials', async () => {
     const { config } = await loadConfig(SQS_ENV)
 
     expect(config.get('tenantOrchestrator')).toBe('sqs')
-    expect(config.get('gitops.commandsQueueUrl')).toBe(
-      'http://sqs.test/commands.fifo'
+    expect(config.get('gitops.commandsTopicArn')).toBe(
+      'arn:aws:sns:eu-west-2:000000000000:commands.fifo'
     )
   })
 
@@ -278,7 +280,7 @@ describe('#config tenant orchestrator and GitOps', () => {
   })
 
   test.each([
-    ['GITOPS_COMMANDS_QUEUE_URL', 'GITOPS_COMMANDS_QUEUE_URL to be set'],
+    ['GITOPS_COMMANDS_TOPIC_ARN', 'GITOPS_COMMANDS_TOPIC_ARN to be set'],
     ['GITOPS_EVENTS_QUEUE_URL', 'GITOPS_EVENTS_QUEUE_URL to be set']
   ])('the sqs orchestrator requires %s', async (name, message) => {
     await expect(loadConfig({ ...SQS_ENV, [name]: undefined })).rejects.toThrow(

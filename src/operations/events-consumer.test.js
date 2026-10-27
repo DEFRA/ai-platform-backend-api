@@ -3,7 +3,7 @@ import { createHash } from 'node:crypto'
 import nock from 'nock'
 
 import { exampleEvent } from '#/common/test-helpers/gitops-messages.js'
-import { createSqsClient } from '#/adapters/sqs/sqs-command-publisher.js'
+import { createSqsClient } from '#/adapters/sqs/sqs-client.js'
 import {
   createEventsConsumer,
   createMessageHandler

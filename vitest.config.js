@@ -21,11 +21,13 @@ export default defineConfig({
         branches: 92.54,
         statements: 97.34,
         // New and changed code holds 95 (plan 8): the operations domain, the
-        // queue adapters, the vendored contracts' code and the team file reader.
+        // queue and topic adapters, the vendored contracts' code and the team file reader.
         ...Object.fromEntries(
           [
             'src/operations/**',
             'src/adapters/sqs/**',
+            'src/adapters/sns/**',
+            'src/adapters/aws-client-options.js',
             'src/contracts/**',
             'src/adapters/github/github-team-file-reader.js'
           ].map((glob) => [

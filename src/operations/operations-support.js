@@ -44,7 +44,7 @@ export function isPolicyRefusal(error) {
 
 /**
  * Best effort straight after a write: the sweep publishes what this does
- * not, so an SQS outage never fails or loses a request.
+ * not, so an SNS outage never fails or loses a request.
  * @param {{relay: {publishOperation: (id: string) => Promise<number>}, logger?: import('pino').Logger}} ctx
  * @param {string} operationId
  * @returns {Promise<void>}
