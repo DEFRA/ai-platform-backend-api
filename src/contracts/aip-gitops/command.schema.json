@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "$id": "command.schema.json",
   "title": "AI Platform GitOps command",
-  "description": "aip.gitops.command/1: a request the backend sends to aip-gitops-commands.fifo for the GitOps worker. SQS group: {environment}/{team}. SQS deduplication ID: commandId. Additive changes only; a breaking change is a new identifier, aip.gitops.command/2. Date-times use the date-time format, so a validator needs ajv-formats or its equivalent.",
+  "description": "aip.gitops.command/1: a request the backend publishes to its SNS FIFO topic aip_gitops_commands.fifo and the GitOps worker consumes from its own queue aip_gitops_commands_worker.fifo. SQS group: {environment}/{team}. SQS deduplication ID: commandId. Additive changes only; a breaking change is a new identifier, aip.gitops.command/2. Date-times use the date-time format, so a validator needs ajv-formats or its equivalent.",
   "type": "object",
   "additionalProperties": false,
   "required": [
