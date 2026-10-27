@@ -602,10 +602,11 @@ Mock AWS resources can be created when Floci starts up by editing the scripts in
 worker's queue `aip_gitops_commands_worker.fifo` subscribed, and the events topic `aip_gitops_events_worker.fifo` (the
 worker's) with the backend's queue `aip_gitops_events.fifo` subscribed, all FIFO, content-based deduplication off, raw
 delivery, and each queue with a dead-letter queue (`-deadletter.fifo`, 60 s visibility, redrive after 3 receives). The
-backend runs with `TENANT_ORCHESTRATOR=mock` unless you start compose with `TENANT_ORCHESTRATOR=sqs` and set
-`GITOPS_COMMANDS_TOPIC_ARN` (`arn:aws:sns:eu-west-2:000000000000:aip_gitops_commands.fifo`), `GITOPS_EVENTS_QUEUE_URL`
-(`http://floci:4566/000000000000/aip_gitops_events.fifo`), `AWS_SQS_ENDPOINT=http://floci:4566`,
-`AWS_SNS_ENDPOINT=http://floci:4566` and the GitHub App credentials.
+backend runs with `TENANT_ORCHESTRATOR=mock` unless you start compose with `TENANT_ORCHESTRATOR=sqs`. Compose forwards the
+messaging settings into the container with Floci defaults, so only the GitHub App credentials are needed from your shell:
+`GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID` and `GITHUB_APP_PRIVATE_KEY` (never put them in `compose.yml`). The defaults
+are `GITOPS_COMMANDS_TOPIC_ARN=arn:aws:sns:eu-west-2:000000000000:aip_gitops_commands.fifo`, `GITOPS_EVENTS_QUEUE_URL=http://floci:4566/000000000000/aip_gitops_events.fifo`,
+`AWS_SQS_ENDPOINT=http://floci:4566` and `AWS_SNS_ENDPOINT=http://floci:4566`; set any of them in your shell to override.
 With Floci up on the host, `FLOCI_ENDPOINT=http://localhost:4566 npx vitest run src/adapters/sns` also runs the opt-in
 test that publishes a command with the real SNS publisher and reads it, as the same JSON, from a subscribed queue (it
 is skipped when `FLOCI_ENDPOINT` is not set, and CI does not run it).
