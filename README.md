@@ -306,11 +306,15 @@ APIM, not a new gateway. A genuinely new gateway needs its issuer and vault adap
 
 A change to a team's GitOps file is an **operation**: one per request per file, stored in the `operations`
 collection and shown on the team deployment entry as `operation {id, state, attempt, runUrl, commitSha, failureReason}`.
-The backend never writes to GitHub. It publishes **commands** (`submit`, `apply`, `reconcile`) to the FIFO queue
-`aip-gitops-commands.fifo`; the GitOps worker (`ai-platform-gitops-worker`) and the `v2` workflows do the GitHub work and
-send **events** (`requested`, `committed`, `deploying`, `deployed`, `checks-failed`, `deploy-failed`, `paused`, `resumed`)
-to `aip-gitops-events.fifo`, which the backend reads. Each queue has a dead-letter queue (`-deadletter.fifo`, after 3
-receives). The design is
+The backend never writes to GitHub. CDP lets one service operate on a queue, so each direction is a topic its producer
+owns and a queue its consumer owns, subscribed by CDP with raw delivery (the queue body is the message, no SNS envelope).
+The backend publishes **commands** (`submit`, `apply`, `reconcile`) to the FIFO topic `aip_gitops_commands` it owns;
+the GitOps worker (`ai-platform-worker`) consumes its own queue `aip_gitops_commands_worker` subscribed to it, and
+the `v2` workflows do the GitHub work. **Events** (`requested`, `committed`, `deploying`, `deployed`,
+`checks-failed`, `deploy-failed`, `paused`, `resumed`) reach the backend's own queue `aip_gitops_events.fifo`,
+which the backend reads: the worker's reconciler publishes to its topic `aip_gitops_events_worker` (subscribed to that
+queue), and the workflows send straight to it through a federated identity (`sqs:SendMessage` only). Each queue has a
+dead-letter queue (`-deadletter.fifo`, after 3 receives); the backend owns, and so can redrive, only the events queue's. The design is
 [`async-operations-plan.md`](../ai-platform-discovery-docs/docs/async-operations-plan.md); the workflow interface is the
 [GitOps contract](../ai-platform-infra/docs/gitops-contract.md).
 
@@ -318,7 +322,7 @@ receives). The design is
 | :----------------------------------------------------------------------------------------------------------------- | :------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
 | [`operation-state-machine.js`](src/operations/operation-state-machine.js)                                          | The one state table: `queued`, `requested`, `committed`, `deploying`, `deployed`, `verified`, `active` or `removed`, `checks-failed`, `deploy-failed`, `timed-out`. An event is applied only at a higher rank                   |
 | [`operations-service.js`](src/operations/operations-service.js)                                                    | Takes the file's slot (one active and one waiting operation per file; later requests merge into the waiting one), builds the whole canonical document and writes the operation and its outbox entry in one document             |
-| [`outbox-relay.js`](src/operations/outbox-relay.js)                                                                | Publishes outbox entries the request path did not (claimed by compare-and-set, lease 30 s), so an SQS outage never loses a command. `commandId` (UUIDv7) is the SQS deduplication ID and is kept when an entry is republished   |
+| [`outbox-relay.js`](src/operations/outbox-relay.js)                                                                | Publishes outbox entries the request path did not (claimed by compare-and-set, lease 30 s), so an SNS outage never loses a command. `commandId` (UUIDv7) is the FIFO deduplication ID and is kept when an entry is republished  |
 | [`events-consumer.js`](src/operations/events-consumer.js), [`events-handler.js`](src/operations/events-handler.js) | Long-poll the events queue, validate each event against the vendored schema, apply it. The handler is idempotent (`eventId` is the deduplication ID) and throws only for transient failures, which retry and then reach the DLQ |
 | [`corroborator.js`](src/operations/corroborator.js)                                                                | Before acting on `checks-failed`, `deploy-failed`, `paused`, `resumed` or an unknown operation, reads the run with the read token and drops an event that does not match                                                        |
 | [`deadline-sweeper.js`](src/operations/deadline-sweeper.js)                                                        | Every `GITOPS_SWEEP_INTERVAL_MS`, under a MongoDB lock, acts on overdue operations and due verification retries                                                                                                                 |
@@ -347,8 +351,8 @@ reader (it serves a `research.json` with only `gpt-4o` deployed, as in infradev)
 Entra object ID starts `entra:00000000-0000-0000-0001-` (`checks-failed`, nothing committed) or
 `entra:00000000-0000-0000-0002-` (`deploy-failed`, not attributable, so final; an admin retry's second attempt succeeds),
 and, for journey tests that sign in as real users, a request whose `purpose` contains `[mock:checks-failed]` or
-`[mock:deploy-failed]`; the markers have no effect with `sqs`. `TENANT_ORCHESTRATOR=sqs` needs both queue URLs and the
-GitHub App, and `AWS_SQS_ENDPOINT` for the Floci queues that `compose/floci/start.d/20-gitops-queues.sh` creates (see
+`[mock:deploy-failed]`; the markers have no effect with `sqs`. `TENANT_ORCHESTRATOR=sqs` needs the commands topic ARN, the events queue URL and the
+GitHub App, and `AWS_SQS_ENDPOINT` and `AWS_SNS_ENDPOINT` for the Floci topics and queues that `compose/floci/start.d/20-gitops-queues.sh` creates (see
 [Docker Compose](#docker-compose)).
 
 **Message contracts.** `src/contracts/aip-gitops/` holds the command and event JSON Schemas vendored from
@@ -428,34 +432,34 @@ whatever the team's gateway grants there: its `allowedDeployments` is read from 
 on every response, never stored, so a removed model leaves the credential at once. A revoked
 credential keeps what it covered when it was revoked; a later model activation creates a new one.
 
-| Variable                           | Default                         | Purpose                                                                                                                                                                                                    |
-| :--------------------------------- | :------------------------------ | :--------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `TENANT_ORCHESTRATOR`              | `mock`                          | `mock` or `sqs`. Prod refuses `mock`; `sqs` needs both queue URLs and the GitHub App (`GITHUB_CLIENT_ID` or `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`)                       |
-| `TEAM_ENVIRONMENTS`                | `infradev`                      | Comma-separated environments this instance may deploy a team's models to (D1): `infradev` on the CDP dev instance, `sandbox` on test; anything else is `403 environment-not-available`                     |
-| `GITOPS_TENANTS_REPO`              | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                                                                               |
-| `GITOPS_DEPLOYMENTS_REPO`          | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                                                                          |
-| `GITOPS_COMMANDS_QUEUE_URL`        | none                            | `aip-gitops-commands.fifo`, where the backend sends commands; required for `sqs`                                                                                                                           |
-| `GITOPS_EVENTS_QUEUE_URL`          | none                            | `aip-gitops-events.fifo`, where the backend reads events; required for `sqs`                                                                                                                               |
-| `AWS_SQS_ENDPOINT`                 | none                            | SQS endpoint override for local runs (Floci); unset on CDP. `AWS_REGION` defaults to `eu-west-2`                                                                                                           |
-| `HANDLER_TIMEOUT_MS`               | `30000`                         | How long the events handler may take for one message; the queue's visibility timeout (60 s) must stay above it                                                                                             |
-| `SQS_WAIT_TIME_SECONDS`            | `20`                            | Long-polling wait for the events queue                                                                                                                                                                     |
-| `GITOPS_OUTBOX_SWEEP_MS`           | `2000`                          | How often the relay publishes outbox entries the request path did not                                                                                                                                      |
-| `GITOPS_SWEEP_INTERVAL_MS`         | `15000`                         | How often the sweeper looks for overdue operations and due verification retries                                                                                                                            |
-| `GITOPS_RECONCILE_GRACE_MS`        | `600000`                        | How long an operation gets after a `reconcile` before it times out with no progress                                                                                                                        |
-| `GITOPS_DEADLINE_REQUESTED_MS`     | `600000`                        | Deadline from entering `requested`                                                                                                                                                                         |
-| `GITOPS_DEADLINE_COMMITTED_MS`     | `1800000`                       | Deadline from entering `committed`                                                                                                                                                                         |
-| `GITOPS_DEADLINE_DEPLOYING_MS`     | `2700000`                       | Deadline from entering `deploying`                                                                                                                                                                         |
-| `GITOPS_DEADLINE_DEPLOYED_MS`      | `900000`                        | Deadline from entering `deployed`, ARM verification included                                                                                                                                               |
-| `GITOPS_VERIFY_MAX_ATTEMPTS`       | `5`                             | How many times ARM may fail to confirm a deployed team before `deploy-failed` with `operation-verify-failed`; a Platform Admin retry starts the count again                                                |
-| `GITOPS_RESUBMIT_MAX`              | `3`                             | How many times a `stale-revision` or `commit-conflict` write is rebuilt from `main` and resubmitted (after 10, 30 and 90 s) before it times out                                                            |
-| `GITOPS_REVERT_GRACE_MS`           | `300000`                        | How long a revert waits before it is published, in case the failed apply recovers                                                                                                                          |
-| `GITOPS_DEADLINE_HELD_MS`          | `1800000`                       | Deadline of an operation held while its environment is paused, doubling up to 4 hours                                                                                                                      |
-| `GITOPS_HELD_ALARM_MS`             | `3600000`                       | How long an operation may stay held or deferred before the alarm                                                                                                                                           |
-| `TEAM_DEFAULT_TOKENS_PER_MINUTE`   | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                                                                               |
-| `TEAM_DEFAULT_REQUESTS_PER_MINUTE` | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                                                                             |
-| `AIP_ENVIRONMENTS`                 | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group, and research keys are issued into the entry named by `RESEARCH_ENVIRONMENT` |
-| `RESEARCH_ENVIRONMENT`             | `infradev`                      | The `AIP_ENVIRONMENTS` entry research keys are issued into; live mode refuses to start when it is missing or lacks `apimName` or `tenantsVault`                                                            |
-| `RESEARCH_DEPLOYMENTS_CACHE_MS`    | `60000`                         | How long the models deployed in that environment's `research.json` are cached, so listing models does not read GitHub per request (`0` turns the cache off)                                                |
+| Variable                               | Default                         | Purpose                                                                                                                                                                                                           |
+| :------------------------------------- | :------------------------------ | :---------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `TENANT_ORCHESTRATOR`                  | `mock`                          | `mock` or `sqs`. Prod refuses `mock`; `sqs` needs the commands topic ARN, the events queue URL and the GitHub App (`GITHUB_CLIENT_ID` or `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`) |
+| `TEAM_ENVIRONMENTS`                    | `infradev`                      | Comma-separated environments this instance may deploy a team's models to (D1): `infradev` on the CDP dev instance, `sandbox` on test; anything else is `403 environment-not-available`                            |
+| `GITOPS_TENANTS_REPO`                  | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                                                                                      |
+| `GITOPS_DEPLOYMENTS_REPO`              | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                                                                                 |
+| `GITOPS_COMMANDS_TOPIC_ARN`            | none                            | `aip_gitops_commands.fifo`, the backend-owned topic commands are published to; required for `sqs`                                                                                                                 |
+| `GITOPS_EVENTS_QUEUE_URL`              | none                            | `aip_gitops_events.fifo`, the backend-owned queue events are read from; required for `sqs`                                                                                                                        |
+| `AWS_SQS_ENDPOINT`, `AWS_SNS_ENDPOINT` | none                            | SQS and SNS endpoint overrides for local runs (Floci); unset on CDP. `AWS_REGION` defaults to `eu-west-2`                                                                                                         |
+| `HANDLER_TIMEOUT_MS`                   | `30000`                         | How long the events handler may take for one message; the queue's visibility timeout (60 s) must stay above it                                                                                                    |
+| `SQS_WAIT_TIME_SECONDS`                | `20`                            | Long-polling wait for the events queue                                                                                                                                                                            |
+| `GITOPS_OUTBOX_SWEEP_MS`               | `2000`                          | How often the relay publishes outbox entries the request path did not                                                                                                                                             |
+| `GITOPS_SWEEP_INTERVAL_MS`             | `15000`                         | How often the sweeper looks for overdue operations and due verification retries                                                                                                                                   |
+| `GITOPS_RECONCILE_GRACE_MS`            | `600000`                        | How long an operation gets after a `reconcile` before it times out with no progress                                                                                                                               |
+| `GITOPS_DEADLINE_REQUESTED_MS`         | `600000`                        | Deadline from entering `requested`                                                                                                                                                                                |
+| `GITOPS_DEADLINE_COMMITTED_MS`         | `1800000`                       | Deadline from entering `committed`                                                                                                                                                                                |
+| `GITOPS_DEADLINE_DEPLOYING_MS`         | `2700000`                       | Deadline from entering `deploying`                                                                                                                                                                                |
+| `GITOPS_DEADLINE_DEPLOYED_MS`          | `900000`                        | Deadline from entering `deployed`, ARM verification included                                                                                                                                                      |
+| `GITOPS_VERIFY_MAX_ATTEMPTS`           | `5`                             | How many times ARM may fail to confirm a deployed team before `deploy-failed` with `operation-verify-failed`; a Platform Admin retry starts the count again                                                       |
+| `GITOPS_RESUBMIT_MAX`                  | `3`                             | How many times a `stale-revision` or `commit-conflict` write is rebuilt from `main` and resubmitted (after 10, 30 and 90 s) before it times out                                                                   |
+| `GITOPS_REVERT_GRACE_MS`               | `300000`                        | How long a revert waits before it is published, in case the failed apply recovers                                                                                                                                 |
+| `GITOPS_DEADLINE_HELD_MS`              | `1800000`                       | Deadline of an operation held while its environment is paused, doubling up to 4 hours                                                                                                                             |
+| `GITOPS_HELD_ALARM_MS`                 | `3600000`                       | How long an operation may stay held or deferred before the alarm                                                                                                                                                  |
+| `TEAM_DEFAULT_TOKENS_PER_MINUTE`       | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                                                                                      |
+| `TEAM_DEFAULT_REQUESTS_PER_MINUTE`     | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                                                                                    |
+| `AIP_ENVIRONMENTS`                     | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group, and research keys are issued into the entry named by `RESEARCH_ENVIRONMENT`        |
+| `RESEARCH_ENVIRONMENT`                 | `infradev`                      | The `AIP_ENVIRONMENTS` entry research keys are issued into; live mode refuses to start when it is missing or lacks `apimName` or `tenantsVault`                                                                   |
+| `RESEARCH_DEPLOYMENTS_CACHE_MS`        | `60000`                         | How long the models deployed in that environment's `research.json` are cached, so listing models does not read GitHub per request (`0` turns the cache off)                                                       |
 
 ```json
 {
@@ -594,13 +598,17 @@ docker compose up --build -d
 ```
 
 Mock AWS resources can be created when Floci starts up by editing the scripts in `./compose/floci/start.d/`.
-`20-gitops-queues.sh` creates the GitOps queues `aip-gitops-commands.fifo` and `aip-gitops-events.fifo` (FIFO,
-content-based deduplication off, 60 s visibility) with their dead-letter queues `aip-gitops-commands-deadletter.fifo` and
-`aip-gitops-events-deadletter.fifo` (redrive after 3 receives). The backend runs with `TENANT_ORCHESTRATOR=mock` unless
-you start compose with `TENANT_ORCHESTRATOR=sqs` and set `GITOPS_COMMANDS_QUEUE_URL`
-(`http://floci:4566/000000000000/aip-gitops-commands.fifo`), `GITOPS_EVENTS_QUEUE_URL`
-(`http://floci:4566/000000000000/aip-gitops-events.fifo`), `AWS_SQS_ENDPOINT=http://floci:4566` and the GitHub App
-credentials.
+`20-gitops-queues.sh` mirrors CDP's GitOps messaging: the commands topic `aip_gitops_commands.fifo` (the backend's) with the
+worker's queue `aip_gitops_commands_worker.fifo` subscribed, and the events topic `aip_gitops_events_worker.fifo` (the
+worker's) with the backend's queue `aip_gitops_events.fifo` subscribed, all FIFO, content-based deduplication off, raw
+delivery, and each queue with a dead-letter queue (`-deadletter.fifo`, 60 s visibility, redrive after 3 receives). The
+backend runs with `TENANT_ORCHESTRATOR=mock` unless you start compose with `TENANT_ORCHESTRATOR=sqs` and set
+`GITOPS_COMMANDS_TOPIC_ARN` (`arn:aws:sns:eu-west-2:000000000000:aip_gitops_commands.fifo`), `GITOPS_EVENTS_QUEUE_URL`
+(`http://floci:4566/000000000000/aip_gitops_events.fifo`), `AWS_SQS_ENDPOINT=http://floci:4566`,
+`AWS_SNS_ENDPOINT=http://floci:4566` and the GitHub App credentials.
+With Floci up on the host, `FLOCI_ENDPOINT=http://localhost:4566 npx vitest run src/adapters/sns` also runs the opt-in
+test that publishes a command with the real SNS publisher and reads it, as the same JSON, from a subscribed queue (it
+is skipped when `FLOCI_ENDPOINT` is not set, and CI does not run it).
 MongoDB records can also be created when Mongo starts by editing the scripts in `./compose/mongo/`.
 
 ### Dependabot

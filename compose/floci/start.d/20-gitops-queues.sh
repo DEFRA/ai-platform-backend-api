@@ -1,10 +1,16 @@
 #!/bin/bash
 
-# The GitOps command and event queues the backend and the GitOps worker share
-# (plan 5, 14). Both are FIFO with content-based deduplication off, because
-# the commandId and the eventId are sent as the deduplication ID. Each has a
-# dead-letter queue taking a message after 3 failed receives. CDP creates the
-# same four queues; this mirrors them for local runs with TENANT_ORCHESTRATOR=sqs.
+# The GitOps messaging as CDP creates it (plan 5, 14), mirrored for local runs.
+# CDP allows one owning service per queue, so each direction is a topic its
+# producer owns and a queue its consumer owns, subscribed with raw delivery:
+#
+#   commands: backend topic aip_gitops_commands -> worker queue aip_gitops_commands_worker
+#   events:   worker topic aip_gitops_events_worker -> backend queue aip_gitops_events
+#             (the workflows also send straight to aip_gitops_events)
+#
+# Everything is FIFO with content-based deduplication off, because the
+# commandId and the eventId are sent as the deduplication ID. Each queue has a
+# dead-letter queue taking a message after 3 failed receives.
 
 ACCOUNT_ID=000000000000
 REGION="${AWS_DEFAULT_REGION:-eu-west-2}"
@@ -32,5 +38,28 @@ create_fifo_queue_with_dead_letters() {
     "{\"FifoQueue\":\"true\",\"ContentBasedDeduplication\":\"false\",\"VisibilityTimeout\":\"${VISIBILITY_TIMEOUT_SECONDS}\",\"RedrivePolicy\":\"${redrive_policy}\"}"
 }
 
-create_fifo_queue_with_dead_letters aip-gitops-commands.fifo
-create_fifo_queue_with_dead_letters aip-gitops-events.fifo
+create_fifo_topic() {
+  aws sns create-topic \
+    --name "$1" \
+    --attributes "FifoTopic=true,ContentBasedDeduplication=false" >/dev/null
+}
+
+# Raw delivery: the queue body is the message itself, as on CDP.
+subscribe_raw() {
+  local topic_name="$1"
+  local queue_name="$2"
+
+  aws sns subscribe \
+    --topic-arn "arn:aws:sns:${REGION}:${ACCOUNT_ID}:${topic_name}" \
+    --protocol sqs \
+    --notification-endpoint "arn:aws:sqs:${REGION}:${ACCOUNT_ID}:${queue_name}" \
+    --attributes RawMessageDelivery=true >/dev/null
+}
+
+create_fifo_topic aip_gitops_commands.fifo
+create_fifo_queue_with_dead_letters aip_gitops_commands_worker.fifo
+subscribe_raw aip_gitops_commands.fifo aip_gitops_commands_worker.fifo
+
+create_fifo_topic aip_gitops_events_worker.fifo
+create_fifo_queue_with_dead_letters aip_gitops_events.fifo
+subscribe_raw aip_gitops_events_worker.fifo aip_gitops_events.fifo
