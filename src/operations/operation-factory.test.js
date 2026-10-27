@@ -518,6 +518,79 @@ describe('buildCommand', () => {
       expect(command.expectedBase).toBe(SHA)
       expect(validateCommand(command).valid).toBe(true)
     })
+
+    describe('submittedAt', () => {
+      const FIRST = '2026-10-26T12:00:00.000Z'
+      const RESUBMITTED = '2026-10-26T12:20:00.000Z'
+      const RECONCILE_AT = '2026-10-26T12:30:00.000Z'
+
+      function submittedTwice() {
+        return teamOperation({
+          attempt: 2,
+          outbox: [
+            entryOf('submit', { createdAt: FIRST }),
+            entryOf('reconcile', {
+              state: 'requested',
+              createdAt: '2026-10-26T12:10:00.000Z'
+            }),
+            entryOf('submit', { attempt: 2, createdAt: RESUBMITTED })
+          ]
+        })
+      }
+
+      test('is the creation time of the latest submit entry, not the first, after a resubmission', () => {
+        const command = buildCommand(
+          submittedTwice(),
+          entryOf('reconcile', { state: 'requested', createdAt: RECONCILE_AT })
+        )
+
+        expect(command.submittedAt).toBe(RESUBMITTED)
+        expect(command.createdAt).toBe(RECONCILE_AT)
+        expect(validateCommand(command)).toEqual({ valid: true, errors: [] })
+      })
+
+      test('is the time of the only submit entry when there was no resubmission', () => {
+        const operation = teamOperation({
+          outbox: [entryOf('submit', { createdAt: FIRST })]
+        })
+        const command = buildCommand(
+          operation,
+          entryOf('reconcile', { state: 'requested' })
+        )
+
+        expect(command.submittedAt).toBe(FIRST)
+      })
+
+      test('is left out when the operation has no submit entry', () => {
+        const command = buildCommand(
+          teamOperation({ outbox: [] }),
+          entryOf('reconcile', { state: 'requested' })
+        )
+
+        expect(command).not.toHaveProperty('submittedAt')
+        expect(validateCommand(command).valid).toBe(true)
+      })
+
+      test.each(['committed', 'deploying', 'deployed'])(
+        'is left out of a reconcile from %s',
+        (state) => {
+          const command = buildCommand(
+            submittedTwice(),
+            entryOf('reconcile', { state })
+          )
+
+          expect(command).not.toHaveProperty('submittedAt')
+          expect(validateCommand(command).valid).toBe(true)
+        }
+      )
+
+      test.each(['submit', 'apply'])('is left out of a %s', (type) => {
+        const command = buildCommand(submittedTwice(), entryOf(type))
+
+        expect(command).not.toHaveProperty('submittedAt')
+        expect(validateCommand(command).valid).toBe(true)
+      })
+    })
   })
 
   describe('a reconcile from a later state', () => {

@@ -161,10 +161,31 @@ function submitFields(operation) {
   }
 }
 
+// The creation time of the operation's latest submit entry: a resubmission
+// pushes a new one, so this is the current submission's time.
+function latestSubmitTime(operation) {
+  return (operation.outbox ?? [])
+    .filter(({ type }) => type === 'submit')
+    .map(({ createdAt }) => createdAt)
+    .reduce((latest, at) => (!latest || at > latest ? at : latest), undefined)
+}
+
+// A reconcile from `requested` tells the worker when the current submission
+// was queued, so it can tell a refusal already handled from this one's.
+function submittedAtOf(operation, entry) {
+  const at =
+    entry.type === 'reconcile' && entry.state === REQUESTED
+      ? latestSubmitTime(operation)
+      : undefined
+
+  return at ? { submittedAt: at } : {}
+}
+
 /**
  * The `aip.gitops.command/1` for an outbox entry, built from the operation as
  * it is when published (plan 5, "Messages"). A command never carries
- * more than the contract names.
+ * more than the contract names. A reconcile from `requested` also carries
+ * `submittedAt`, the creation time of the operation's latest submit entry.
  * @param {object} operation
  * @param {{commandId: string, type: string, attempt: number, state?: string, createdAt: string}} entry
  * @returns {object}
@@ -186,6 +207,7 @@ export function buildCommand(operation, entry) {
     ...(carriesSubmit ? submitFields(operation) : {}),
     attempt: entry.attempt,
     ...(entry.type === 'reconcile' ? { state: entry.state } : {}),
+    ...submittedAtOf(operation, entry),
     requestedBy: operation.requestedBy,
     traceparent: operation.traceparent ?? null,
     cdpRequestId: operation.cdpRequestId ?? null,

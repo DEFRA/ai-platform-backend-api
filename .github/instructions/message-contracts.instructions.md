@@ -24,6 +24,8 @@ the message itself. They use the `aip.gitops.command/1` and `aip.gitops.event/1`
   of an event, and the handler also skips an event whose `eventId` is already in the operation's history.
 - **Message groups.** A command's group is `{environment}/{team}` (`team` is `platform` or `tenants` for a pin). An event's group is
   the operation ID, the commit SHA for `break-glass`, or the environment for `pause`.
+- **`submittedAt`.** A `reconcile` from `requested` carries the creation time of the operation's latest `submit` outbox entry
+  (the current submission, after any resubmit), so the worker can tell a refusal already handled from this one's. Other commands omit it.
 - **People are identifiers only**: `requestedBy` is `entra:{oid}`, `app:{name}` or `github:{id}`. Never put a name or email
   in a message.
 - **Never log a document or a token.** Log the operation ID, `commandId`, `eventId`, type, status and state; never the team
