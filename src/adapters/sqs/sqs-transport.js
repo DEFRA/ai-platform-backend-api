@@ -62,9 +62,10 @@ export function createSqsTransport(
     start() {
       consumer.start()
     },
-    // The message being handled is redelivered rather than awaited.
+    // Stops polling and waits, within the shared bound, for a handler already
+    // running; one that does not finish is redelivered.
     async stop() {
-      consumer.stop({ abort: true })
+      await consumer.stop({ abort: true })
     }
   }
 }

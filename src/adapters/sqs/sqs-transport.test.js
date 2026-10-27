@@ -90,6 +90,32 @@ describe('sqs-transport', () => {
     expect(created.stop).toHaveBeenCalledWith({ abort: true })
   })
 
+  test('stop waits for the consumer to drain the handler it is running', async () => {
+    const transport = create()
+    const created = parts.createConsumer.mock.results[0].value
+    let finish
+    let stopped = false
+
+    created.stop.mockReturnValue(
+      new Promise((resolve) => {
+        finish = resolve
+      })
+    )
+
+    const stopping = transport.stop().then(() => {
+      stopped = true
+    })
+
+    await new Promise((resolve) => setTimeout(resolve, 20))
+
+    expect(stopped).toBe(false)
+
+    finish()
+    await stopping
+
+    expect(stopped).toBe(true)
+  })
+
   test('builds a real client, publisher and consumer from the configuration by default', () => {
     const before = [
       config.get('gitops.commandsTopicArn'),

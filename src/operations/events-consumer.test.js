@@ -256,6 +256,54 @@ describe('createEventsConsumer', () => {
       release()
       await until(() => expect(deleted).toHaveLength(1))
     })
+
+    test('stop waits for a handler that is already running, so its write is not cut off', async () => {
+      const events = create()
+      let release
+      let wrote = false
+
+      handler.handle.mockImplementation(async () => {
+        await new Promise((resolve) => {
+          release = resolve
+        })
+        wrote = true
+      })
+      events.start()
+      await until(() => expect(handler.handle).toHaveBeenCalled())
+
+      let stopped = false
+      const stopping = events.stop({ abort: true }).then(() => {
+        stopped = true
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 100))
+
+      expect(events.isRunning).toBe(false)
+      expect(stopped).toBe(false)
+
+      release()
+      await stopping
+
+      expect(wrote).toBe(true)
+      expect(stopped).toBe(true)
+    })
+
+    test('stop does not wait past its bound for a handler that never finishes', async () => {
+      const events = create({
+        settings: { ...SETTINGS, drainTimeoutMs: 100 }
+      })
+
+      handler.handle.mockReturnValue(new Promise(() => {}))
+      events.start()
+      await until(() => expect(handler.handle).toHaveBeenCalled())
+
+      const started = Date.now()
+
+      await events.stop({ abort: true })
+
+      expect(Date.now() - started).toBeGreaterThanOrEqual(90)
+      expect(Date.now() - started).toBeLessThan(2000)
+    })
   })
 
   describe('start and stop', () => {
@@ -302,6 +350,13 @@ describe('createEventsConsumer', () => {
 
       expect(events.isRunning).toBe(true)
       await settle()
+    })
+
+    test('stop resolves at once when no handler is running', async () => {
+      const events = create()
+
+      events.start()
+      await expect(events.stop({ abort: true })).resolves.toBeUndefined()
     })
 
     test('ignores a second start and a second stop', async () => {

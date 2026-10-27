@@ -1,25 +1,6 @@
+import { DRAIN_TIMEOUT_MS, drain } from '#/common/helpers/drain.js'
 import { gitopsSettings } from '#/operations/gitops-settings.js'
 import { createOperationsRuntime } from '#/operations/operations-runtime.js'
-
-const DRAIN_TIMEOUT_MS = 5000
-
-// Waits for the running sweeps, but never longer than the bound.
-async function drainSweeps(sweeps, timeoutMs) {
-  if (sweeps.size === 0) {
-    return
-  }
-
-  let timer
-  const bound = new Promise((resolve) => {
-    timer = setTimeout(resolve, timeoutMs)
-  })
-
-  try {
-    await Promise.race([Promise.allSettled([...sweeps]), bound])
-  } finally {
-    clearTimeout(timer)
-  }
-}
 
 /**
  * The operations runtime as the server runs it: the wired modules over the
@@ -124,7 +105,7 @@ export function createServerOperations({
         clearInterval(timer)
       }
 
-      await drainSweeps(inFlight, drainTimeoutMs)
+      await drain(inFlight, drainTimeoutMs)
       await transport.stop()
     }
   }
