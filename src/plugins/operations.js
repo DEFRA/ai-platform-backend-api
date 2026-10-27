@@ -3,6 +3,7 @@ import { tenantResourceVerifier } from '#/adapters/tenant-resource-verifier-regi
 import { createServerOperations } from '#/operations/server-operations.js'
 import { createCredentialGranter } from '#/services/team-credential-grant.js'
 import { createDocumentBuilder } from '#/services/team-deployment-submission.js'
+import { createTeamDesiredStateBuilder } from '#/services/team-desired-state.js'
 
 /**
  * Creates the operations runtime over the server's database and starts it
@@ -12,7 +13,8 @@ import { createDocumentBuilder } from '#/services/team-deployment-submission.js'
  * `server.app.operations`; routes reach the operations service as
  * `request.operations`. It reads `server.db` and `server.locker`, so it is
  * registered after the `mongodb` plugin. The `registry` and `verifier`
- * options replace the configured ones, for a test.
+ * options replace the configured ones, for a test; the registry's reader is
+ * also what the documents are built from.
  */
 export const operations = {
   plugin: {
@@ -30,7 +32,9 @@ export const operations = {
         logger: server.logger,
         registry,
         verifier,
-        buildDocument: createDocumentBuilder(server.db),
+        buildDocument: createDocumentBuilder(server.db, {
+          buildDesiredState: createTeamDesiredStateBuilder({ registry })
+        }),
         grantCredentials: createCredentialGranter({
           db: server.db,
           locker: server.locker,

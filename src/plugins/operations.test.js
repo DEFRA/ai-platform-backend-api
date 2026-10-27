@@ -1,4 +1,16 @@
 import { operations } from '#/plugins/operations.js'
+import { createServerOperations } from '#/operations/server-operations.js'
+
+// The real runtime, spied on so a test can reach the document builder the
+// plugin wires into it.
+vi.mock('#/operations/server-operations.js', async (importOriginal) => {
+  const actual = await importOriginal()
+
+  return {
+    ...actual,
+    createServerOperations: vi.fn(actual.createServerOperations)
+  }
+})
 
 describe('#operations plugin', () => {
   let server
@@ -84,6 +96,43 @@ describe('#operations plugin', () => {
     await handlerOf(server.ext, 'onPreStop')()
 
     expect(transport.stop).toHaveBeenCalledTimes(1)
+  })
+
+  test('builds documents from the registry it is given, not the configured one', async () => {
+    const teamId = '651f2c0f5c1b4a0012ab34cd'
+    const getCurrentDocument = vi.fn().mockResolvedValue({
+      document: {
+        revision: 7,
+        gateway: { limits: { requestsPerMinute: 1, tokensPerMinute: 2 } }
+      }
+    })
+
+    registry.reader = { getCurrentDocument }
+    server.db.collection = vi.fn().mockReturnValue({
+      findOne: vi.fn().mockResolvedValue({
+        slug: 'alpha',
+        serviceCode: 'ABC'
+      })
+    })
+    register()
+
+    const { buildDocument } = createServerOperations.mock.lastCall[0]
+    const built = await buildDocument({
+      _id: 'operation-1',
+      teamId,
+      environment: 'infradev',
+      items: [{ modelSlug: 'gpt-4o', change: 'remove' }],
+      requestedBy: 'entra:1'
+    })
+
+    expect(getCurrentDocument).toHaveBeenCalledWith({
+      path: 'environments/infradev/alpha.json'
+    })
+    expect(built.expectedRevision).toBe(7)
+    expect(built.document.revision).toBe(8)
+    expect(built.document.team).toEqual({ slug: 'alpha', serviceCode: 'ABC' })
+
+    await server.app.operations.stop()
   })
 
   test('uses the configured orchestrator and verifier when none are given', async () => {

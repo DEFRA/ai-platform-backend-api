@@ -25,7 +25,7 @@ function noOutcome() {
 /**
  * Creates the registry that picks how team changes reach the GitOps state
  * repositories, from `TENANT_ORCHESTRATOR`: `mock` stages the events itself
- * on a timer; `sqs` publishes commands to the GitOps worker's queue and reads
+ * on a timer; `sqs` publishes commands to the GitOps commands topic and reads
  * its events. Each mode also names how the team files are read. Refuses to
  * start with the mock in the prod environment.
  * @param {Record<string, {reader: object, createTransport: Function, mockOutcomeOf?: Function}>} adaptersByMode
