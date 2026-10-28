@@ -13,14 +13,35 @@ export default defineConfig({
       reportsDirectory: './coverage',
       reporter: ['text', 'lcov'],
       include: ['src/**/*.js'],
-      // Shared CredentialIssuer and TenantOrchestrator contract suites, not
-      // application code - they are exercised (and so already covered) via
-      // the adapter test files that call them, not directly.
+      // The floors are the coverage measured at ab412ca (843 tests, plan 8):
+      // coverage never falls below where the B28 refactor started.
+      thresholds: {
+        lines: 97.3,
+        functions: 98.55,
+        branches: 92.54,
+        statements: 97.34,
+        // New and changed code holds 95 (plan 8): the operations domain, the
+        // queue and topic adapters, the vendored contracts' code and the team file reader.
+        ...Object.fromEntries(
+          [
+            'src/operations/**',
+            'src/adapters/sqs/**',
+            'src/adapters/sns/**',
+            'src/adapters/aws-client-options.js',
+            'src/contracts/**',
+            'src/adapters/github/github-team-file-reader.js'
+          ].map((glob) => [
+            glob,
+            { lines: 95, functions: 95, branches: 95, statements: 95 }
+          ])
+        )
+      },
+      // Contract suites, not application code - they are exercised (and so
+      // already covered) via the adapter test files that call them.
       exclude: [
         ...configDefaults.exclude,
         'coverage',
-        'src/adapters/credential-issuer-contract.js',
-        'src/adapters/tenant-orchestrator-contract.js'
+        'src/adapters/credential-issuer-contract.js'
       ]
     },
     setupFiles: ['.vite/mongo-memory-server.js', '.vite/setup-files.js']

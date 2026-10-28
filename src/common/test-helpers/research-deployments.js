@@ -1,6 +1,6 @@
 import { vi } from 'vitest'
 
-import { mockTenantOrchestrator } from '#/adapters/mock-tenant-orchestrator.js'
+import { mockTeamFileReader } from '#/adapters/mock-team-file-reader.js'
 import { clearResearchDeploymentsCache } from '#/services/research-deployments.js'
 
 const RESEARCH_FILE_PATH = /^environments\/[^/]+\/research\.json$/
@@ -8,7 +8,7 @@ const RESEARCH_FILE_PATH = /^environments\/[^/]+\/research\.json$/
 let spy = null
 
 /**
- * Test helper: makes the mock tenant orchestrator's research file deploy
+ * Test helper: makes the mock team file reader's research file deploy
  * exactly these catalogue slugs (each `active`), in place of its default
  * (gpt-4o), and forgets the cached read. Every other file is served as the
  * mock always does. Undo with `restoreResearchDeployments`.
@@ -17,12 +17,11 @@ let spy = null
 export function deployInResearch(slugs) {
   restoreResearchDeployments()
 
-  const original = mockTenantOrchestrator.getCurrentDocument.bind(
-    mockTenantOrchestrator
-  )
+  const original =
+    mockTeamFileReader.getCurrentDocument.bind(mockTeamFileReader)
 
   spy = vi
-    .spyOn(mockTenantOrchestrator, 'getCurrentDocument')
+    .spyOn(mockTeamFileReader, 'getCurrentDocument')
     .mockImplementation(async (params) => {
       const { document } = await original(params)
 
@@ -53,12 +52,12 @@ export function failResearchRead() {
   restoreResearchDeployments()
 
   spy = vi
-    .spyOn(mockTenantOrchestrator, 'getCurrentDocument')
+    .spyOn(mockTeamFileReader, 'getCurrentDocument')
     .mockRejectedValue(new Error('GitHub is down'))
 }
 
 /**
- * Test helper: puts the mock orchestrator back as it was and forgets the
+ * Test helper: puts the mock reader back as it was and forgets the
  * cached research deployments.
  */
 export function restoreResearchDeployments() {

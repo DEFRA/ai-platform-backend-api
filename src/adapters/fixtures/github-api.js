@@ -6,25 +6,10 @@
 // against a live response - do that in WS5 milestone M6 and note it here.
 
 const REPOSITORY_URL = 'https://github.com/DEFRA/ai-platform-tenants'
-// The workflow run a dispatch starts, and the apply run whose job a
-// Deployment status links to.
+// The workflow run the run reader looks up, and the apply run a run report
+// belongs to.
 const DISPATCHED_RUN_ID = 1001
 const APPLY_RUN_ID = 2002
-
-/**
- * Body of `POST .../actions/workflows/{id}/dispatches` on 200.
- * @param {object} [overrides]
- */
-export function dispatchedRun(overrides = {}) {
-  const runId = overrides.workflow_run_id ?? DISPATCHED_RUN_ID
-
-  return {
-    workflow_run_id: runId,
-    run_url: `https://api.github.com/repos/DEFRA/ai-platform-tenants/actions/runs/${runId}`,
-    html_url: `${REPOSITORY_URL}/actions/runs/${runId}`,
-    ...overrides
-  }
-}
 
 /**
  * Body of `GET .../actions/runs/{run_id}`.
@@ -36,89 +21,6 @@ export function workflowRun(overrides = {}) {
     status: 'in_progress',
     conclusion: null,
     html_url: `${REPOSITORY_URL}/actions/runs/${DISPATCHED_RUN_ID}`,
-    ...overrides
-  }
-}
-
-/**
- * One item of `GET .../pulls?head={owner}:op/{operationId}&state=all`.
- * @param {object} [overrides]
- */
-export function pullRequest(overrides = {}) {
-  return {
-    number: 7,
-    state: 'open',
-    merged_at: null,
-    html_url: `${REPOSITORY_URL}/pull/7`,
-    head: { sha: 'head-sha' },
-    ...overrides
-  }
-}
-
-/**
- * Body of `GET .../issues/{number}/events`; the `merged` event carries the
- * merge commit now that API version 2026-03-10 omits `merge_commit_sha`.
- * @param {string} [mergeSha]
- */
-export function pullRequestEvents(mergeSha) {
-  return [
-    { event: 'labeled', commit_id: null },
-    ...(mergeSha ? [{ event: 'merged', commit_id: mergeSha }] : []),
-    { event: 'closed', commit_id: null }
-  ]
-}
-
-/**
- * Body of `GET .../commits/{ref}/check-runs?check_name=...`.
- * @param {object[]} checkRuns
- */
-export function checkRunList(checkRuns) {
-  return { total_count: checkRuns.length, check_runs: checkRuns }
-}
-
-/**
- * One check run, by default the `validate-desired-state / validate` required
- * check still running.
- * @param {object} [overrides]
- */
-export function checkRun(overrides = {}) {
-  return {
-    id: 1,
-    name: 'validate-desired-state / validate',
-    status: 'in_progress',
-    conclusion: null,
-    ...overrides
-  }
-}
-
-/**
- * One item of `GET .../deployments?environment={env}`.
- * @param {object} [overrides]
- */
-export function deployment(overrides = {}) {
-  return {
-    id: 501,
-    sha: 'merge-sha',
-    environment: 'infradev',
-    created_at: '2026-10-13T10:05:00Z',
-    ...overrides
-  }
-}
-
-/**
- * One item of `GET .../deployments/{id}/statuses`; Actions links it to the
- * job of the apply run.
- * @param {object} [overrides] - `runId` sets the apply run the links name
- */
-export function deploymentStatus({ runId, ...overrides } = {}) {
-  const linkedRunId = runId ?? APPLY_RUN_ID
-
-  return {
-    id: 9001,
-    state: 'in_progress',
-    created_at: '2026-10-13T10:06:00Z',
-    log_url: `${REPOSITORY_URL}/actions/runs/${linkedRunId}/job/3003`,
-    target_url: `${REPOSITORY_URL}/actions/runs/${linkedRunId}/job/3003`,
     ...overrides
   }
 }

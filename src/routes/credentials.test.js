@@ -8,15 +8,17 @@ const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 // deploys only gpt-4o.
 const DEPLOYED_FOR_RESEARCH = ['gpt-4o', 'gpt-5-nano', 'gpt-5-mini']
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
-}
-
 describe('#credentials routes', () => {
   let server
   let deployInResearch
   let failResearchRead
   let restoreResearchDeployments
+
+  // The mock orchestrator sends its events in the background: this waits
+  // until it has sent every one it has been given.
+  function settled() {
+    return server.app.operations.transport.worker.idle()
+  }
 
   beforeAll(async () => {
     // Short mock stage duration so a team deployment can reach `active` in real
@@ -685,21 +687,14 @@ describe('#credentials routes', () => {
   }
 
   async function requestActiveDeployment(teamId, requesterId, modelSlug) {
-    const deployment = await server.inject({
+    await server.inject({
       method: 'POST',
       url: `/v1/teams/${teamId}/deployments`,
       headers: { 'x-user-id': requesterId, 'idempotency-key': randomUUID() },
       payload: { modelSlugs: [modelSlug], environment: 'sandbox' }
     })
 
-    const pollUrl = `/v1/teams/${teamId}/deployments/${deployment.result.deployments[0]._id}`
-
-    await wait(300)
-    await server.inject({
-      method: 'GET',
-      url: pollUrl,
-      headers: { 'x-user-id': requesterId }
-    })
+    await settled()
   }
 
   // Nobody receives a team secret from a request: it goes to the vault when a
@@ -949,11 +944,16 @@ describe('#credentials routes', () => {
         (item) => item.modelSlug === modelSlug
       )
 
-      return server.inject({
+      const response = await server.inject({
         method: 'DELETE',
         url: `/v1/teams/${teamId}/deployments/${deployment._id}`,
         headers: { 'x-user-id': adminId }
       })
+
+      // The removal is accepted, then applies in the background.
+      await settled()
+
+      return response
     }
 
     test('lists a second model once its deployment is active, with no issue call', async () => {
@@ -981,7 +981,7 @@ describe('#credentials routes', () => {
 
       const removed = await removeActiveModel(teamId, userId, 'gpt-4o')
 
-      expect(removed.statusCode).toBe(200)
+      expect(removed.statusCode).toBe(202)
       expect(
         (await listedCredential(userId, credential._id.toString()))
           .allowedDeployments
@@ -1003,7 +1003,7 @@ describe('#credentials routes', () => {
 
       const revoked = await listedCredential(userId, id)
 
-      expect(removed.statusCode).toBe(200)
+      expect(removed.statusCode).toBe(202)
       expect(revoked.status).toBe('revoked')
       expect(revoked.allowedDeployments).toEqual(['gpt-4o'])
     })
@@ -1016,7 +1016,7 @@ describe('#credentials routes', () => {
     })
   })
 
-  test('a failed credential is retried on the next poll once the issuer works again', async () => {
+  test('a failed credential is retried on the next maintenance sweep once the issuer works again', async () => {
     const adminId = 'team-cred-retry-1'
     const teamId = await createTeamWithActiveDeployment(adminId)
     const credential = await teamCredentialOf(teamId)
@@ -1033,11 +1033,10 @@ describe('#credentials routes', () => {
       }
     )
 
-    await server.inject({
-      method: 'GET',
-      url: `/v1/teams/${teamId}/deployments`,
-      headers: { 'x-user-id': adminId }
-    })
+    const { recoverTeamCredentials } =
+      await import('#/services/team-credential-grant.js')
+
+    await recoverTeamCredentials(server.db, { locker: server.locker })
 
     const credentials = await server.db
       .collection('credentials')

@@ -1421,13 +1421,13 @@ describe('#teams routes', () => {
 
     describe('GET /v1/teams/{id} environments', () => {
       let config
-      let mockTenantOrchestrator
+      let mockTeamFileReader
       let configuredEnvironments
 
       beforeAll(async () => {
         ;({ config } = await import('#/config.js'))
-        ;({ mockTenantOrchestrator } =
-          await import('#/adapters/mock-tenant-orchestrator.js'))
+        ;({ mockTeamFileReader } =
+          await import('#/adapters/mock-team-file-reader.js'))
         configuredEnvironments = config.get('teamDeployment.environments')
       })
 
@@ -1438,12 +1438,11 @@ describe('#teams routes', () => {
 
       // The tenant files `main` holds, by path.
       function tenantFiles(files) {
-        vi.spyOn(
-          mockTenantOrchestrator,
-          'getCurrentDocument'
-        ).mockImplementation(async ({ path }) => ({
-          document: files[path] ?? null
-        }))
+        vi.spyOn(mockTeamFileReader, 'getCurrentDocument').mockImplementation(
+          async ({ path }) => ({
+            document: files[path] ?? null
+          })
+        )
       }
 
       function fileWithLimits(limits) {
@@ -1513,10 +1512,9 @@ describe('#teams routes', () => {
       test('is refused as upstream-unavailable when a file cannot be read, not as an empty list', async () => {
         const team = await newTeam('env-4')
 
-        vi.spyOn(
-          mockTenantOrchestrator,
-          'getCurrentDocument'
-        ).mockRejectedValue(new Error('GitHub is down'))
+        vi.spyOn(mockTeamFileReader, 'getCurrentDocument').mockRejectedValue(
+          new Error('GitHub is down')
+        )
 
         const { statusCode, result } = await getTeam(team, 'env-4')
 
@@ -1531,7 +1529,7 @@ describe('#teams routes', () => {
         const { statusCode } = await getTeam(team, 'env-outsider')
 
         expect(statusCode).toBe(404)
-        expect(mockTenantOrchestrator.getCurrentDocument).not.toHaveBeenCalled()
+        expect(mockTeamFileReader.getCurrentDocument).not.toHaveBeenCalled()
       })
     })
   })

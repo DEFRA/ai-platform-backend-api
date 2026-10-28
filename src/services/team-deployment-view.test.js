@@ -2,23 +2,9 @@ import {
   buildProgressSteps,
   toDeploymentView
 } from '#/services/team-deployment-view.js'
+import { entryFieldsOf } from '#/operations/operation-projection.js'
 
 const doc = { teamId: 'team-1', environment: 'infradev' }
-
-const resources = {
-  project: {
-    id: '/subscriptions/sub-secret/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/aif/projects/aip-alpha',
-    name: 'aip-alpha'
-  },
-  deployments: {
-    'gpt-4o': {
-      id: '/subscriptions/sub-secret/resourceGroups/rg/providers/Microsoft.CognitiveServices/accounts/aif/deployments/alpha-gpt-4o',
-      name: 'alpha-gpt-4o'
-    }
-  },
-  api: { id: '/subscriptions/sub-secret/x', name: 'alpha', path: 'alpha' },
-  registration: null
-}
 
 function entry(fields) {
   return { id: 'entry-1', modelSlug: 'gpt-4o', status: 'active', ...fields }
@@ -27,8 +13,9 @@ function entry(fields) {
 describe('buildProgressSteps', () => {
   const labels = [
     'Request recorded',
-    'Team checked',
+    'Change committed',
     'Setting up GPT-4o in Azure',
+    'Checking your resources in Azure',
     'Preparing your client secret'
   ]
   const T0 = '2026-10-21T10:40:00.000Z'
@@ -36,34 +23,54 @@ describe('buildProgressSteps', () => {
   const T2 = '2026-10-21T10:42:00.000Z'
   const T3 = '2026-10-21T10:43:00.000Z'
   const T4 = '2026-10-21T10:44:00.000Z'
-  const T5 = '2026-10-21T10:50:00.000Z'
+  const T5 = '2026-10-21T10:45:00.000Z'
+  const T6 = '2026-10-21T10:50:00.000Z'
   const statusTimes = {
     requested: T0,
-    'pr-raised': T1,
-    merged: T2,
-    deploying: T3,
+    committed: T1,
+    deploying: T2,
     deployed: T3,
     verified: T4,
-    active: T4
+    active: T5
   }
 
   // `at` is when a done step finished, when the current one started, and
   // null for one not reached.
   test.each([
-    ['requested', ['current', 'pending', 'pending', 'pending'], [T0]],
-    ['pr-raised', ['done', 'current', 'pending', 'pending'], [T1, T1]],
-    ['merged', ['done', 'done', 'current', 'pending'], [T1, T2, T2]],
-    ['deploying', ['done', 'done', 'current', 'pending'], [T1, T2, T2]],
-    ['deployed', ['done', 'done', 'done', 'current'], [T1, T2, T3, T3]],
-    ['verified', ['done', 'done', 'done', 'current'], [T1, T2, T3, T3]],
-    ['active', ['done', 'done', 'done', 'done'], [T1, T2, T3, T4]]
+    ['queued', ['current', 'pending', 'pending', 'pending', 'pending'], [T0]],
+    [
+      'requested',
+      ['current', 'pending', 'pending', 'pending', 'pending'],
+      [T0]
+    ],
+    [
+      'committed',
+      ['done', 'current', 'pending', 'pending', 'pending'],
+      [T1, T1]
+    ],
+    [
+      'deploying',
+      ['done', 'done', 'current', 'pending', 'pending'],
+      [T1, T2, T2]
+    ],
+    [
+      'deployed',
+      ['done', 'done', 'done', 'current', 'pending'],
+      [T1, T2, T3, T3]
+    ],
+    [
+      'verified',
+      ['done', 'done', 'done', 'done', 'current'],
+      [T1, T2, T3, T4, T4]
+    ],
+    ['active', ['done', 'done', 'done', 'done', 'done'], [T1, T2, T3, T4, T5]]
   ])('marks the steps and times for %s', (status, states, times) => {
     const steps = buildProgressSteps({ status, statusTimes }, 'GPT-4o')
 
     expect(steps.map(({ label }) => label)).toEqual(labels)
     expect(steps.map(({ state }) => state)).toEqual(states)
     expect(steps.map(({ at }) => at)).toEqual(
-      [...times, null, null, null, null].slice(0, 4)
+      [...times, null, null, null, null, null].slice(0, 5)
     )
   })
 
@@ -71,36 +78,33 @@ describe('buildProgressSteps', () => {
     const steps = buildProgressSteps(
       {
         status: 'deployed',
-        statusTimes: { requested: T0, merged: T2, deployed: T3 }
+        statusTimes: { requested: T0, committed: T1, deployed: T3 }
       },
       'GPT-4o'
     )
 
-    expect(steps.map(({ at }) => at)).toEqual([T2, T2, T3, T3])
+    expect(steps.map(({ at }) => at)).toEqual([T1, T3, T3, T3, null])
   })
 
   test('keeps completed steps in order across a retry that records deploying after deployed', () => {
-    const polled = {
-      requested: T0,
-      deployed: T4
-    }
+    const seen = { requested: T0, deployed: T4 }
     const ats = (status, times) =>
       buildProgressSteps({ status, statusTimes: times }, 'GPT-4o').map(
         ({ at }) => at
       )
 
-    // Polling skipped everything between requested and deployed.
-    const before = ats('deployed', polled)
+    const before = ats('deployed', seen)
 
-    expect(before).toEqual([T4, T4, T4, T4])
-    // The retry resumes at deploying, five minutes later.
-    expect(ats('deploying', { ...polled, deploying: T5 })).toEqual([
+    expect(before).toEqual([T4, T4, T4, T4, null])
+    // The retry resumes at deploying, later.
+    expect(ats('deploying', { ...seen, deploying: T6 })).toEqual([
       T4,
       T4,
       T4,
+      null,
       null
     ])
-    expect(ats('deployed', { ...polled, deploying: T5 })).toEqual(before)
+    expect(ats('deployed', { ...seen, deploying: T6 })).toEqual(before)
   })
 
   test('falls back to when the entry was created and activated for one from before times were recorded', () => {
@@ -113,16 +117,19 @@ describe('buildProgressSteps', () => {
       'GPT-4o'
     )
 
-    expect(active.map(({ at }) => at)).toEqual([T4, T4, T4, T4])
-    expect(requested.map(({ at }) => at)).toEqual([T0, null, null, null])
+    expect(active.map(({ at }) => at)).toEqual([T4, T4, T4, T4, T4])
+    expect(requested.map(({ at }) => at)).toEqual([T0, null, null, null, null])
   })
 
-  test.each(['checks-failed', 'deploy-failed', 'removing', 'removed'])(
-    'has no steps for %s',
-    (status) => {
-      expect(buildProgressSteps({ status }, 'GPT-4o')).toBeNull()
-    }
-  )
+  test.each([
+    'checks-failed',
+    'deploy-failed',
+    'timed-out',
+    'removing',
+    'removed'
+  ])('has no steps for %s', (status) => {
+    expect(buildProgressSteps({ status }, 'GPT-4o')).toBeNull()
+  })
 })
 
 describe('toDeploymentView', () => {
@@ -139,73 +146,88 @@ describe('toDeploymentView', () => {
     expect(unnamed.progressSteps[2].label).toBe('Setting up gpt-4o in Azure')
   })
 
-  describe('resources', () => {
-    test('lists the team’s resources by name and kind only', () => {
-      const view = toDeploymentView(doc, entry({ gitops: { resources } }))
-
-      expect(view.resources).toEqual([
-        { name: 'aip-alpha', kind: 'Foundry project', verified: true },
-        { name: 'alpha-gpt-4o', kind: 'Model deployment', verified: true },
-        { name: 'alpha', kind: 'API in API Management', verified: true }
-      ])
-      expect(JSON.stringify(view)).not.toContain('sub-secret')
-    })
-
-    test('does not call a resource verified before ARM has confirmed it', () => {
-      const view = toDeploymentView(
-        doc,
-        entry({ status: 'deployed', gitops: { resources } })
-      )
-
-      expect(view.resources.every(({ verified }) => verified === false)).toBe(
-        true
-      )
-    })
-
-    test.each(['deployed', 'deploy-failed', 'removing'])(
-      'does not call a resource verified while %s, since removal can follow a failed verification',
-      (status) => {
-        const view = toDeploymentView(
-          doc,
-          entry({ status, gitops: { resources } })
-        )
-
-        expect(view.resources.every(({ verified }) => verified === false)).toBe(
-          true
-        )
-      }
+  test('shows what the projection wrote: the operation, links, resources and registration', () => {
+    const operation = {
+      id: 'op-1',
+      state: 'deployed',
+      attempt: 1,
+      runUrl: 'https://github.com/DEFRA/ai-platform-tenants/actions/runs/2',
+      commitSha: 'a'.repeat(40),
+      failureReason: null
+    }
+    const links = {
+      submitRun: 'https://github.com/DEFRA/ai-platform-tenants/actions/runs/1',
+      applyRun: operation.runUrl
+    }
+    const resources = [
+      { name: 'aip-alpha', kind: 'Foundry project', verified: false }
+    ]
+    const view = toDeploymentView(
+      doc,
+      entry({
+        status: 'deployed',
+        operationId: 'op-1',
+        operation,
+        links,
+        resources,
+        appRegistration: 'skipped',
+        verificationFailure: { reason: 'resource-unavailable', attempts: 2 }
+      })
     )
 
-    test('is empty before the apply has reported any', () => {
-      expect(toDeploymentView(doc, entry({ gitops: null })).resources).toEqual(
-        []
-      )
+    expect(view).toMatchObject({
+      operationId: 'op-1',
+      operation,
+      links,
+      resources,
+      appRegistration: 'skipped',
+      verificationFailure: { reason: 'resource-unavailable', attempts: 2 }
+    })
+    expect(view.links).not.toHaveProperty('pullRequest')
+  })
+
+  test('shows the operation of an entry written by the projection', () => {
+    const operation = {
+      _id: 'op-2',
+      state: 'committed',
+      stateVersion: 3,
+      attempt: 1,
+      gitops: {
+        submitRunUrl:
+          'https://github.com/DEFRA/ai-platform-tenants/actions/runs/7',
+        commitSha: 'b'.repeat(40)
+      }
+    }
+    const stored = {
+      ...entry({ status: 'requested' }),
+      ...entryFieldsOf(operation, { change: 'add' }, {}, '2026-10-26T12:00:00Z')
+    }
+    const view = toDeploymentView(doc, stored)
+
+    expect(view.status).toBe('committed')
+    expect(view.operation).toEqual({
+      id: 'op-2',
+      state: 'committed',
+      attempt: 1,
+      runUrl: 'https://github.com/DEFRA/ai-platform-tenants/actions/runs/7',
+      commitSha: 'b'.repeat(40),
+      failureReason: null
+    })
+    expect(view.links).toEqual({
+      submitRun: 'https://github.com/DEFRA/ai-platform-tenants/actions/runs/7'
     })
   })
 
-  describe('appRegistration', () => {
-    test('is skipped where the apply made no registration', () => {
-      expect(
-        toDeploymentView(doc, entry({ gitops: { resources } })).appRegistration
-      ).toBe('skipped')
-    })
+  test('has no operation, links, resources or registration for an entry the projection has not reached', () => {
+    const view = toDeploymentView(doc, entry({ status: 'queued' }))
 
-    test('is created where the apply made one', () => {
-      const registered = {
-        ...resources,
-        registration: { client_id: 'c', object_id: 'o' }
-      }
-
-      expect(
-        toDeploymentView(doc, entry({ gitops: { resources: registered } }))
-          .appRegistration
-      ).toBe('created')
-    })
-
-    test('is unknown before the apply has reported', () => {
-      expect(
-        toDeploymentView(doc, entry({ gitops: null })).appRegistration
-      ).toBeNull()
+    expect(view).toMatchObject({
+      operation: null,
+      links: {},
+      resources: [],
+      appRegistration: null,
+      verificationFailure: null,
+      removedAt: null
     })
   })
 
@@ -219,38 +241,6 @@ describe('toDeploymentView', () => {
       expect(
         toDeploymentView(doc, entry(), registry).credentialPlaceholder
       ).toBe(mocked)
-    })
-  })
-
-  describe('verificationFailure', () => {
-    const verification = {
-      reason: 'environment-not-configured',
-      attempts: 2,
-      lastAttemptAt: '2026-10-19T10:00:00.000Z'
-    }
-
-    test.each(['deployed', 'deploy-failed'])(
-      'reports why verification has not passed while %s',
-      (status) => {
-        const view = toDeploymentView(
-          doc,
-          entry({ status, gitops: { resources, verification } })
-        )
-
-        expect(view.verificationFailure).toEqual({
-          reason: 'environment-not-configured',
-          attempts: 2
-        })
-      }
-    )
-
-    test('reports nothing once the deployment has moved on', () => {
-      const view = toDeploymentView(
-        doc,
-        entry({ status: 'active', gitops: { resources, verification } })
-      )
-
-      expect(view.verificationFailure).toBeNull()
     })
   })
 })

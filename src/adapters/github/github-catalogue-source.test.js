@@ -90,6 +90,21 @@ describe('#createGithubCatalogueSource', () => {
     expect(sentApiVersion).toBe('2026-03-10')
   })
 
+  test('asks for a token scoped to the catalogue repository with read permissions only', () => {
+    const createClient = vi.fn(() => new Octokit({ auth: 'fake-token' }))
+
+    createGithubCatalogueSource({ repo: REPO, createClient })
+
+    expect(createClient.mock.calls).toEqual([
+      [
+        {
+          repositoryNames: ['ai-platform-infra'],
+          permissions: { contents: 'read' }
+        }
+      ]
+    ])
+  })
+
   test('fetches models and providers from catalogue/**.json, excluding catalogue/schema', async () => {
     mockSuccessfulFetch()
 

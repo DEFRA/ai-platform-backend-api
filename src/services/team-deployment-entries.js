@@ -1,43 +1,31 @@
 import { recordAuditEvent } from '#/services/audit-service.js'
 
 /**
- * GitOps states an operation can still move on from - the only ones polled.
- */
-export const NON_TERMINAL_STATUSES = [
-  'requested',
-  'pr-raised',
-  'merged',
-  'deploying',
-  'deployed',
-  'verified'
-]
-
-/**
- * A request waiting for the operation in flight on its team file: submit
- * allows one open operation per file, so it is dispatched once that ends.
+ * A request waiting for the operation in flight on its team file (or for
+ * its paused environment): submit allows one open operation per file, so it
+ * is submitted once that ends.
  */
 export const QUEUED = 'queued'
 
 /**
- * The GitOps state an operation ends in when its pull request fails checks
- * or is closed unmerged.
+ * The state an operation ends in when its change fails the checks.
  */
 export const CHECKS_FAILED = 'checks-failed'
 
 /**
- * The GitOps state an operation ends in when its apply fails for good.
+ * The state an operation ends in when its apply fails for good.
  */
 export const DEPLOY_FAILED = 'deploy-failed'
 
 /**
- * An active deployment whose removal operation (`gitops.remove`) is in
- * progress; it ends `removed`, or back at `active` if the removal failed.
+ * An active deployment whose removal operation is in progress; it ends
+ * `removed`, or back at `active` if the removal failed.
  */
 export const REMOVING = 'removing'
 
 /**
  * A deployment the team removed: its resources are gone and its grant with
- * them. Terminal, never polled.
+ * them. Terminal.
  */
 export const REMOVED = 'removed'
 
@@ -47,31 +35,10 @@ export const REMOVED = 'removed'
 export const TERMINAL_FAILURE_STATUSES = new Set([CHECKS_FAILED, DEPLOY_FAILED])
 
 /**
- * The principal the backend submits its own GitOps operations (D14 reverts,
- * abandons) and audits its own steps as, in place of a person.
+ * The principal the backend attributes its own operations (a revert) and
+ * audits its own steps to, in place of a person.
  */
 export const SYSTEM_ACTOR = 'app:ai-platform-backend'
-
-/**
- * The team's Entra app registration identifiers from its run report
- * resources, or null when Entra skipped it (`entra.enabled` off, or
- * `entra.teamRegistrations` false). Identifiers only, never a secret.
- * @param {{registration?: {client_id?: string, object_id?: string, service_principal_object_id?: string}|null}|null} [resources]
- * @returns {{clientId: string, objectId: string, servicePrincipalObjectId: string}|null}
- */
-export function appRegistrationOf(resources) {
-  const registration = resources?.registration
-
-  if (!registration?.object_id) {
-    return null
-  }
-
-  return {
-    clientId: registration.client_id,
-    objectId: registration.object_id,
-    servicePrincipalObjectId: registration.service_principal_object_id
-  }
-}
 
 /**
  * Finds one entry of a `teamDeployments` document's `deployments[]` by id.

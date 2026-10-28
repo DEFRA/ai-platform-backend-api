@@ -11,6 +11,8 @@ import {
 } from '#/services/team-deployment-service.js'
 import { removeDeployment } from '#/services/team-deployment-removal.js'
 
+const MAX_PURPOSE_LENGTH = 500
+
 const userIdHeader = Joi.object({
   'x-user-id': Joi.string().required()
 }).unknown(true)
@@ -42,7 +44,14 @@ export const teamDeployments = [
           // is configuration, refused as environment-not-available.
           environment: Joi.string()
             .pattern(/^[a-z][a-z0-9]{1,15}$/)
-            .required()
+            .required(),
+          // What the team wants the models for. It is not stored; only the
+          // mock orchestrator reads a marker in it (see the registry).
+          purpose: Joi.string()
+            .trim()
+            .max(MAX_PURPOSE_LENGTH)
+            .allow('')
+            .optional()
         }).unknown(false)
       }
     },
@@ -50,16 +59,23 @@ export const teamDeployments = [
       const requestedBy = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
       const { teamId } = request.params
-      const { modelSlugs, environment } = request.payload
+      const { modelSlugs, environment, purpose } = request.payload
 
-      const deployments = await requestDeployments(request.db, request.locker, {
-        teamId,
-        modelSlugs,
-        environment,
-        requestedBy,
-        idempotencyKey,
-        traceParent: request.headers.traceparent
-      })
+      const deployments = await requestDeployments(
+        request.db,
+        request.locker,
+        {
+          teamId,
+          modelSlugs,
+          environment,
+          purpose,
+          requestedBy,
+          idempotencyKey,
+          traceParent: request.headers.traceparent,
+          cdpRequestId: request.headers['x-cdp-request-id']
+        },
+        { operations: request.operations }
+      )
 
       return h
         .response({ deployments })
@@ -77,14 +93,10 @@ export const teamDeployments = [
       }
     },
     handler: async (request, h) => {
-      const items = await listDeploymentsForTeam(
-        request.db,
-        {
-          teamId: request.params.teamId,
-          userId: request.headers['x-user-id']
-        },
-        { logger: request.logger, locker: request.locker }
-      )
+      const items = await listDeploymentsForTeam(request.db, {
+        teamId: request.params.teamId,
+        userId: request.headers['x-user-id']
+      })
 
       return h.response({ items })
     }
@@ -96,15 +108,11 @@ export const teamDeployments = [
       validate: { headers: userIdHeader, params: idsParam }
     },
     handler: async (request, h) => {
-      const deployment = await getDeployment(
-        request.db,
-        {
-          id: request.params.id,
-          teamId: request.params.teamId,
-          userId: request.headers['x-user-id']
-        },
-        { logger: request.logger, locker: request.locker }
-      )
+      const deployment = await getDeployment(request.db, {
+        id: request.params.id,
+        teamId: request.params.teamId,
+        userId: request.headers['x-user-id']
+      })
 
       if (!deployment) {
         return Boom.notFound()
@@ -122,12 +130,18 @@ export const teamDeployments = [
       validate: { headers: userIdHeader, params: idsParam }
     },
     handler: async (request, h) => {
-      const deployment = await removeDeployment(request.db, request.locker, {
-        teamId: request.params.teamId,
-        id: request.params.id,
-        requestedBy: request.headers['x-user-id'],
-        traceParent: request.headers.traceparent
-      })
+      const deployment = await removeDeployment(
+        request.db,
+        request.locker,
+        {
+          teamId: request.params.teamId,
+          id: request.params.id,
+          requestedBy: request.headers['x-user-id'],
+          traceParent: request.headers.traceparent,
+          cdpRequestId: request.headers['x-cdp-request-id']
+        },
+        { operations: request.operations }
+      )
 
       if (!deployment) {
         return Boom.notFound()

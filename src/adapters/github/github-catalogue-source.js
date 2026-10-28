@@ -19,12 +19,13 @@ function isCatalogueJson(entry) {
  * throwing - the catalogue must never go empty because GitHub was briefly
  * unreachable. Only the very first fetch, with no mirror yet, can throw.
  * Its App token can read contents of the catalogue repository only.
- * @param {{octokit?: import('octokit').Octokit, repo?: string}} [deps]
+ * @param {{octokit?: import('octokit').Octokit, repo?: string, createClient?: typeof createGithubAppClient}} [deps]
  * @returns {import('../catalogue-source.js').CatalogueSource}
  */
 export function createGithubCatalogueSource({
   repo = config.get('catalogue.repo'),
-  octokit = createGithubAppClient({
+  createClient = createGithubAppClient,
+  octokit = createClient({
     repositoryNames: [repo.split('/')[1]],
     permissions: { contents: 'read' }
   })

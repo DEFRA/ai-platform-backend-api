@@ -4,3 +4,5 @@ coverage
 .github/agents
 # Byte-exact copies of ai-platform-infra's canonical examples (not Prettier's layout)
 src/common/fixtures/gitops
+# Byte-exact copies of ai-platform-infra's message schemas (npm run contracts:sync)
+src/contracts/aip-gitops

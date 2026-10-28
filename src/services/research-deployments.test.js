@@ -1,6 +1,6 @@
 import { Boom } from '#/common/helpers/boom-with-code.js'
 import { config } from '#/config.js'
-import { mockTenantOrchestrator } from '#/adapters/mock-tenant-orchestrator.js'
+import { mockTeamFileReader } from '#/adapters/mock-team-file-reader.js'
 import {
   clearResearchDeploymentsCache,
   readResearchDeployments
@@ -11,7 +11,7 @@ const RESEARCH_PATH = 'environments/infradev/research.json'
 function registryServing(document) {
   return {
     key: 'test',
-    orchestrator: {
+    reader: {
       getCurrentDocument: vi.fn(async () => ({ document }))
     }
   }
@@ -22,7 +22,7 @@ function registryWithDeferredRead(document) {
   let finish
   const registry = {
     key: 'test',
-    orchestrator: {
+    reader: {
       getCurrentDocument: vi.fn(
         () =>
           new Promise((resolve) => {
@@ -48,12 +48,12 @@ describe('#readResearchDeployments', () => {
     vi.useRealTimers()
   })
 
-  test('reads the research file of the research environment from the orchestrator', async () => {
+  test('reads the research file of the research environment from the team file reader', async () => {
     const registry = registryServing(researchFile([]))
 
     await readResearchDeployments({ registry })
 
-    expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledWith({
+    expect(registry.reader.getCurrentDocument).toHaveBeenCalledWith({
       path: RESEARCH_PATH
     })
   })
@@ -73,9 +73,9 @@ describe('#readResearchDeployments', () => {
     )
   })
 
-  test('reads the mock orchestrator’s research file as gpt-4o only', async () => {
+  test('reads the mock reader’s research file as gpt-4o only', async () => {
     const slugs = await readResearchDeployments({
-      registry: { key: 'mock', orchestrator: mockTenantOrchestrator }
+      registry: { key: 'mock', reader: mockTeamFileReader }
     })
 
     expect(slugs).toEqual(new Set(['gpt-4o']))
@@ -101,12 +101,12 @@ describe('#readResearchDeployments', () => {
       vi.advanceTimersByTime(59_999)
       await readResearchDeployments({ registry })
 
-      expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(1)
+      expect(registry.reader.getCurrentDocument).toHaveBeenCalledTimes(1)
 
       vi.advanceTimersByTime(1)
       await readResearchDeployments({ registry })
 
-      expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(2)
+      expect(registry.reader.getCurrentDocument).toHaveBeenCalledTimes(2)
     })
 
     test('shares one read between requests made at the same time', async () => {
@@ -117,7 +117,7 @@ describe('#readResearchDeployments', () => {
         readResearchDeployments({ registry })
       ])
 
-      expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(1)
+      expect(registry.reader.getCurrentDocument).toHaveBeenCalledTimes(1)
     })
 
     test('keeps sharing a slow read that outlasts the cache duration, counting the duration from when it succeeds', async () => {
@@ -133,12 +133,12 @@ describe('#readResearchDeployments', () => {
 
       expect(await first).toEqual(new Set(['gpt-4o']))
       expect(await second).toEqual(new Set(['gpt-4o']))
-      expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(1)
+      expect(registry.reader.getCurrentDocument).toHaveBeenCalledTimes(1)
 
       vi.advanceTimersByTime(59_999)
       await readResearchDeployments({ registry })
 
-      expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(1)
+      expect(registry.reader.getCurrentDocument).toHaveBeenCalledTimes(1)
     })
 
     describe('with the cache off', () => {
@@ -158,21 +158,17 @@ describe('#readResearchDeployments', () => {
         finish()
         await Promise.all([first, second])
 
-        expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(
-          1
-        )
+        expect(registry.reader.getCurrentDocument).toHaveBeenCalledTimes(1)
 
         const third = readResearchDeployments({ registry })
         finish()
         await third
 
-        expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(
-          2
-        )
+        expect(registry.reader.getCurrentDocument).toHaveBeenCalledTimes(2)
       })
     })
 
-    test('does not share a read between orchestrators', async () => {
+    test('does not share a read between registries', async () => {
       const first = registryServing(
         researchFile([{ slug: 'gpt-4o', status: 'active' }])
       )
@@ -190,7 +186,7 @@ describe('#readResearchDeployments', () => {
     function failingRegistry() {
       return {
         key: 'test',
-        orchestrator: {
+        reader: {
           getCurrentDocument: vi.fn(async () => {
             throw new Error('GitHub is down')
           })
@@ -212,14 +208,14 @@ describe('#readResearchDeployments', () => {
       const registry = failingRegistry()
 
       await expect(readResearchDeployments({ registry })).rejects.toThrow()
-      registry.orchestrator.getCurrentDocument.mockResolvedValueOnce({
+      registry.reader.getCurrentDocument.mockResolvedValueOnce({
         document: researchFile([{ slug: 'gpt-4o', status: 'active' }])
       })
 
       expect(await readResearchDeployments({ registry })).toEqual(
         new Set(['gpt-4o'])
       )
-      expect(registry.orchestrator.getCurrentDocument).toHaveBeenCalledTimes(2)
+      expect(registry.reader.getCurrentDocument).toHaveBeenCalledTimes(2)
     })
   })
 })

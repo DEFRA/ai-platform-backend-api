@@ -219,19 +219,73 @@ describe('#config tenant orchestrator and GitOps', () => {
     vi.unstubAllEnvs()
   })
 
-  test('defaults to the mock orchestrator, the DEFRA state repositories, a 30 second poll interval and a 10 minute claim lease', async () => {
+  test('defaults to the mock orchestrator, the DEFRA state repositories and the GitOps timings', async () => {
     const { config } = await loadConfig({})
 
     expect(config.get('tenantOrchestrator')).toBe('mock')
     expect(config.get('gitops')).toEqual({
       tenantsRepo: 'DEFRA/ai-platform-tenants',
       deploymentsRepo: 'DEFRA/ai-platform-deployments',
-      pollMinIntervalMs: 30000,
-      claimLeaseMs: 600000,
       verifyMaxAttempts: 5,
-      stallWarnAfterMs: 1800000
+      commandsTopicArn: null,
+      eventsQueueUrl: null,
+      awsSqsEndpoint: null,
+      awsSnsEndpoint: null,
+      awsRegion: 'eu-west-2',
+      handlerTimeoutMs: 30000,
+      sqsWaitTimeSeconds: 20,
+      outboxSweepMs: 2000,
+      sweepIntervalMs: 15000,
+      reconcileGraceMs: 600000,
+      deadlineRequestedMs: 600000,
+      deadlineCommittedMs: 1800000,
+      deadlineDeployingMs: 2700000,
+      deadlineDeployedMs: 900000,
+      resubmitMax: 3,
+      revertGraceMs: 300000,
+      deadlineHeldMs: 1800000,
+      heldAlarmMs: 3600000
     })
     expect(config.get('aipEnvironments')).toEqual({})
+  })
+
+  const SQS_ENV = {
+    TENANT_ORCHESTRATOR: 'sqs',
+    GITOPS_COMMANDS_TOPIC_ARN:
+      'arn:aws:sns:eu-west-2:000000000000:commands.fifo',
+    GITOPS_EVENTS_QUEUE_URL: 'http://sqs.test/events.fifo',
+    GITHUB_APP_ID: '1',
+    GITHUB_APP_INSTALLATION_ID: '2',
+    GITHUB_APP_PRIVATE_KEY: 'cGxhY2Vob2xkZXI='
+  }
+
+  test('accepts the sqs orchestrator with the commands topic, the events queue and GitHub App credentials', async () => {
+    const { config } = await loadConfig(SQS_ENV)
+
+    expect(config.get('tenantOrchestrator')).toBe('sqs')
+    expect(config.get('gitops.commandsTopicArn')).toBe(
+      'arn:aws:sns:eu-west-2:000000000000:commands.fifo'
+    )
+  })
+
+  test('the sqs orchestrator requires GitHub App credentials', async () => {
+    await expect(
+      loadConfig({
+        ...SQS_ENV,
+        GITHUB_APP_ID: undefined,
+        GITHUB_APP_INSTALLATION_ID: undefined,
+        GITHUB_APP_PRIVATE_KEY: undefined
+      })
+    ).rejects.toThrow('TENANT_ORCHESTRATOR=sqs requires GITHUB_CLIENT_ID')
+  })
+
+  test.each([
+    ['GITOPS_COMMANDS_TOPIC_ARN', 'GITOPS_COMMANDS_TOPIC_ARN to be set'],
+    ['GITOPS_EVENTS_QUEUE_URL', 'GITOPS_EVENTS_QUEUE_URL to be set']
+  ])('the sqs orchestrator requires %s', async (name, message) => {
+    await expect(loadConfig({ ...SQS_ENV, [name]: undefined })).rejects.toThrow(
+      message
+    )
   })
 
   test('parses AIP_ENVIRONMENTS from JSON', async () => {
@@ -248,20 +302,24 @@ describe('#config tenant orchestrator and GitOps', () => {
     ).rejects.toThrow(/subscriptionId/)
   })
 
-  test('the github orchestrator requires GitHub App credentials, not a PAT', async () => {
+  test('refuses the github orchestrator, which no longer exists', async () => {
     await expect(
-      loadConfig({ TENANT_ORCHESTRATOR: 'github', GITHUB_TOKEN: 'pat' })
-    ).rejects.toThrow('TENANT_ORCHESTRATOR=github requires GITHUB_CLIENT_ID')
+      loadConfig({
+        TENANT_ORCHESTRATOR: 'github',
+        GITHUB_APP_ID: '1',
+        GITHUB_APP_INSTALLATION_ID: '2',
+        GITHUB_APP_PRIVATE_KEY: 'cGxhY2Vob2xkZXI='
+      })
+    ).rejects.toThrow('must be one of the possible values: ["mock","sqs"]')
   })
 
-  test('accepts the github orchestrator with GitHub App credentials', async () => {
-    const { config } = await loadConfig({
-      TENANT_ORCHESTRATOR: 'github',
-      GITHUB_CLIENT_ID: 'Iv1.placeholder',
-      GITHUB_APP_INSTALLATION_ID: '1',
-      GITHUB_APP_PRIVATE_KEY: 'cGxhY2Vob2xkZXI='
-    })
+  test.each([
+    ['GITOPS_POLL_MIN_INTERVAL_MS', 'pollMinIntervalMs'],
+    ['GITOPS_CLAIM_LEASE_MS', 'claimLeaseMs'],
+    ['GITOPS_STALL_WARN_AFTER_MS', 'stallWarnAfterMs']
+  ])('has no %s setting any more', async (name, key) => {
+    const { config } = await loadConfig({ [name]: '1' })
 
-    expect(config.get('tenantOrchestrator')).toBe('github')
+    expect(config.get('gitops')).not.toHaveProperty(key)
   })
 })

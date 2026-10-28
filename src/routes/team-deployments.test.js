@@ -7,8 +7,12 @@ const FORCED_FAILURE_OID_RANGES = {
   'test-deploy-fail-': '00000000-0000-0000-0002-'
 }
 
-function wait(ms) {
-  return new Promise((resolve) => setTimeout(resolve, ms))
+// The mock orchestrator sends its events in the background; this waits until
+// it has sent every event it has been given (the argument is not a duration).
+let settleEvents
+
+function wait() {
+  return settleEvents()
 }
 
 describe('#team-deployments routes', () => {
@@ -26,6 +30,7 @@ describe('#team-deployments routes', () => {
     ;({ invalidateModelsCache } = await import('#/services/models-service.js'))
     server = await createServer()
     await server.initialize()
+    settleEvents = () => server.app.operations.transport.worker.idle()
   })
 
   afterAll(async () => {
@@ -153,7 +158,7 @@ describe('#team-deployments routes', () => {
     expect(headers.location).toBe(`/v1/teams/${teamId}/deployments`)
     expect(result.deployment.status).toBe('requested')
     expect(result.deployment.operationId).toBeTruthy()
-    // The mock orchestrator has no GitHub runs or pull request to link to.
+    // The mock orchestrator has no GitHub runs to link to yet.
     expect(result.deployment.links).toEqual({})
 
     const stored = await server.db
@@ -161,9 +166,11 @@ describe('#team-deployments routes', () => {
       .findOne({ teamId: teamId.toString() })
 
     expect(stored.deployments[0]).toMatchObject({
-      orchestrator: 'mock',
-      gitops: null
+      operationId: result.deployment.operationId,
+      operation: { id: result.deployment.operationId, state: 'requested' }
     })
+    expect(stored.deployments[0]).not.toHaveProperty('gitops')
+    expect(stored.deployments[0]).not.toHaveProperty('orchestrator')
   })
 
   test('POST /v1/teams/{teamId}/deployments refuses an environment this instance does not deploy to', async () => {
@@ -451,7 +458,7 @@ describe('#team-deployments routes', () => {
   describe('requesting several models at once', () => {
     const BOTH = ['gpt-4o', 'gpt-5-mini']
 
-    test('makes one deployment per model in the order asked: the first in flight, the rest queued', async () => {
+    test('makes one deployment per model in the order asked, all in one operation', async () => {
       const teamId = await createTeam('multi-user-1')
 
       const { result, statusCode } = await requestModels(
@@ -465,11 +472,16 @@ describe('#team-deployments routes', () => {
         result.deployments.map(({ modelSlug, status }) => [modelSlug, status])
       ).toEqual([
         ['gpt-4o', 'requested'],
-        ['gpt-5-mini', 'queued']
+        ['gpt-5-mini', 'requested']
       ])
       expect(
         new Set(result.deployments.map((entry) => entry.operationId)).size
-      ).toBe(2)
+      ).toBe(1)
+      expect(
+        await server.db
+          .collection('operations')
+          .countDocuments({ teamId: teamId.toString() })
+      ).toBe(1)
     })
 
     test('replays every deployment of a repeated idempotency key, without making more', async () => {
@@ -498,7 +510,7 @@ describe('#team-deployments routes', () => {
       expect(stored.deployments).toHaveLength(2)
     })
 
-    test('finishes the models a half-made request did not reach when its key is replayed', async () => {
+    test('refuses a repeated idempotency key used for other models, creating nothing more', async () => {
       const teamId = await createTeam('multi-user-3')
       const headers = postHeaders('multi-user-3')
       const request = (modelSlugs) =>
@@ -509,15 +521,20 @@ describe('#team-deployments routes', () => {
           payload: { modelSlugs, environment: 'sandbox' }
         })
 
-      const partial = await request(['gpt-4o'])
-      const whole = await request(BOTH)
+      await request(['gpt-4o'])
 
-      expect(whole.result.deployments.map((entry) => entry.modelSlug)).toEqual(
-        BOTH
-      )
-      expect(whole.result.deployments[0]._id).toBe(
-        partial.result.deployments[0]._id
-      )
+      const other = await request(BOTH)
+
+      expect(other.statusCode).toBe(409)
+      expect(other.result.code).toBe('idempotency-key-reused')
+
+      const stored = await server.db
+        .collection('teamDeployments')
+        .findOne({ teamId: teamId.toString() })
+
+      expect(stored.deployments.map((entry) => entry.modelSlug)).toEqual([
+        'gpt-4o'
+      ])
     })
 
     test('refuses the whole request, creating nothing, when one model is not eligible', async () => {
@@ -567,17 +584,13 @@ describe('#team-deployments routes', () => {
       const first = await requestModel(teamId, 'multi-user-6')
       const url = `/v1/teams/${teamId}/deployments/${first.result.deployment._id}`
 
-      await wait(300)
-      await server.inject({
-        method: 'GET',
-        url,
-        headers: userHeaders('multi-user-6')
-      })
+      await wait()
       await server.inject({
         method: 'DELETE',
         url,
         headers: userHeaders('multi-user-6')
       })
+      await wait()
 
       const again = await requestModel(teamId, 'multi-user-6')
 
@@ -628,7 +641,7 @@ describe('#team-deployments routes', () => {
 
     expect(first.result.deployment.status).toBe('requested')
 
-    await wait(300)
+    await wait()
 
     const second = await server.inject({ method: 'GET', url, headers })
 
@@ -636,7 +649,7 @@ describe('#team-deployments routes', () => {
     expect(second.result.deployment.activatedAt).toBeTruthy()
   })
 
-  test('GET /v1/teams/{teamId}/deployments/{id} exposes the four progress steps, naming the model, with their times', async () => {
+  test('GET /v1/teams/{teamId}/deployments/{id} exposes the five progress steps, naming the model, with their times', async () => {
     const teamId = await createTeam('deploy-user-6b')
 
     const created = await requestModel(teamId, 'deploy-user-6b')
@@ -644,15 +657,20 @@ describe('#team-deployments routes', () => {
 
     expect(created.result.deployment.progressSteps).toEqual([
       { label: 'Request recorded', state: 'current', at: isoTime },
-      { label: 'Team checked', state: 'pending', at: null },
+      { label: 'Change committed', state: 'pending', at: null },
       { label: 'Setting up GPT-4o in Azure', state: 'pending', at: null },
+      {
+        label: 'Checking your resources in Azure',
+        state: 'pending',
+        at: null
+      },
       { label: 'Preparing your client secret', state: 'pending', at: null }
     ])
 
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
     const headers = userHeaders('deploy-user-6b')
 
-    await wait(300)
+    await wait()
 
     const afterActive = await server.inject({ method: 'GET', url, headers })
     const steps = afterActive.result.deployment.progressSteps
@@ -662,9 +680,11 @@ describe('#team-deployments routes', () => {
       'done',
       'done',
       'done',
+      'done',
       'done'
     ])
     expect(steps.map((step) => step.at)).toEqual([
+      isoTime,
       isoTime,
       isoTime,
       isoTime,
@@ -681,7 +701,7 @@ describe('#team-deployments routes', () => {
     const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
     const headers = userHeaders('test-checks-fail-6c')
 
-    await wait(300)
+    await wait()
 
     const { result } = await server.inject({ method: 'GET', url, headers })
 
@@ -708,7 +728,7 @@ describe('#team-deployments routes', () => {
 
     const created = await requestModel(teamId, 'test-checks-fail-8')
 
-    await wait(100)
+    await wait()
 
     const { result } = await server.inject({
       method: 'GET',
@@ -725,7 +745,7 @@ describe('#team-deployments routes', () => {
 
     const created = await requestModel(teamId, 'test-deploy-fail-9')
 
-    await wait(300)
+    await wait()
 
     const { result } = await server.inject({
       method: 'GET',
@@ -770,7 +790,7 @@ describe('#team-deployments routes', () => {
     expect(statusCode).toBe(404)
   })
 
-  test('a second request waits as queued behind the one in flight, then is dispatched once that ends', async () => {
+  test('a second request waits as queued behind the one in flight, then is submitted once that ends and goes on to active', async () => {
     const teamId = await createTeam('deploy-user-18')
 
     await requestModel(teamId, 'deploy-user-18')
@@ -782,17 +802,16 @@ describe('#team-deployments routes', () => {
 
     const url = `/v1/teams/${teamId}/deployments/${queued.result.deployment._id}`
 
-    await wait(300)
+    // The first operation ending frees the file for the waiting one.
+    await wait()
 
-    // Polling the queued request polls the one holding the team file, which
-    // has finished, so the queued one is dispatched.
-    const dispatched = await server.inject({
+    const submitted = await server.inject({
       method: 'GET',
       url,
       headers: userHeaders('deploy-user-18')
     })
 
-    expect(dispatched.result.deployment.status).toBe('requested')
+    expect(submitted.result.deployment.status).toBe('active')
   })
 
   test('GET /v1/teams/{teamId}/deployments reflects refreshed status', async () => {
@@ -800,7 +819,7 @@ describe('#team-deployments routes', () => {
 
     await requestModel(teamId, 'deploy-user-12')
 
-    await wait(300)
+    await wait()
 
     const { result } = await server.inject({
       method: 'GET',
@@ -811,31 +830,56 @@ describe('#team-deployments routes', () => {
     expect(result.items[0].status).toBe('active')
   })
 
-  test('concurrent polls never regress a deployment status', async () => {
-    const teamId = await createTeam('deploy-user-15')
+  // B28 characterisation (plan 6.2, "unchanged route payloads"): the keys of a
+  // deployment and of each response envelope, so a refactor that moves the
+  // orchestration cannot change a payload the frontend reads by accident.
+  describe('payload shape', () => {
+    const DEPLOYMENT_KEYS = [
+      '_id',
+      'activatedAt',
+      'appRegistration',
+      'createdAt',
+      'credentialPlaceholder',
+      'environment',
+      'failureReason',
+      'idempotencyKey',
+      'links',
+      'modelSlug',
+      'operation',
+      'operationId',
+      'progressSteps',
+      'removedAt',
+      'requestedBy',
+      'resources',
+      'status',
+      'teamId',
+      'verificationFailure'
+    ]
 
-    const created = await requestModel(teamId, 'deploy-user-15')
+    test('the request, read and list responses carry the same deployment keys in the same envelopes', async () => {
+      const teamId = await createTeam('shape-user-1')
+      const created = await requestModel(teamId, 'shape-user-1')
+      const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
+      const headers = userHeaders('shape-user-1')
 
-    const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
-    const headers = userHeaders('deploy-user-15')
+      const read = await server.inject({ method: 'GET', url, headers })
+      const list = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${teamId}/deployments`,
+        headers
+      })
 
-    await wait(300)
-
-    // Every poll races to persist the status it read; a stale writer must not
-    // overwrite a newer one, so all of them must agree on the terminal state.
-    const responses = await Promise.all(
-      Array.from({ length: 8 }, () =>
-        server.inject({ method: 'GET', url, headers })
+      expect(Object.keys(created.result)).toEqual(['deployments', 'deployment'])
+      expect(Object.keys(created.result.deployment).sort()).toEqual(
+        DEPLOYMENT_KEYS
       )
-    )
-
-    expect(
-      responses.map((response) => response.result.deployment.status)
-    ).toEqual(Array.from({ length: 8 }, () => 'active'))
-
-    const after = await server.inject({ method: 'GET', url, headers })
-
-    expect(after.result.deployment.status).toBe('active')
+      expect(Object.keys(read.result)).toEqual(['deployment'])
+      expect(Object.keys(read.result.deployment).sort()).toEqual(
+        DEPLOYMENT_KEYS
+      )
+      expect(Object.keys(list.result)).toEqual(['items'])
+      expect(Object.keys(list.result.items[0]).sort()).toEqual(DEPLOYMENT_KEYS)
+    })
   })
 
   describe('DELETE /v1/teams/{teamId}/deployments/{id}', () => {
@@ -844,13 +888,12 @@ describe('#team-deployments routes', () => {
       const created = await requestModel(teamId, label)
       const url = `/v1/teams/${teamId}/deployments/${created.result.deployment._id}`
 
-      await wait(300)
-      await server.inject({ method: 'GET', url, headers: userHeaders(label) })
+      await wait()
 
       return { teamId, url }
     }
 
-    test('removes an active model for a team admin and withdraws its grant', async () => {
+    test('accepts the removal of an active model for a team admin, then withdraws its grant once it has applied', async () => {
       const { teamId, url } = await activeDeployment('remove-user-1')
 
       const { result, statusCode } = await server.inject({
@@ -859,15 +902,19 @@ describe('#team-deployments routes', () => {
         headers: userHeaders('remove-user-1')
       })
 
-      expect(statusCode).toBe(200)
+      expect(statusCode).toBe(202)
       expect(result.deployment).toMatchObject({
-        status: 'removed',
-        removedAt: expect.any(String),
-        progressSteps: null
+        status: 'removing',
+        progressSteps: null,
+        operation: { state: 'requested' }
       })
+
+      await wait()
+
       const stored = await server.db
         .collection('teamDeployments')
         .findOne({ teamId: teamId.toString() })
+
       expect(stored.gateway.allowedDeployments).toEqual([])
 
       const listed = await server.inject({
@@ -875,9 +922,21 @@ describe('#team-deployments routes', () => {
         url: `/v1/teams/${teamId}/deployments`,
         headers: userHeaders('remove-user-1')
       })
-      expect(listed.result.items.map((item) => item.status)).toEqual([
-        'removed'
-      ])
+
+      expect(listed.result.items[0]).toMatchObject({
+        status: 'removed',
+        removedAt: expect.any(String),
+        progressSteps: null
+      })
+
+      const again = await server.inject({
+        method: 'DELETE',
+        url,
+        headers: userHeaders('remove-user-1')
+      })
+
+      expect(again.statusCode).toBe(200)
+      expect(again.result.deployment.status).toBe('removed')
     })
 
     test('refuses a model still being set up', async () => {
@@ -978,20 +1037,26 @@ describe('#team-deployments routes', () => {
       expect(read.statusCode).toBe(200)
       expect(listed.result.items).toHaveLength(1)
 
-      await wait(300)
-      await server.inject({
-        method: 'GET',
-        url: deploymentUrl,
-        headers: userHeaders(label)
-      })
+      await wait()
+
       const removed = await server.inject({
         method: 'DELETE',
         url: deploymentUrl,
         headers: userHeaders(label)
       })
 
-      expect(removed.statusCode).toBe(200)
-      expect(removed.result.deployment.status).toBe('removed')
+      expect(removed.statusCode).toBe(202)
+      expect(removed.result.deployment.status).toBe('removing')
+
+      await wait()
+
+      const done = await server.inject({
+        method: 'GET',
+        url: deploymentUrl,
+        headers: userHeaders(label)
+      })
+
+      expect(done.result.deployment.status).toBe('removed')
     })
 
     test('keeps a person who is not in the team out, and a team member who is not an admin from removing', async () => {

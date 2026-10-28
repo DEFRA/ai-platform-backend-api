@@ -1,16 +1,15 @@
-import { ObjectId } from 'mongodb'
-
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
-import { config } from '#/config.js'
-import {
-  tenantOrchestratorRegistry,
-  GITHUB_ORCHESTRATOR
-} from '#/adapters/tenant-orchestrator-registry.js'
+import { uuidv7 } from '#/common/helpers/uuid-v7.js'
 import { requireUserPrincipal } from '#/services/user-service.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import {
+  findSlotHolder,
+  isDuplicateKey
+} from '#/operations/operation-repository.js'
+import { projectOperation } from '#/operations/operation-projection.js'
+import {
+  CHECKS_FAILED,
   DEPLOY_FAILED,
-  QUEUED,
   REMOVED,
   REMOVING,
   auditDeployment,
@@ -18,49 +17,37 @@ import {
   entryFilter,
   findEntry
 } from '#/services/team-deployment-entries.js'
-import { claimableFieldQuery } from '#/services/team-deployment-gitops-steps.js'
-import { mustQueue } from '#/services/team-deployment-queue.js'
-import {
-  buildSubmission,
-  submissionRequest
-} from '#/services/team-deployment-submission.js'
-import { teamDesiredStateBuilder } from '#/services/team-desired-state.js'
+import { refusalOf, traceOf } from '#/services/team-deployment-submission.js'
+import { resolveTeamTarget } from '#/services/team-desired-state.js'
 import { resolveTeamId } from '#/services/team-service.js'
 import { toDeploymentView } from '#/services/team-deployment-view.js'
 
-const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
 const REMOVE_ACTION = 'teamDeployment.remove'
-
-// Entries whose model never reached the team file on main: a removal is a
-// record change only, with nothing to submit.
-const NEVER_APPLIED = new Set([QUEUED, 'checks-failed'])
+const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
 
 /**
  * Removes one of a team's model deployments, for a team admin (design C
  * #actions: remove a dedicated deployment is GitOps). The team file is
- * submitted whole without the model as a `remove` follow-up on the entry,
- * followed through the GitOps states like a revert; the entry is `removing`
- * until the apply has destroyed the deployment, then `removed` with its
- * grant withdrawn, or `active` again with a reason if the removal failed.
- * A model that never reached `main` is marked removed at once. Idempotent:
- * an entry already removing or removed is returned as it is. Refuses an
- * entry whose own operation is still in progress
+ * submitted whole without the model as an operation, followed through the
+ * same states as an add; the entry is `removing` until the apply has
+ * destroyed the deployment, then `removed` with its grant withdrawn, or
+ * `active` again with a reason if the removal failed. A model whose request
+ * was refused by the checks never reached `main`, so it is marked removed at
+ * once. Idempotent: an entry already removing or removed is returned as it
+ * is. Refuses an entry whose own operation is still in progress or waiting
  * (`409 deployment-in-progress`) and a team file another operation holds
  * (`409 team-file-busy`), so no two operations race on one file.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, id: string, requestedBy: string, traceParent?: string}} params - `teamId` is the team's id or slug
- * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, buildDesiredState?: Function}} [deps]
+ * @param {{teamId: string, id: string, requestedBy: string, traceParent?: string, cdpRequestId?: string}} params - `teamId` is the team's id or slug
+ * @param {{operations: ReturnType<typeof import('#/operations/operations-service.js').createOperationsService>}} deps
  * @returns {Promise<object|null>} The deployment view, or null for a non-member or unknown entry.
  */
 export async function removeDeployment(
   db,
   locker,
-  { teamId: teamRef, id, requestedBy, traceParent },
-  {
-    registry = tenantOrchestratorRegistry,
-    buildDesiredState = teamDesiredStateBuilder
-  } = {}
+  { teamId: teamRef, id, requestedBy, traceParent, cdpRequestId },
+  { operations }
 ) {
   const teamId = await resolveTeamId(db, teamRef)
   const membership = teamId
@@ -99,14 +86,13 @@ export async function removeDeployment(
     const doc = await db
       .collection('teamDeployments')
       .findOne({ _id: located._id })
-    const entry = findEntry(doc, id)
 
     return await removeEntry(
       db,
       doc,
-      entry,
-      { requestedBy, principal, traceParent },
-      { registry, buildDesiredState }
+      findEntry(doc, id),
+      { requestedBy, principal, ...traceOf({ traceParent, cdpRequestId }) },
+      operations
     )
   } finally {
     await lock.free()
@@ -121,13 +107,21 @@ function inProgress() {
   )
 }
 
+function fileBusy() {
+  return boomWithCode(
+    Boom.conflict,
+    'Another change to this team is in progress; try again shortly',
+    'team-file-busy'
+  )
+}
+
 // The locked part of `removeDeployment`.
-async function removeEntry(db, doc, entry, actor, deps) {
+async function removeEntry(db, doc, entry, actor, operations) {
   if (entry.status === REMOVING || entry.status === REMOVED) {
     return toDeploymentView(doc, entry)
   }
 
-  if (NEVER_APPLIED.has(entry.status)) {
+  if (entry.status === CHECKS_FAILED) {
     return markRemoved(db, doc, entry, actor)
   }
 
@@ -135,39 +129,25 @@ async function removeEntry(db, doc, entry, actor, deps) {
     throw inProgress()
   }
 
-  if (await mustQueue(db, doc)) {
-    throw boomWithCode(
-      Boom.conflict,
-      'Another change to this team is in progress; try again shortly',
-      'team-file-busy'
-    )
+  const file = { environment: doc.environment, teamId: doc.teamId }
+
+  if (
+    (await findSlotHolder(db, { ...file, slot: 'active' })) ||
+    (await findSlotHolder(db, { ...file, slot: 'waiting' }))
+  ) {
+    throw fileBusy()
   }
 
-  if (deps.registry.key !== GITHUB_ORCHESTRATOR || !entry.gitops) {
-    return markRemoved(db, doc, entry, actor)
-  }
-
-  return submitRemoval(db, doc, entry, actor, deps)
+  return submitRemoval(db, doc, entry, actor, operations)
 }
 
-// A removal with nothing to apply: the record changes, audited. A queued
-// request is left alone while a poll holds a live claim on it, because that
-// poll may already be submitting it to GitHub; the match fails and the
-// caller is told to try again once the dispatch has settled.
+// A removal with nothing to apply: the record changes, audited. The entry
+// only goes if nothing has moved it since it was read.
 async function markRemoved(db, doc, entry, { requestedBy }) {
   const removedAt = new Date().toISOString()
-  const filter = entryFilter(doc, entry)
-
-  if (entry.status === QUEUED) {
-    Object.assign(
-      filter.deployments.$elemMatch,
-      claimableFieldQuery('dispatch', config.get('gitops.claimLeaseMs'))
-    )
-  }
-
   const { matchedCount } = await db
     .collection('teamDeployments')
-    .updateOne(filter, {
+    .updateOne(entryFilter(doc, entry), {
       $set: entryFields({ status: REMOVED, removedAt }),
       $pull: { 'gateway.allowedDeployments': entry.modelSlug }
     })
@@ -185,89 +165,66 @@ async function markRemoved(db, doc, entry, { requestedBy }) {
   return toDeploymentView(doc, { ...entry, status: REMOVED, removedAt })
 }
 
-// Asks the orchestrator to submit the file without the model; a refusal is
-// audited and reported as upstream trouble, with nothing to unwind.
-async function dispatchRemoval(db, entry, actor, deps, operation, submission) {
+// Asks for an operation whose document is the team file without the model; a
+// refusal is audited and reported, with nothing to unwind: the entry stays as
+// it was.
+async function requestRemoval(db, doc, entry, actor, operations) {
+  const { requestedBy, principal, traceparent, cdpRequestId } = actor
+
   try {
-    return await deps.registry.orchestrator.requestDeployment(
-      submissionRequest(operation, submission)
-    )
-  } catch (error) {
-    await auditDeployment(db, entry, {
-      action: REMOVE_ACTION,
-      actorUserId: actor.requestedBy,
-      outcome: 'failure',
-      code: error.code ?? UPSTREAM_UNAVAILABLE
+    const target = await resolveTeamTarget(db, {
+      teamId: doc.teamId,
+      environment: doc.environment
+    })
+    const { operation } = await operations.request({
+      teamId: doc.teamId,
+      environment: doc.environment,
+      target,
+      items: [
+        { entryId: entry.id, modelSlug: entry.modelSlug, change: 'remove' }
+      ],
+      requestedBy: principal,
+      requestedByUserId: requestedBy,
+      // A removal has no key of its own: the entry's state is what makes a
+      // repeat harmless, and each removal is its own operation.
+      idempotencyKey: `remove:${uuidv7()}`,
+      traceparent,
+      cdpRequestId
     })
 
-    throw boomWithCode(
-      Boom.badGateway,
-      'Failed to request the removal',
-      UPSTREAM_UNAVAILABLE
-    )
+    return operation
+  } catch (error) {
+    const refusal = isDuplicateKey(error)
+      ? fileBusy()
+      : refusalOf(error, 'Failed to request the removal')
+
+    await auditDeployment(db, entry, {
+      action: REMOVE_ACTION,
+      actorUserId: requestedBy,
+      outcome: 'failure',
+      code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
+    })
+
+    throw refusal
   }
 }
 
 // Builds the team file without the model and submits it as the requester,
-// as a new operation tracked under the entry's `gitops.remove`. The entry
-// is `removing` only once the submit run exists; a submit that fails leaves
-// it active with nothing to unwind.
-async function submitRemoval(db, doc, entry, actor, deps) {
-  const { requestedBy, principal, traceParent } = actor
-  const operationId = new ObjectId().toString()
-  const requestedAt = new Date().toISOString()
-  const submission = await buildSubmission(
-    deps.buildDesiredState,
-    db,
-    {
-      teamId: doc.teamId,
-      environment: doc.environment,
-      modelSlug: entry.modelSlug,
-      operationId,
-      requestedBy,
-      change: 'remove'
-    },
-    principal
-  )
-  const submitted = await dispatchRemoval(
-    db,
-    entry,
-    actor,
-    deps,
-    { environment: doc.environment, operationId, principal, traceParent },
-    submission
-  )
+// as an operation of its own. The entry is `removing` once the operation is
+// recorded; a request that fails leaves it active with nothing to unwind.
+async function submitRemoval(db, doc, entry, actor, operations) {
+  const operation = await requestRemoval(db, doc, entry, actor, operations)
 
-  const remove = {
-    operationId,
-    requestedAt,
-    requestedBy: principal,
-    action: 'write',
-    revision: submission.document.revision,
-    expectedRevision: submission.expectedRevision,
-    submitRunId: submitted.submitRunId,
-    submitRunUrl: submitted.submitRunUrl,
-    dispatchedAt: requestedAt,
-    status: 'requested'
-  }
-
-  await db.collection('teamDeployments').updateOne(entryFilter(doc, entry), {
-    $set: entryFields({
-      status: REMOVING,
-      failureReason: null,
-      'gitops.remove': remove
-    })
-  })
+  await projectOperation(db, operation)
   await auditDeployment(db, entry, {
     action: REMOVE_ACTION,
-    actorUserId: requestedBy,
-    reason: `remove operation ${operationId}`
+    actorUserId: actor.requestedBy,
+    reason: `remove operation ${operation._id}`
   })
 
-  return toDeploymentView(doc, {
-    ...entry,
-    status: REMOVING,
-    failureReason: null,
-    gitops: { ...entry.gitops, remove }
-  })
+  const current = await db
+    .collection('teamDeployments')
+    .findOne({ _id: doc._id })
+
+  return toDeploymentView(current, findEntry(current, entry.id))
 }

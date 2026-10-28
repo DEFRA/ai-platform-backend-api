@@ -1,66 +1,92 @@
-import { createTenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
+import {
+  MOCK_ORCHESTRATOR,
+  SQS_ORCHESTRATOR,
+  createTenantOrchestratorRegistry,
+  tenantOrchestratorRegistry
+} from '#/adapters/tenant-orchestrator-registry.js'
+import { mockTeamFileReader } from '#/adapters/mock-team-file-reader.js'
+import { mockOutcomeOfPurpose } from '#/adapters/mock-gitops-worker.js'
 
 describe('#createTenantOrchestratorRegistry', () => {
-  const mock = { id: 'mock-orchestrator' }
-  const github = { id: 'github-orchestrator' }
-  const orchestratorsByKey = { mock, github }
+  const mock = {
+    reader: { id: 'mock-reader' },
+    createTransport: vi.fn(),
+    mockOutcomeOf: vi.fn().mockReturnValue('deploy-failed')
+  }
+  const sqs = {
+    reader: { id: 'github-reader' },
+    createTransport: vi.fn()
+  }
+  const adaptersByMode = { [MOCK_ORCHESTRATOR]: mock, [SQS_ORCHESTRATOR]: sqs }
 
-  test('submits new deployments through the configured orchestrator', () => {
+  test('provides the reader and the transport of the configured mode', () => {
     const registry = createTenantOrchestratorRegistry(
-      orchestratorsByKey,
-      'github',
+      adaptersByMode,
+      SQS_ORCHESTRATOR,
       'dev'
     )
 
-    expect(registry.key).toBe('github')
-    expect(registry.orchestrator).toBe(github)
+    expect(registry.key).toBe('sqs')
+    expect(registry.reader).toBe(sqs.reader)
+    expect(registry.createTransport).toBe(sqs.createTransport)
   })
 
-  test('resolves an entry to the orchestrator that submitted it, whatever the mode', () => {
-    const registry = createTenantOrchestratorRegistry(
-      orchestratorsByKey,
-      'github',
+  test('forces no outcome from a purpose unless the mode is the mock', () => {
+    const live = createTenantOrchestratorRegistry(
+      adaptersByMode,
+      SQS_ORCHESTRATOR,
+      'dev'
+    )
+    const staged = createTenantOrchestratorRegistry(
+      adaptersByMode,
+      MOCK_ORCHESTRATOR,
       'dev'
     )
 
-    expect(registry.forEntry({ orchestrator: 'mock' })).toBe(mock)
-    expect(registry.forEntry({ orchestrator: 'github' })).toBe(github)
-  })
-
-  test('treats an entry from before the orchestrator was recorded as mock', () => {
-    const registry = createTenantOrchestratorRegistry(
-      orchestratorsByKey,
-      'github',
-      'dev'
-    )
-
-    expect(registry.forEntry({})).toBe(mock)
+    expect(live.mockOutcomeOf('[mock:deploy-failed]')).toBeNull()
+    expect(staged.mockOutcomeOf('[mock:deploy-failed]')).toBe('deploy-failed')
   })
 
   test('refuses to start with the mock orchestrator in prod', () => {
     expect(() =>
-      createTenantOrchestratorRegistry(orchestratorsByKey, 'mock', 'prod')
+      createTenantOrchestratorRegistry(
+        adaptersByMode,
+        MOCK_ORCHESTRATOR,
+        'prod'
+      )
     ).toThrow('TENANT_ORCHESTRATOR must not be "mock" in the prod environment')
   })
 
-  test('starts with the github orchestrator in prod', () => {
+  test('starts with the sqs orchestrator in prod', () => {
     expect(
-      createTenantOrchestratorRegistry(orchestratorsByKey, 'github', 'prod')
-        .orchestrator
-    ).toBe(github)
+      createTenantOrchestratorRegistry(adaptersByMode, SQS_ORCHESTRATOR, 'prod')
+        .reader
+    ).toBe(sqs.reader)
   })
 
-  test('refuses an orchestrator it has no adapter for', () => {
-    expect(() =>
-      createTenantOrchestratorRegistry({ mock }, 'github', 'dev')
-    ).toThrow('No tenant orchestrator registered for "github"')
-  })
+  test.each(['github', 'unknown'])(
+    'refuses a mode it has no adapter for (%s)',
+    (mode) => {
+      expect(() =>
+        createTenantOrchestratorRegistry(adaptersByMode, mode, 'dev')
+      ).toThrow(`No tenant orchestrator registered for "${mode}"`)
+    }
+  )
 })
 
 describe('#tenantOrchestratorRegistry', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
     vi.resetModules()
+  })
+
+  test('is the mock in the tests: the mock reader, the mock transport and the purpose markers', () => {
+    expect(tenantOrchestratorRegistry.key).toBe('mock')
+    expect(tenantOrchestratorRegistry.reader).toBe(mockTeamFileReader)
+    expect(tenantOrchestratorRegistry.mockOutcomeOf).toBe(mockOutcomeOfPurpose)
+    expect(
+      tenantOrchestratorRegistry.mockOutcomeOf('[mock:checks-failed]')
+    ).toBe('checks-failed')
   })
 
   test('throws at registration when prod is configured with the mock orchestrator', async () => {

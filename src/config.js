@@ -4,6 +4,8 @@ import convictFormatWithValidator from 'convict-format-with-validator'
 import { convictValidateMongoUri } from '#/common/helpers/convict/validate-mongo-uri.js'
 import { convictValidateAipEnvironments } from '#/common/helpers/convict/validate-aip-environments.js'
 import { AZURE_APIM, DEFAULT_GATEWAY } from '#/adapters/gateway-keys.js'
+import { gitopsConfigSchema } from '#/config-gitops.js'
+import { githubConfigSchema } from '#/config-github.js'
 
 convict.addFormat(convictValidateMongoUri)
 convict.addFormat(convictValidateAipEnvironments)
@@ -192,49 +194,12 @@ export const config = convict({
     }
   },
   tenantOrchestrator: {
-    doc: 'TenantOrchestrator for new team deployments: mock advances through the GitOps states on a timer; github dispatches submit.yml in the GitOps state repositories. Refused as mock in prod',
-    format: ['mock', 'github'],
+    doc: 'How team deployments reach the GitOps state repositories: mock stages events on a timer; sqs publishes commands to the GitOps worker and reads its events',
+    format: ['mock', 'sqs'],
     default: 'mock',
     env: 'TENANT_ORCHESTRATOR'
   },
-  gitops: {
-    tenantsRepo: {
-      doc: 'owner/repo holding team files (environments/{env}/{slug}.json), dispatched when tenantOrchestrator is github',
-      format: String,
-      default: 'DEFRA/ai-platform-tenants',
-      env: 'GITOPS_TENANTS_REPO'
-    },
-    deploymentsRepo: {
-      doc: 'owner/repo holding platform pins (environments/{env}/platform.json), dispatched when tenantOrchestrator is github',
-      format: String,
-      default: 'DEFRA/ai-platform-deployments',
-      env: 'GITOPS_DEPLOYMENTS_REPO'
-    },
-    pollMinIntervalMs: {
-      doc: 'Minimum time in ms between two GitHub/ARM status polls of the same operation',
-      format: 'nat',
-      default: 30000,
-      env: 'GITOPS_POLL_MIN_INTERVAL_MS'
-    },
-    claimLeaseMs: {
-      doc: 'How long in ms a claimed GitOps step (retry apply, revert, abandon) waits for its dispatch before another poll may claim it again',
-      format: 'nat',
-      default: 600000,
-      env: 'GITOPS_CLAIM_LEASE_MS'
-    },
-    verifyMaxAttempts: {
-      doc: 'How many times ARM may fail to confirm a deployed team before the deployment fails for good with the verifier reason; a Platform Admin retry starts the count again',
-      format: 'nat',
-      default: 5,
-      env: 'GITOPS_VERIFY_MAX_ATTEMPTS'
-    },
-    stallWarnAfterMs: {
-      doc: 'How long in ms a deployment may stay merged or deploying before the backend warns and audits that it looks stalled, once per status; 0 turns it off. It never changes the deployment',
-      format: 'nat',
-      default: 1800000,
-      env: 'GITOPS_STALL_WARN_AFTER_MS'
-    }
-  },
+  gitops: gitopsConfigSchema,
   aipEnvironments: {
     doc: 'AI Platform environments as JSON keyed by name: {subscriptionId, resourceGroup, apimName, foundryAccounts, tenantsVault}',
     format: 'aip-environments',
@@ -373,45 +338,7 @@ export const config = convict({
       env: 'CATALOGUE_REF'
     }
   },
-  github: {
-    token: {
-      doc: 'Fine-grained GitHub PAT with Contents:Read on the catalogue repo (or use the App credentials below)',
-      format: String,
-      nullable: true,
-      default: null,
-      sensitive: true,
-      env: 'GITHUB_TOKEN'
-    },
-    appId: {
-      doc: 'GitHub App ID, an alternative to github.token - superseded by github.clientId if both are set',
-      format: String,
-      nullable: true,
-      default: null,
-      env: 'GITHUB_APP_ID'
-    },
-    clientId: {
-      doc: 'GitHub App Client ID, preferred over github.appId per GitHub current guidance',
-      format: String,
-      nullable: true,
-      default: null,
-      env: 'GITHUB_CLIENT_ID'
-    },
-    installationId: {
-      doc: 'GitHub App installation ID, required alongside github.appId',
-      format: String,
-      nullable: true,
-      default: null,
-      env: 'GITHUB_APP_INSTALLATION_ID'
-    },
-    privateKey: {
-      doc: 'GitHub App private key, base64-encoded (required alongside github.appId)',
-      format: String,
-      nullable: true,
-      default: null,
-      sensitive: true,
-      env: 'GITHUB_APP_PRIVATE_KEY'
-    }
-  }
+  github: githubConfigSchema
 })
 
 config.validate({ allowed: 'strict' })
@@ -527,10 +454,23 @@ if (isGithubAppAuth && !config.get('github.privateKey')) {
   )
 }
 
-// Submit and status tokens are down-scoped per use, which only a GitHub App
-// installation token can be - a PAT is never enough for the orchestrator.
-if (config.get('tenantOrchestrator') === 'github' && !isGithubAppAuth) {
-  throw new Error(
-    'TENANT_ORCHESTRATOR=github requires GITHUB_CLIENT_ID or GITHUB_APP_ID (a GitHub App) to be set'
-  )
+// The queue mode reads team files and corroborates runs with the App's read
+// tokens, and needs the commands topic and the events queue.
+if (config.get('tenantOrchestrator') === 'sqs') {
+  if (!isGithubAppAuth) {
+    throw new Error(
+      'TENANT_ORCHESTRATOR=sqs requires GITHUB_CLIENT_ID or GITHUB_APP_ID (a GitHub App) to be set'
+    )
+  }
+
+  const missingQueues = [
+    ['GITOPS_COMMANDS_TOPIC_ARN', 'gitops.commandsTopicArn'],
+    ['GITOPS_EVENTS_QUEUE_URL', 'gitops.eventsQueueUrl']
+  ].filter(([, key]) => !config.get(key))
+
+  if (missingQueues.length > 0) {
+    throw new Error(
+      `TENANT_ORCHESTRATOR=sqs requires ${missingQueues.map(([name]) => name).join(' and ')} to be set`
+    )
+  }
 }
