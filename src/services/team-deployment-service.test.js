@@ -1352,7 +1352,7 @@ describe('team-deployment-service (operations)', () => {
       expect(await operationsOf(member.teamId)).toHaveLength(2)
     })
 
-    test('refuses a model whose request the checks refused, with its support reference on the entry', async () => {
+    test('refuses a model whose request the checks refused', async () => {
       const member = await signedInMember()
       const deployment = await requestOne(member)
       const operation = await operationOf(member.teamId)
@@ -1364,31 +1364,29 @@ describe('team-deployment-service (operations)', () => {
         data: { code: 'deployment-not-removable' }
       })
       expect(await operationsOf(member.teamId)).toHaveLength(1)
-
-      const failed = await view(member, deployment._id)
-
-      expect(failed.status).toBe('checks-failed')
+      expect((await view(member, deployment._id)).status).toBe('checks-failed')
     })
 
-    test('refuses a model that failed to deploy or timed out', async () => {
-      const member = await signedInMember()
-      const deployment = await requestOne(member)
-      const operation = await operationOf(member.teamId)
+    test.each(['deploy-failed', 'timed-out'])(
+      'refuses a model that is %s',
+      async (status) => {
+        const member = await signedInMember()
+        const deployment = await requestOne(member)
 
-      await deliver(operation, 'requested', 'committed', 'deploying')
-      await db
-        .collection('teamDeployments')
-        .updateOne(
-          { teamId: member.teamId },
-          { $set: { 'deployments.$[].status': 'timed-out' } }
-        )
+        await db
+          .collection('teamDeployments')
+          .updateOne(
+            { teamId: member.teamId },
+            { $set: { 'deployments.$[].status': status } }
+          )
 
-      await expect(remove(member, deployment._id)).rejects.toMatchObject({
-        output: { statusCode: 409 },
-        data: { code: 'deployment-not-removable' }
-      })
-    })
-
+        await expect(remove(member, deployment._id)).rejects.toMatchObject({
+          output: { statusCode: 409 },
+          data: { code: 'deployment-not-removable' }
+        })
+        expect(await operationsOf(member.teamId)).toHaveLength(1)
+      }
+    )
     test.each([
       ['being set up', async (member) => requestOne(member)],
       [

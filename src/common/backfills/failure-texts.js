@@ -48,6 +48,32 @@ export function currentFailureText(text, operationId) {
   return rewritten === text ? null : rewritten
 }
 
+function updatesFor(doc) {
+  return doc.deployments.flatMap((entry) => {
+    const text =
+      typeof entry.failureReason === 'string'
+        ? currentFailureText(entry.failureReason, entry.operationId)
+        : null
+
+    return text
+      ? [
+          {
+            updateOne: {
+              filter: { _id: doc._id },
+              update: { $set: { 'deployments.$[entry].failureReason': text } },
+              arrayFilters: [
+                {
+                  'entry.id': entry.id,
+                  'entry.failureReason': entry.failureReason
+                }
+              ]
+            }
+          }
+        ]
+      : []
+  })
+}
+
 /**
  * Rewrites the stored failure text of every entry that still has an old one.
  * Each entry is updated only while it still holds the text read, so a
@@ -56,38 +82,19 @@ export function currentFailureText(text, operationId) {
  * @returns {Promise<{modifiedCount: number}>}
  */
 export async function rewriteFailureTexts(db) {
-  const docs = db
+  const docs = await db
     .collection('teamDeployments')
     .find({ 'deployments.failureReason': { $type: 'string' } })
-  let modifiedCount = 0
+    .toArray()
+  const operations = docs.flatMap(updatesFor)
 
-  for await (const doc of docs) {
-    for (const entry of doc.deployments) {
-      const text =
-        typeof entry.failureReason === 'string'
-          ? currentFailureText(entry.failureReason, entry.operationId)
-          : null
-
-      if (text) {
-        const { modifiedCount: changed } = await db
-          .collection('teamDeployments')
-          .updateOne(
-            { _id: doc._id },
-            { $set: { 'deployments.$[entry].failureReason': text } },
-            {
-              arrayFilters: [
-                {
-                  'entry.id': entry.id,
-                  'entry.failureReason': entry.failureReason
-                }
-              ]
-            }
-          )
-
-        modifiedCount += changed
-      }
-    }
+  if (operations.length === 0) {
+    return { modifiedCount: 0 }
   }
+
+  const { modifiedCount } = await db
+    .collection('teamDeployments')
+    .bulkWrite(operations)
 
   return { modifiedCount }
 }

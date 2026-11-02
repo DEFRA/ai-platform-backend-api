@@ -17,6 +17,37 @@ export function supportReferenceOf(operationId) {
   return `${REFERENCE_PREFIX}${operationId.slice(-REFERENCE_LENGTH).toUpperCase()}`
 }
 
+function entriesOf(operation) {
+  return (operation.items ?? []).map(({ entryId, modelSlug, change }) => ({
+    entryId,
+    modelSlug,
+    change
+  }))
+}
+
+function errorFieldsOf({ error }) {
+  return {
+    errorCode: error?.code ?? null,
+    errorMessage: error?.message ?? null
+  }
+}
+
+function gitopsFieldsOf({ gitops = {} }) {
+  return {
+    submitRunUrl: gitops.submitRunUrl ?? null,
+    applyRunUrl: gitops.applyRunUrl ?? null,
+    commitSha: gitops.commitSha ?? null
+  }
+}
+
+function traceFieldsOf(operation) {
+  return {
+    requestedByUserId: operation.requestedByUserId ?? null,
+    traceparent: operation.traceparent ?? null,
+    cdpRequestId: operation.cdpRequestId ?? null
+  }
+}
+
 /**
  * Everything support needs to find out what went wrong, keyed by the
  * reference: the operation, its team, environment and models, where it was
@@ -26,31 +57,20 @@ export function supportReferenceOf(operationId) {
  * @returns {Record<string, unknown>}
  */
 export function failureLogFields(operation, previousState) {
-  const { gitops = {} } = operation
-
   return {
     supportReference: supportReferenceOf(operation._id),
     operationId: operation._id,
     operationType: operation.type,
     teamId: operation.teamId,
     environment: operation.environment,
-    entries: (operation.items ?? []).map(({ entryId, modelSlug, change }) => ({
-      entryId,
-      modelSlug,
-      change
-    })),
+    entries: entriesOf(operation),
     state: operation.state,
     previousState,
     leftState: operation.leftState ?? null,
     attempt: operation.attempt,
     reconcileCount: operation.reconcileCount,
-    errorCode: operation.error?.code ?? null,
-    errorMessage: operation.error?.message ?? null,
-    submitRunUrl: gitops.submitRunUrl ?? null,
-    applyRunUrl: gitops.applyRunUrl ?? null,
-    commitSha: gitops.commitSha ?? null,
-    requestedByUserId: operation.requestedByUserId ?? null,
-    traceparent: operation.traceparent ?? null,
-    cdpRequestId: operation.cdpRequestId ?? null
+    ...errorFieldsOf(operation),
+    ...gitopsFieldsOf(operation),
+    ...traceFieldsOf(operation)
   }
 }
