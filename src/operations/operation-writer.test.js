@@ -54,7 +54,12 @@ describe('operation-writer', () => {
   }
 
   function ctx(overrides = {}) {
-    return { db, settings, logger: { warn: vi.fn() }, ...overrides }
+    return {
+      db,
+      settings,
+      logger: { warn: vi.fn(), error: vi.fn() },
+      ...overrides
+    }
   }
 
   function auditEvents() {
@@ -432,6 +437,48 @@ describe('operation-writer', () => {
         }
       )
 
+      test('log one error with the support reference for a move into a failed state, and none otherwise', async () => {
+        const operation = await seedOperation()
+        const context = ctx()
+
+        const failed = await writeOperation(context, operation, {
+          state: 'deploy-failed',
+          set: {
+            error: { code: 'operation-deploy-failed', message: 'it broke' }
+          }
+        })
+
+        expect(context.logger.error).toHaveBeenCalledTimes(1)
+        expect(context.logger.error).toHaveBeenCalledWith(
+          expect.objectContaining({
+            supportReference: `AIP-${operation._id.slice(-5).toUpperCase()}`,
+            operationId: operation._id,
+            state: 'deploy-failed',
+            previousState: operation.state,
+            errorCode: 'operation-deploy-failed'
+          }),
+          expect.stringContaining('support reference AIP-')
+        )
+
+        await writeOperation(context, failed, { set: { note: 'same state' } })
+        await writeOperation(context, failed, { state: 'deploy-failed' })
+        await writeOperation(ctx(), operation, { state: 'active' })
+
+        expect(context.logger.error).toHaveBeenCalledTimes(1)
+      })
+
+      test('do not log a cancelled revert as a failure', async () => {
+        const operation = await seedOperation()
+        const context = ctx()
+
+        await writeOperation(context, operation, {
+          state: 'checks-failed',
+          set: { error: { code: 'operation-revert-cancelled', message: 'x' } }
+        })
+
+        expect(context.logger.error).not.toHaveBeenCalled()
+      })
+
       test('record a success outcome for a state that is not a failure', async () => {
         const operation = await seedOperation()
 
@@ -490,7 +537,7 @@ describe('operation-writer', () => {
 
         test('logs it for each item and keeps the transition', async () => {
           const operation = await seedOperation()
-          const logger = { warn: vi.fn() }
+          const logger = { warn: vi.fn(), error: vi.fn() }
 
           const written = await writeOperation(
             ctx({ db: failingAuditDb(), logger }),

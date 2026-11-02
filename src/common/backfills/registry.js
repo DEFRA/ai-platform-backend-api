@@ -1,4 +1,5 @@
 import { deriveTeamSlug, firstFreeSlug } from '#/common/helpers/team-slug.js'
+import { rewriteFailureTexts } from '#/common/backfills/failure-texts.js'
 
 /**
  * Ordered registry of one-off data backfills applied by `runBackfills` on
@@ -539,5 +540,15 @@ export const backfillRegistry = [
 
       return { modifiedCount }
     }
+  },
+  // Failure texts stored on entries say what the platform engineers were told
+  // and name Azure; they now only say what failed, and the page says to contact
+  // AI Platform Support. Nothing re-projects a timed-out entry, so its stored
+  // text would otherwise stay as it was.
+  {
+    id: '2026-11-02-team-deployments-failure-wording',
+    description:
+      'Rewrites the old failure texts on teamDeployments entries (platform engineers alerted, Azure) to the current wording',
+    run: rewriteFailureTexts
   }
 ]

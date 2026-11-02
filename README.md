@@ -388,7 +388,7 @@ research) or `403 model-not-deployed` (offered, but not deployed there); a faile
 carries a flat boolean `researchAvailable` (research-eligible **and** deployed), so a page need not work it out,
 and it too answers `502 research-deployments-unavailable` when the file cannot be read.
 Each deployment's `progressSteps` are `{label, state, at}`: the third label names the model ("Setting up
-GPT-4o in Azure"), and `at` is when a done step finished or the current one started (ISO time, from
+GPT-4o"), and `at` is when a done step finished or the current one started (ISO time, from
 the entry's `statusTimes`), null for one not reached.
 Platform Admins
 (users whose `roles` include `platform-admin`; nothing assigns it yet) can
@@ -411,9 +411,16 @@ A team admin removes a model with `DELETE /v1/teams/{teamId}/deployments/{id}` (
 the file is submitted whole without the model and its grant, as a `remove` operation tracked on the
 entry like a revert, and the next apply destroys the deployment. The entry is `removing` (202) until
 that apply has run, then `removed` with the grant withdrawn, or `active` again with a failure reason
-if the removal failed; a model that never reached `main` is marked `removed` at once (200). A
-deployment still being set up is refused with `409 deployment-in-progress`, and one whose team file
-another operation holds with `409 team-file-busy`.
+if the removal failed. Only an `active` model can be removed: one still being set up, failed or timed out
+is refused with `409 deployment-not-removable`, and one whose team file another operation holds with
+`409 team-file-busy`.
+
+A failed entry's page quotes a support reference, `AIP-` and the last five characters of its operation id (the
+frontend builds it the same way, from `operationId`). When an operation moves into `checks-failed`, `deploy-failed` or `timed-out` the backend logs one error
+line, `Deployment failed, support reference AIP-XXXXX`, with the same `supportReference` field and the
+operation id, type, team, environment, entries (id and model), previous and left state, attempt, error code and
+message, run links, commit, requester and the trace ids (`traceparent`, `cdpRequestId`). Search the logs
+for the reference to find what went wrong.
 
 A team's credential (one per team per environment) is created when the team's first model in that
 environment turns `active`, under the lock `team-credential:{teamId}:{environment}`: its secret goes

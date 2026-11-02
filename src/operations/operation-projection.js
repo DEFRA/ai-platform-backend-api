@@ -1,3 +1,4 @@
+import { supportReferenceOf } from '#/operations/support-reference.js'
 import { REMOVED, withStatusTime } from '#/services/team-deployment-entries.js'
 
 // The projection of an operation onto the `teamDeployments` entries of its
@@ -21,21 +22,17 @@ export const FAILURE_CODES = Object.freeze({
 })
 
 const REVERT_FAILED_TEXT =
-  'The apply failed again after a fresh retry and reverting the change failed too, so platform engineers have been alerted'
-const REMOVE_FAILED_TEXT =
-  'The model could not be removed, so it is still deployed; platform engineers have been alerted'
+  'The deployment failed again after a fresh retry and reverting the change failed too'
 
 // The text the view shows for a failure code; the event's own message (from
 // the workflows) is used for a refused change.
 const FAILURE_TEXT = {
-  [FAILURE_CODES.DEPLOY_FAILED]:
-    'The apply failed and platform engineers have been alerted',
+  [FAILURE_CODES.DEPLOY_FAILED]: 'The deployment failed',
   [FAILURE_CODES.REVERTED]:
-    'The apply failed again after a fresh retry, so the change was reverted',
-  [FAILURE_CODES.TIMED_OUT]:
-    'The change has not progressed in time and platform engineers have been alerted',
+    'The deployment failed again after a fresh retry, so the change was reverted',
+  [FAILURE_CODES.TIMED_OUT]: 'The setup did not finish in time',
   [FAILURE_CODES.REVERT_CANCELLED]:
-    'The apply failed and the revert was cancelled; platform engineers have been alerted'
+    'The deployment failed and the revert was cancelled'
 }
 
 const VERIFY_REASON_TEXT = {
@@ -45,7 +42,7 @@ const VERIFY_REASON_TEXT = {
     'a resource was created outside this environment',
   'unsupported-resource-type':
     'a resource is of a type the portal cannot check',
-  'resource-unavailable': 'a resource could not be found in Azure',
+  'resource-unavailable': 'a resource could not be found',
   'resource-not-succeeded': 'a resource had not finished being created'
 }
 
@@ -57,7 +54,7 @@ const VERIFY_REASON_TEXT = {
 export function verificationFailureText(reason) {
   const text = VERIFY_REASON_TEXT[reason] ?? 'the cause is not known'
 
-  return `Your team's resources were created but could not be confirmed: ${text} (${reason}). Ask the AI Platform team to check and retry.`
+  return `Your team's resources were created but could not be confirmed: ${text} (${reason}).`
 }
 
 function failureTextOf(operation) {
@@ -96,6 +93,12 @@ export function entryStatusOf(operation, item) {
   return FAILED_STATES.has(state) ? 'active' : 'removing'
 }
 
+// A removal that failed leaves the model deployed: the person is told who to
+// contact, and the reference to quote.
+function removeFailedText(operation) {
+  return `The model could not be removed, so it is still deployed. Contact AI Platform Support, quoting reference ${supportReferenceOf(operation._id)}`
+}
+
 /**
  * The failure text an entry shows, or null.
  * @param {object} operation
@@ -104,7 +107,9 @@ export function entryStatusOf(operation, item) {
  */
 export function entryFailureReasonOf(operation, item) {
   if (item.change === 'remove') {
-    return FAILED_STATES.has(operation.state) ? REMOVE_FAILED_TEXT : null
+    return FAILED_STATES.has(operation.state)
+      ? removeFailedText(operation)
+      : null
   }
 
   if (operation.state === 'deploy-failed' && operation.revertFailed) {
@@ -121,10 +126,10 @@ const RESOURCE_KINDS = [
 ]
 
 /**
- * What the team has in Azure, from the apply's resources: names and kinds
+ * What the team has, from the apply's resources: names and kinds
  * only, never an ID, so nothing here identifies a subscription or resource.
  * @param {Array<{type: string, name: string}>|undefined} resources
- * @param {boolean} verified - ARM has confirmed them
+ * @param {boolean} verified - the platform has confirmed them
  * @returns {Array<{name: string, kind: string, verified: boolean}>}
  */
 export function resourceListOf(resources, verified) {

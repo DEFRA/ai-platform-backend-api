@@ -51,34 +51,6 @@ export function findEntry(doc, id) {
 }
 
 /**
- * Compare-and-set filter for one entry: matches only while it still has the
- * status read, so a slower concurrent writer never overwrites a newer one.
- * @param {{_id: import('mongodb').ObjectId}} doc
- * @param {{id: string, status: string}} entry
- */
-export function entryFilter(doc, entry) {
-  return {
-    _id: doc._id,
-    deployments: { $elemMatch: { id: entry.id, status: entry.status } }
-  }
-}
-
-/**
- * The `$set` fields for the entry an `entryFilter` matched, through the
- * positional operator.
- * @param {Record<string, unknown>} fields
- * @returns {Record<string, unknown>}
- */
-export function entryFields(fields) {
-  return Object.fromEntries(
-    Object.entries(fields).map(([key, value]) => [
-      `deployments.$.${key}`,
-      value
-    ])
-  )
-}
-
-/**
  * The entry's `statusTimes` with the time it first reached `status`: a time
  * already recorded is kept, so a status revisited after a retry does not
  * move the steps already completed.

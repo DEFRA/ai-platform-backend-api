@@ -235,14 +235,14 @@
       }
     ],
     "eligible": false,
-    "eligibilityReason": "RAG/embeddings are explicit Future/Unimplemented scope in the design pack, independent of this deployment existing in Foundry",
+    "eligibilityReason": "RAG/embeddings are explicit Future/Unimplemented scope in the design pack, independent of this deployment existing",
     "lifecycle": {
       "status": "proposed",
       "retirementDate": null
     },
     "tiers": [],
     "environments": [],
-    "description": "Embeddings model, deployed in Foundry but not yet an in-scope capability of the platform.",
+    "description": "Embeddings model, already deployed but not yet an in-scope capability of the platform.",
     "useCases": [],
     "contextWindow": "8,191 tokens",
     "links": [],

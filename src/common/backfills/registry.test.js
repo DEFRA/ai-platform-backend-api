@@ -727,4 +727,50 @@ describe('#backfillRegistry', () => {
       })
     })
   })
+
+  describe('2026-11-02-team-deployments-failure-wording', () => {
+    const backfillId = '2026-11-02-team-deployments-failure-wording'
+
+    test('rewrites old failure texts on entries and leaves the rest alone', async () => {
+      const { insertedId } = await db.collection('teamDeployments').insertOne({
+        teamId: 'wording-team',
+        environment: 'infradev',
+        deployments: [
+          {
+            id: 'timed',
+            status: 'timed-out',
+            operationId: 'op-abcde12345',
+            failureReason:
+              'The change has not progressed in time and platform engineers have been alerted'
+          },
+          {
+            id: 'checked',
+            status: 'checks-failed',
+            failureReason: 'The file failed validation'
+          },
+          { id: 'ready', status: 'active' }
+        ]
+      })
+
+      const { modifiedCount } = await findBackfill(backfillId).run(db)
+
+      expect(modifiedCount).toBeGreaterThanOrEqual(1)
+      const { deployments } = await db
+        .collection('teamDeployments')
+        .findOne({ _id: insertedId })
+      expect(deployments[0].failureReason).toBe(
+        'The setup did not finish in time'
+      )
+      expect(deployments[1].failureReason).toBe('The file failed validation')
+      expect(deployments[2]).toEqual({ id: 'ready', status: 'active' })
+    })
+
+    test('is a no-op the second time it runs', async () => {
+      await findBackfill(backfillId).run(db)
+
+      await expect(findBackfill(backfillId).run(db)).resolves.toEqual({
+        modifiedCount: 0
+      })
+    })
+  })
 })

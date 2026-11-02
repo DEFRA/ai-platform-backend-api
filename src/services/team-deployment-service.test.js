@@ -1004,8 +1004,7 @@ describe('team-deployment-service (operations)', () => {
       ])
       expect(await view(member, deployment._id)).toMatchObject({
         status: 'deploy-failed',
-        failureReason:
-          'The apply failed and platform engineers have been alerted'
+        failureReason: 'The deployment failed'
       })
 
       // The retry's own failure, from a later run, schedules the revert.
@@ -1152,7 +1151,7 @@ describe('team-deployment-service (operations)', () => {
       expect(
         items.every(({ operation }) => operation.state === 'requested')
       ).toBe(true)
-      expect(items[1].progressSteps[2].label).toBe('Setting up svc-b in Azure')
+      expect(items[1].progressSteps[2].label).toBe('Setting up svc-b')
     })
 
     test('is not found to a non-member listing', async () => {
@@ -1353,22 +1352,41 @@ describe('team-deployment-service (operations)', () => {
       expect(await operationsOf(member.teamId)).toHaveLength(2)
     })
 
-    test('marks removed at once a model whose request the checks refused', async () => {
+    test('refuses a model whose request the checks refused, with its support reference on the entry', async () => {
       const member = await signedInMember()
       const deployment = await requestOne(member)
       const operation = await operationOf(member.teamId)
 
       await deliver(operation, 'requested', 'checks-failed')
 
-      const removed = await remove(member, deployment._id)
-
-      expect(removed.status).toBe('removed')
+      await expect(remove(member, deployment._id)).rejects.toMatchObject({
+        output: { statusCode: 409 },
+        data: { code: 'deployment-not-removable' }
+      })
       expect(await operationsOf(member.teamId)).toHaveLength(1)
-      expect(
-        (await auditOf(deployment._id)).find(
-          ({ action }) => action === 'teamDeployment.remove'
+
+      const failed = await view(member, deployment._id)
+
+      expect(failed.status).toBe('checks-failed')
+    })
+
+    test('refuses a model that failed to deploy or timed out', async () => {
+      const member = await signedInMember()
+      const deployment = await requestOne(member)
+      const operation = await operationOf(member.teamId)
+
+      await deliver(operation, 'requested', 'committed', 'deploying')
+      await db
+        .collection('teamDeployments')
+        .updateOne(
+          { teamId: member.teamId },
+          { $set: { 'deployments.$[].status': 'timed-out' } }
         )
-      ).toMatchObject({ code: 'record-only', actorUserId: member.userId })
+
+      await expect(remove(member, deployment._id)).rejects.toMatchObject({
+        output: { statusCode: 409 },
+        data: { code: 'deployment-not-removable' }
+      })
     })
 
     test.each([
@@ -1387,7 +1405,7 @@ describe('team-deployment-service (operations)', () => {
 
       await expect(remove(member, deployment._id)).rejects.toMatchObject({
         output: { statusCode: 409 },
-        data: { code: 'deployment-in-progress' }
+        data: { code: 'deployment-not-removable' }
       })
     })
 

@@ -61,7 +61,7 @@ describe('external-operations', () => {
   beforeEach(async () => {
     await db.collection('operations').deleteMany({})
     await db.collection('auditEvents').deleteMany({})
-    logger = { warn: vi.fn() }
+    logger = { warn: vi.fn(), error: vi.fn() }
     corroborator = {
       corroborateRun: vi.fn().mockResolvedValue({ ok: true }),
       corroborateCommit: vi.fn().mockResolvedValue({ ok: true })

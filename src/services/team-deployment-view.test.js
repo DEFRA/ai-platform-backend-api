@@ -14,8 +14,8 @@ describe('buildProgressSteps', () => {
   const labels = [
     'Request recorded',
     'Change committed',
-    'Setting up GPT-4o in Azure',
-    'Checking your resources in Azure',
+    'Setting up GPT-4o',
+    'Checking your resources',
     'Preparing your client secret'
   ]
   const T0 = '2026-10-21T10:40:00.000Z'
@@ -142,8 +142,8 @@ describe('toDeploymentView', () => {
     )
     const unnamed = toDeploymentView(doc, entry({ status: 'requested' }))
 
-    expect(named.progressSteps[2].label).toBe('Setting up GPT-4o in Azure')
-    expect(unnamed.progressSteps[2].label).toBe('Setting up gpt-4o in Azure')
+    expect(named.progressSteps[2].label).toBe('Setting up GPT-4o')
+    expect(unnamed.progressSteps[2].label).toBe('Setting up gpt-4o')
   })
 
   test('shows what the projection wrote: the operation, links, resources and registration', () => {

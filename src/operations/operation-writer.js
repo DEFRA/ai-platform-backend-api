@@ -2,8 +2,12 @@ import {
   compareAndSet,
   findOperation
 } from '#/operations/operation-repository.js'
-import { projectOperation } from '#/operations/operation-projection.js'
+import {
+  FAILURE_CODES,
+  projectOperation
+} from '#/operations/operation-projection.js'
 import { deadlineFor, TIMED_OUT } from '#/operations/operation-state-machine.js'
+import { failureLogFields } from '#/operations/support-reference.js'
 import { auditDeployment } from '#/services/team-deployment-entries.js'
 
 // The one way an operation changes after it is created: compare-and-set on
@@ -106,9 +110,30 @@ export async function writeOperation(ctx, operation, change) {
 
   if (change.state) {
     await auditTransition(ctx, operation, written, change)
+    logFailure(ctx, operation, written)
   }
 
   return written
+}
+
+// One error line, with the support reference in its text and its fields, each
+// time an operation moves into a failed state; what a person quotes to
+// support finds it here.
+function logFailure({ logger }, before, written) {
+  if (
+    !FAILED.has(written.state) ||
+    before.state === written.state ||
+    written.error?.code === FAILURE_CODES.REVERT_CANCELLED
+  ) {
+    return
+  }
+
+  const fields = failureLogFields(written, before.state)
+
+  logger?.error(
+    fields,
+    `Deployment failed, support reference ${fields.supportReference}`
+  )
 }
 
 // One audit event per item, like the single-model operations before it.
