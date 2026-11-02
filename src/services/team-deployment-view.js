@@ -17,13 +17,13 @@ const PROGRESS_STEPS = [
   { label: () => 'Request recorded', statuses: ['requested'] },
   { label: () => 'Change committed', statuses: ['committed'] },
   {
-    label: (modelName) => `Setting up ${modelName} in Azure`,
+    label: (modelName) => `Setting up ${modelName}`,
     statuses: ['deploying']
   },
   {
     // The apply has finished: what remains is the ARM check, which can retry
     // for several minutes.
-    label: () => 'Checking your resources in Azure',
+    label: () => 'Checking your resources',
     statuses: ['deployed']
   },
   { label: () => 'Preparing your client secret', statuses: ['verified'] }

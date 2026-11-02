@@ -306,6 +306,19 @@ describe('deadline-sweeper', () => {
         }),
         'An operation timed out and needs a platform engineer'
       )
+      expect(logger.error).toHaveBeenCalledWith(
+        expect.objectContaining({
+          supportReference: `AIP-${operation._id.slice(-5).toUpperCase()}`,
+          operationId: operation._id,
+          teamId: operation.teamId,
+          environment: 'infradev',
+          entries: [{ entryId: 'entry-1', modelSlug: 'gpt-4o', change: 'add' }],
+          state: 'timed-out',
+          previousState: 'committed',
+          errorCode: 'operation-timed-out'
+        }),
+        `Deployment failed, support reference AIP-${operation._id.slice(-5).toUpperCase()}`
+      )
     })
 
     test('goes through reconcile then timed-out across two sweeps', async () => {

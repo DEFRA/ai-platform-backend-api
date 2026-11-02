@@ -54,7 +54,12 @@ describe('operation-writer', () => {
   }
 
   function ctx(overrides = {}) {
-    return { db, settings, logger: { warn: vi.fn() }, ...overrides }
+    return {
+      db,
+      settings,
+      logger: { warn: vi.fn(), error: vi.fn() },
+      ...overrides
+    }
   }
 
   function auditEvents() {
@@ -432,6 +437,111 @@ describe('operation-writer', () => {
         }
       )
 
+      describe('the support reference log', () => {
+        const FAILURE = {
+          error: { code: 'operation-deploy-failed', message: 'it broke' },
+          lastFailure: { runId: 7, runAttempt: 1 }
+        }
+
+        function failedWith(overrides) {
+          return { state: 'deploy-failed', set: { ...FAILURE, ...overrides } }
+        }
+
+        test('is one error with the reference and the operation facts for a move into a failed state', async () => {
+          const operation = await seedOperation()
+          const context = ctx()
+
+          await writeOperation(context, operation, failedWith())
+
+          expect(context.logger.error).toHaveBeenCalledTimes(1)
+          expect(context.logger.error).toHaveBeenCalledWith(
+            expect.objectContaining({
+              supportReference: `AIP-${operation._id.slice(-5).toUpperCase()}`,
+              operationId: operation._id,
+              state: 'deploy-failed',
+              previousState: operation.state,
+              errorCode: 'operation-deploy-failed'
+            }),
+            `Deployment failed, support reference AIP-${operation._id.slice(-5).toUpperCase()}`
+          )
+        })
+
+        test('is logged again when a retry fails the same operation in a new run', async () => {
+          const operation = await seedOperation()
+          const context = ctx()
+
+          const first = await writeOperation(context, operation, failedWith())
+          const second = await writeOperation(
+            context,
+            first,
+            failedWith({ lastFailure: { runId: 8, runAttempt: 1 } })
+          )
+
+          expect(context.logger.error).toHaveBeenCalledTimes(2)
+          expect(second.lastFailure).toEqual({ runId: 8, runAttempt: 1 })
+        })
+
+        test('is not repeated for a write that leaves the failure as it was', async () => {
+          const operation = await seedOperation()
+          const context = ctx()
+
+          const failed = await writeOperation(context, operation, failedWith())
+          const noted = await writeOperation(context, failed, {
+            set: { note: 'same failure' }
+          })
+          const again = await writeOperation(context, noted, failedWith())
+
+          expect(again.state).toBe('deploy-failed')
+          expect(context.logger.error).toHaveBeenCalledTimes(1)
+        })
+
+        test('is not written for a state that is not a failure', async () => {
+          const operation = await seedOperation()
+          const context = ctx()
+
+          const moved = await writeOperation(context, operation, {
+            state: 'committed'
+          })
+          await writeOperation(context, moved, { state: 'active' })
+
+          expect(context.logger.error).not.toHaveBeenCalled()
+        })
+
+        test('is not written for a cancelled revert', async () => {
+          const operation = await seedOperation()
+          const context = ctx()
+
+          await writeOperation(context, operation, {
+            state: 'checks-failed',
+            set: {
+              error: { code: 'operation-revert-cancelled', message: 'x' }
+            }
+          })
+
+          expect(context.logger.error).not.toHaveBeenCalled()
+        })
+
+        test('is written even when the projection then fails', async () => {
+          const operation = await seedOperation()
+          const context = ctx({
+            db: {
+              collection: (name) =>
+                name === 'teamDeployments'
+                  ? {
+                      findOne: () =>
+                        Promise.reject(new Error('projection is down'))
+                    }
+                  : db.collection(name)
+            }
+          })
+
+          await expect(
+            writeOperation(context, operation, failedWith())
+          ).rejects.toThrow('projection is down')
+
+          expect(context.logger.error).toHaveBeenCalledTimes(1)
+        })
+      })
       test('record a success outcome for a state that is not a failure', async () => {
         const operation = await seedOperation()
 
@@ -490,7 +600,7 @@ describe('operation-writer', () => {
 
         test('logs it for each item and keeps the transition', async () => {
           const operation = await seedOperation()
-          const logger = { warn: vi.fn() }
+          const logger = { warn: vi.fn(), error: vi.fn() }
 
           const written = await writeOperation(
             ctx({ db: failingAuditDb(), logger }),

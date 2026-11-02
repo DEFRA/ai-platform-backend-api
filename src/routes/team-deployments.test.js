@@ -658,9 +658,9 @@ describe('#team-deployments routes', () => {
     expect(created.result.deployment.progressSteps).toEqual([
       { label: 'Request recorded', state: 'current', at: isoTime },
       { label: 'Change committed', state: 'pending', at: null },
-      { label: 'Setting up GPT-4o in Azure', state: 'pending', at: null },
+      { label: 'Setting up GPT-4o', state: 'pending', at: null },
       {
-        label: 'Checking your resources in Azure',
+        label: 'Checking your resources',
         state: 'pending',
         at: null
       },
@@ -950,7 +950,7 @@ describe('#team-deployments routes', () => {
       })
 
       expect(statusCode).toBe(409)
-      expect(result.code).toBe('deployment-in-progress')
+      expect(result.code).toBe('deployment-not-removable')
     })
 
     test('is for team admins only', async () => {

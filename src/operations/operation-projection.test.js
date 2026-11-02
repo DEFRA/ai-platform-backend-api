@@ -87,9 +87,9 @@ describe('entryStatusOf', () => {
 
 describe('entryFailureReasonOf', () => {
   test.each([
-    [FAILURE_CODES.DEPLOY_FAILED, 'The apply failed and platform engineers'],
+    [FAILURE_CODES.DEPLOY_FAILED, 'The deployment failed'],
     [FAILURE_CODES.REVERTED, 'so the change was reverted'],
-    [FAILURE_CODES.TIMED_OUT, 'has not progressed in time'],
+    [FAILURE_CODES.TIMED_OUT, 'did not finish in time'],
     [FAILURE_CODES.REVERT_CANCELLED, 'the revert was cancelled']
   ])('gives the text of the failure code %s', (code, text) => {
     expect(
@@ -130,7 +130,7 @@ describe('entryFailureReasonOf', () => {
     ).toBe(verificationFailureText('resource-unavailable'))
   })
 
-  test('says a failed revert alerted engineers', () => {
+  test('says a failed revert could not undo the change', () => {
     const reason = entryFailureReasonOf(
       {
         state: 'deploy-failed',
@@ -141,7 +141,7 @@ describe('entryFailureReasonOf', () => {
     )
 
     expect(reason).toContain('reverting the change failed too')
-    expect(reason).not.toContain('The apply failed and platform engineers')
+    expect(reason).not.toContain('alerted')
   })
 
   test('ignores a failed revert once the operation is no longer deploy-failed', () => {
@@ -165,11 +165,15 @@ describe('entryFailureReasonOf', () => {
     (state) => {
       expect(
         entryFailureReasonOf(
-          { state, error: { code: FAILURE_CODES.DEPLOY_FAILED } },
+          {
+            _id: 'op-abcde12345',
+            state,
+            error: { code: FAILURE_CODES.DEPLOY_FAILED }
+          },
           REMOVE
         )
       ).toBe(
-        'The model could not be removed, so it is still deployed; platform engineers have been alerted'
+        'The model could not be removed, so it is still deployed. Contact AI Platform Support, quoting reference AIP-12345'
       )
     }
   )
@@ -185,7 +189,7 @@ describe('verificationFailureText', () => {
 
     expect(text).toContain('the apply reported no resources for the team')
     expect(text).toContain('(no-resources)')
-    expect(text).toContain('Ask the AI Platform team to check and retry.')
+    expect(text).not.toContain('Azure')
   })
 
   test('says the cause is not known for a code it has no words for', () => {

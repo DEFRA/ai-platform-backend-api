@@ -2,8 +2,15 @@ import {
   compareAndSet,
   findOperation
 } from '#/operations/operation-repository.js'
-import { projectOperation } from '#/operations/operation-projection.js'
+import {
+  FAILURE_CODES,
+  projectOperation
+} from '#/operations/operation-projection.js'
 import { deadlineFor, TIMED_OUT } from '#/operations/operation-state-machine.js'
+import {
+  failureLogFields,
+  supportReferenceOf
+} from '#/operations/support-reference.js'
 import { auditDeployment } from '#/services/team-deployment-entries.js'
 
 // The one way an operation changes after it is created: compare-and-set on
@@ -102,6 +109,12 @@ export async function writeOperation(ctx, operation, change) {
     return null
   }
 
+  // Logged before the projection and the audit, so a failure of either never
+  // leaves a failed operation without its support reference in the logs.
+  if (change.state) {
+    logFailure(ctx, operation, written)
+  }
+
   await projectOperation(db, written)
 
   if (change.state) {
@@ -111,6 +124,41 @@ export async function writeOperation(ctx, operation, change) {
   return written
 }
 
+function sameRun(before, after) {
+  return (
+    before?.runId === after?.runId && before?.runAttempt === after?.runAttempt
+  )
+}
+
+// A move into a failed state is a new failure, and so is the failure of an
+// automatic retry, which leaves the operation `deploy-failed` but records the
+// run that failed. A write that changes nothing about the failure is not.
+function isNewFailure(before, written) {
+  if (!FAILED.has(written.state)) {
+    return false
+  }
+
+  return (
+    before.state !== written.state ||
+    !sameRun(before.lastFailure, written.lastFailure)
+  )
+}
+
+// One error line, with the support reference in its text and its fields, each
+// time an operation fails; what a person quotes to support finds it here.
+function logFailure({ logger }, before, written) {
+  if (
+    !isNewFailure(before, written) ||
+    written.error?.code === FAILURE_CODES.REVERT_CANCELLED
+  ) {
+    return
+  }
+
+  logger?.error(
+    failureLogFields(written, before.state),
+    `Deployment failed, support reference ${supportReferenceOf(written._id)}`
+  )
+}
 // One audit event per item, like the single-model operations before it.
 async function auditTransition({ db, logger }, before, written, change) {
   const failed = FAILED.has(written.state)

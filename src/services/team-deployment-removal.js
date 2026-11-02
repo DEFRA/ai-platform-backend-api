@@ -8,13 +8,9 @@ import {
 } from '#/operations/operation-repository.js'
 import { projectOperation } from '#/operations/operation-projection.js'
 import {
-  CHECKS_FAILED,
-  DEPLOY_FAILED,
   REMOVED,
   REMOVING,
   auditDeployment,
-  entryFields,
-  entryFilter,
   findEntry
 } from '#/services/team-deployment-entries.js'
 import { refusalOf, traceOf } from '#/services/team-deployment-submission.js'
@@ -99,11 +95,11 @@ export async function removeDeployment(
   }
 }
 
-function inProgress() {
+function notRemovable() {
   return boomWithCode(
     Boom.conflict,
-    'The deployment is still being set up; try again once it is active',
-    'deployment-in-progress'
+    'Only a model that has been set up and is ready can be removed',
+    'deployment-not-removable'
   )
 }
 
@@ -121,12 +117,8 @@ async function removeEntry(db, doc, entry, actor, operations) {
     return toDeploymentView(doc, entry)
   }
 
-  if (entry.status === CHECKS_FAILED) {
-    return markRemoved(db, doc, entry, actor)
-  }
-
-  if (entry.status !== 'active' && entry.status !== DEPLOY_FAILED) {
-    throw inProgress()
+  if (entry.status !== 'active') {
+    throw notRemovable()
   }
 
   const file = { environment: doc.environment, teamId: doc.teamId }
@@ -139,30 +131,6 @@ async function removeEntry(db, doc, entry, actor, operations) {
   }
 
   return submitRemoval(db, doc, entry, actor, operations)
-}
-
-// A removal with nothing to apply: the record changes, audited. The entry
-// only goes if nothing has moved it since it was read.
-async function markRemoved(db, doc, entry, { requestedBy }) {
-  const removedAt = new Date().toISOString()
-  const { matchedCount } = await db
-    .collection('teamDeployments')
-    .updateOne(entryFilter(doc, entry), {
-      $set: entryFields({ status: REMOVED, removedAt }),
-      $pull: { 'gateway.allowedDeployments': entry.modelSlug }
-    })
-
-  if (matchedCount === 0) {
-    throw inProgress()
-  }
-
-  await auditDeployment(db, entry, {
-    action: REMOVE_ACTION,
-    actorUserId: requestedBy,
-    code: 'record-only'
-  })
-
-  return toDeploymentView(doc, { ...entry, status: REMOVED, removedAt })
 }
 
 // Asks for an operation whose document is the team file without the model; a
