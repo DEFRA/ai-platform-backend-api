@@ -75,20 +75,22 @@ describe('#teams routes', () => {
     }
   }
 
+  // Role is always stated, as the API requires; a test of a missing role posts
+  // with `server.inject` itself.
   function addPerson(team, actorId, payload, by = 'id') {
     return server.inject({
       method: 'POST',
       url: `/v1/teams/${by === 'slug' ? team.slug : team.teamId}/members`,
       headers: postHeaders(actorId),
-      payload
+      payload: { role: 'user', ...payload }
     })
   }
 
   // Adds a seeded person and returns the member as the API shows it.
-  async function addSeeded(team, person, role) {
+  async function addSeeded(team, person, role = 'user') {
     const { result, statusCode } = await addPerson(team, team.adminId, {
       oid: SEEDED[person],
-      ...(role && { role })
+      role
     })
 
     expect(statusCode).toBe(201)
@@ -592,6 +594,36 @@ describe('#teams routes', () => {
     ).toBe(2)
   })
 
+  test('POST /v1/teams/{id}/members refuses a reused Idempotency-Key for another person or role, and adds nobody (F2)', async () => {
+    const team = await teamWithAdmin('team-f2')
+    const headers = postHeaders(team.adminId)
+    const post = (payload) =>
+      server.inject({
+        method: 'POST',
+        url: `/v1/teams/${team.teamId}/members`,
+        headers,
+        payload
+      })
+
+    const first = await post({ oid: SEEDED.daniel, role: 'user' })
+    const otherPerson = await post({ oid: SEEDED.eleanor, role: 'user' })
+    const otherRole = await post({ oid: SEEDED.daniel, role: 'admin' })
+    const same = await post({ oid: SEEDED.daniel, role: 'user' })
+
+    expect(first.statusCode).toBe(201)
+    expect(otherPerson.statusCode).toBe(409)
+    expect(otherPerson.result.code).toBe('idempotency-key-reused')
+    expect(otherRole.statusCode).toBe(409)
+    expect(otherRole.result.code).toBe('idempotency-key-reused')
+    expect(same.statusCode).toBe(201)
+    expect(same.result.member).toEqual(first.result.member)
+    expect(
+      await server.db
+        .collection('teamMembers')
+        .countDocuments({ teamId: team.teamId, status: 'active' })
+    ).toBe(2)
+  })
+
   test('POST /v1/teams/{id}/members lets a person who was removed be added again', async () => {
     const team = await teamWithAdmin('team-user-7d')
     const first = await addSeeded(team, 'amelia')
@@ -838,11 +870,47 @@ describe('#teams routes', () => {
       url: `/v1/teams/${team.teamId}`,
       headers: { 'x-user-id': team.adminId }
     })
-    const removed = view.result.members.find(
-      (member) => member.userId === added.userId
-    )
 
-    expect(removed.status).toBe('removed')
+    expect(
+      view.result.members.find((member) => member.userId === added.userId)
+    ).toBeUndefined()
+    expect(
+      await server.db
+        .collection('teamMembers')
+        .findOne({ _id: added._id }, { projection: { status: 1 } })
+    ).toMatchObject({ status: 'removed' })
+  })
+
+  test('GET /v1/teams/{id} lists only active members, never removed or invited rows (F3)', async () => {
+    const team = await teamWithAdmin('team-f3')
+    const kept = await addSeeded(team, 'bashir')
+    const gone = await addSeeded(team, 'cerys')
+
+    await server.inject({
+      method: 'DELETE',
+      url: `/v1/teams/${team.teamId}/members/${gone._id}`,
+      headers: { 'x-user-id': team.adminId }
+    })
+    await server.db.collection('teamMembers').insertOne({
+      teamId: team.teamId,
+      userId: null,
+      role: 'user',
+      status: 'invited'
+    })
+
+    const { result } = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${team.teamId}`,
+      headers: { 'x-user-id': team.adminId }
+    })
+
+    expect(result.members.map((member) => member.status)).toEqual([
+      'active',
+      'active'
+    ])
+    expect(result.members.map((member) => member.userId).sort()).toEqual(
+      [team.adminId, kept.userId].sort()
+    )
   })
 
   test('DELETE /v1/teams/{id}/members/{memberId} finds no membership that was never active', async () => {
@@ -1248,15 +1316,23 @@ describe('#teams routes', () => {
     })
 
     describe('POST /v1/teams/{id}/members role', () => {
-      test('defaults to user', async () => {
+      test('is required: a request with no role is refused, not defaulted (F6)', async () => {
         const team = await teamWithAdmin('role-default')
 
-        const { result, statusCode } = await addPerson(team, team.adminId, {
-          oid: SEEDED.amelia
+        const { result, statusCode } = await server.inject({
+          method: 'POST',
+          url: `/v1/teams/${team.teamId}/members`,
+          headers: postHeaders(team.adminId),
+          payload: { oid: SEEDED.amelia }
         })
 
-        expect(statusCode).toBe(201)
-        expect(result.member.role).toBe('user')
+        expect(statusCode).toBe(400)
+        expect(result.message).toContain('"role" is required')
+        expect(
+          await server.db
+            .collection('teamMembers')
+            .countDocuments({ teamId: team.teamId })
+        ).toBe(1)
       })
 
       test.each([
@@ -1728,6 +1804,33 @@ describe('#teams routes', () => {
 
       expect(statusCode).toBe(400)
     })
+
+    test.each([
+      ['one character', 'g', '"g"'],
+      ['101 characters', 'q'.repeat(101), 'qqqqqqqqqq']
+    ])(
+      'never writes the search text of a %s to the log (F1)',
+      async (_, text, probe) => {
+        const team = await teamWithAdmin('search-log')
+        const { createLogger } =
+          await import('#/common/helpers/logging/logger.js')
+        const warn = vi
+          .spyOn(createLogger(), 'warn')
+          .mockImplementation(() => {})
+
+        const { statusCode } = await search(team, team.adminId, {
+          search: text
+        })
+        const logged = JSON.stringify(warn.mock.calls)
+
+        vi.restoreAllMocks()
+
+        expect(statusCode).toBe(400)
+        expect(logged).toContain('Request validation failed')
+        expect(logged).not.toContain(probe)
+        expect(logged).not.toContain('_original')
+      }
+    )
 
     test('accepts 2 and 100 characters', async () => {
       const team = await teamWithAdmin('search-8')

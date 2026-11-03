@@ -341,7 +341,7 @@ export async function getMemberRole(db, { teamId, userId }) {
 }
 
 /**
- * Finds a team and its members, only for a requester who is an active member.
+ * Finds a team and its active members, only for a requester who is an active member.
  * Returns null (not a 403) for a non-member so existence isn't disclosed.
  * `id` is the team's id or slug. `environments` lists each environment the
  * team has a tenant file in, with the gateway limits that file holds (what
@@ -378,7 +378,7 @@ export async function findTeamById(
 
   const members = await db
     .collection('teamMembers')
-    .find({ teamId: id })
+    .find({ teamId: id, status: 'active' })
     .toArray()
   const files = await readTeamFiles(registry, team.slug)
 
@@ -525,15 +525,15 @@ async function refuseIfLastAdmin(db, teamId) {
  * person's name and email for display, read from `users` rather than stored
  * on the membership.
  * @param {object} member - the `teamMembers` document
- * @param {{displayName?: string, email?: string}|null} user
+ * @param {{displayName?: string, email?: string}} user
  */
 function toAddedMember(member, user) {
   return {
     _id: member._id,
     teamId: member.teamId,
     userId: member.userId,
-    displayName: user?.displayName ?? null,
-    email: user?.email ?? null,
+    displayName: user.displayName ?? null,
+    email: user.email ?? null,
     role: member.role,
     status: member.status,
     createdAt: member.createdAt
@@ -610,28 +610,43 @@ async function activeMemberOids(db, teamId) {
 }
 
 /**
+ * The membership a repeated Idempotency-Key stands for, if the repeat is the
+ * same request: the same person and role. A key reused for another person or
+ * role is refused, so the caller is never told the first person was added
+ * when they asked for someone else.
+ * @param {object} member - the `teamMembers` document the key made
+ * @param {{oid?: string, displayName?: string, email?: string}|null} user - the member's record
+ * @param {{oid: string, role: string}} request
+ */
+function replayOf(member, user, { oid, role }) {
+  if (!user || user.oid !== oid || member.role !== role) {
+    throw boomWithCode(
+      Boom.conflict,
+      'This idempotency key was used for a different request',
+      'idempotency-key-reused'
+    )
+  }
+
+  return toAddedMember(member, user)
+}
+
+/**
  * Adds a person from the directory to the team, active at once, with the
- * given role (`user` unless an admin asks for `admin`). Only an active admin
+ * given role (`admin` or `user`, always stated). Only an active admin
  * of the team may do this, so only an admin can make another admin. The
  * directory is read again for the person and checked (a person it does not
  * hold is `422 person-not-eligible`, as an ineligible one is, so existence is
  * not disclosed); their `users` record is made if they have never signed in,
  * and is the one their first sign-in then finds. A repeat of the same
- * Idempotency-Key returns the same membership.
+ * Idempotency-Key for the same person and role returns the same membership;
+ * for another person or role it is `409 idempotency-key-reused`.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, oid: string, role?: 'admin'|'user', idempotencyKey: string, userAssertion?: string}} params - `teamId` is the team's id or slug
+ * @param {{teamId: string, actorUserId: string, oid: string, role: 'admin'|'user', idempotencyKey: string, userAssertion?: string}} params - `teamId` is the team's id or slug
  * @param {{directory?: import('#/adapters/directory.js').Directory, allowedDomains?: string[]}} [deps]
  */
 export async function addMember(
   db,
-  {
-    teamId: teamRef,
-    actorUserId,
-    oid,
-    role = 'user',
-    idempotencyKey,
-    userAssertion
-  },
+  { teamId: teamRef, actorUserId, oid, role, idempotencyKey, userAssertion },
   {
     directory = defaultDirectory,
     allowedDomains = config.get('directory.allowedDomains')
@@ -646,7 +661,10 @@ export async function addMember(
     .findOne({ teamId, idempotencyKey })
 
   if (replay) {
-    return toAddedMember(replay, await findUserById(db, replay.userId))
+    return replayOf(replay, await findUserById(db, replay.userId), {
+      oid,
+      role
+    })
   }
 
   const tid = await requireUserTenant(db, actorUserId)
@@ -675,7 +693,7 @@ export async function addMember(
   if (existingMember) {
     // The same request, arriving while its twin was still being written.
     if (existingMember.idempotencyKey === idempotencyKey) {
-      return toAddedMember(existingMember, user)
+      return replayOf(existingMember, user, { oid: person.oid, role })
     }
 
     throw memberExists()
@@ -704,7 +722,10 @@ export async function addMember(
         .findOne({ teamId, idempotencyKey })
 
       if (winner) {
-        return toAddedMember(winner, user)
+        return replayOf(winner, await findUserById(db, winner.userId), {
+          oid: person.oid,
+          role
+        })
       }
 
       throw memberExists()

@@ -1,4 +1,5 @@
 import nock from 'nock'
+import { OnBehalfOfCredential } from '@azure/identity'
 
 import { describeDirectoryContract } from '#/adapters/directory-contract.js'
 import { createGraphDirectory } from '#/adapters/azure/graph-directory.js'
@@ -321,6 +322,26 @@ describe('#createGraphDirectory failures', () => {
       expect.any(String)
     )
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('secret-trace')
+  })
+
+  test('the token exchange is given an abort signal that fires at the timeout (F10)', async () => {
+    nockTokenEndpoint()
+      .delay(300)
+      .reply(200, { access_token: 'graph-token', expires_in: 3600 })
+    const getToken = vi.spyOn(OnBehalfOfCredential.prototype, 'getToken')
+
+    await expectUnavailable(
+      createDirectory({ timeoutMs: 50 }).searchPeople({
+        userAssertion: USER_TOKEN,
+        query: 'ada'
+      })
+    )
+
+    const options = getToken.mock.calls[0][1]
+
+    expect(options.abortSignal).toBeInstanceOf(AbortSignal)
+    await vi.waitFor(() => expect(options.abortSignal.aborted).toBe(true))
+    getToken.mockRestore()
   })
 
   test('a slow token exchange gives directory-unavailable at the timeout', async () => {

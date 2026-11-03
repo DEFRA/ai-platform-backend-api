@@ -70,19 +70,26 @@ async function deletePeopleWithNoOid(db) {
     .toArray()
 
   if (people.length === 0) {
-    return { usersDeleted: 0, membershipsRemoved: 0 }
+    return { usersDeleted: 0, membershipsRemoved: 0, credentialsOrphaned: 0 }
   }
 
   const ids = people.map((person) => person._id)
+  const userIds = ids.map(String)
+  // Credentials are keyed by `userId` and are not touched: they stay as the
+  // audit trail, and this count tells an operator how many now belong to
+  // nobody who can sign in.
+  const credentialsOrphaned = await db
+    .collection('credentials')
+    .countDocuments({ userId: { $in: userIds } })
   const membershipsRemoved = await removeMemberships(
     db.collection('teamMembers'),
-    { userId: { $in: ids.map(String) }, status: 'active' }
+    { userId: { $in: userIds }, status: 'active' }
   )
   const { deletedCount } = await db
     .collection('users')
     .deleteMany({ _id: { $in: ids } })
 
-  return { usersDeleted: deletedCount, membershipsRemoved }
+  return { usersDeleted: deletedCount, membershipsRemoved, credentialsOrphaned }
 }
 
 async function countTeamsWithoutActiveAdmin(db) {
@@ -107,7 +114,8 @@ async function countTeamsWithoutActiveAdmin(db) {
  * the earliest), which the new unique index needs; unsets `email`; deletes
  * people with no `oid` (nothing binds them now) and removes their active
  * memberships. Returns counts only - never an address or a name - including
- * the number of teams left with no active Admin, to restore by hand.
+ * the credentials left owned by a deleted person (kept, not deleted) and the
+ * number of teams left with no active Admin, to restore by hand.
  * @param {import('mongodb').Db} db
  */
 export async function makeTeamMembersDirectoryOnly(db) {
@@ -121,7 +129,8 @@ export async function makeTeamMembersDirectoryOnly(db) {
     { email: { $exists: true } },
     { $unset: { email: '' } }
   )
-  const { usersDeleted, membershipsRemoved } = await deletePeopleWithNoOid(db)
+  const { usersDeleted, membershipsRemoved, credentialsOrphaned } =
+    await deletePeopleWithNoOid(db)
 
   return {
     invitationsRemoved,
@@ -129,6 +138,7 @@ export async function makeTeamMembersDirectoryOnly(db) {
     emailsUnset,
     usersDeleted,
     membershipsRemoved,
+    credentialsOrphaned,
     teamsWithoutAdmin: await countTeamsWithoutActiveAdmin(db)
   }
 }

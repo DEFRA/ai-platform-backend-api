@@ -120,8 +120,12 @@ export function createGraphDirectory({
       userAssertionToken: userAssertion,
       disableInstanceDiscovery: true
     })
+    // The signal aborts the exchange's own request at the timeout; the race
+    // still answers at the timeout if the library does not honour it.
     const { token, expiresOnTimestamp } = await withTimeout(
-      credential.getToken(scope),
+      credential.getToken(scope, {
+        abortSignal: AbortSignal.timeout(timeoutMs)
+      }),
       timeoutMs
     )
 

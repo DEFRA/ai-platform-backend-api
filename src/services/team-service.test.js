@@ -76,6 +76,7 @@ describe('team-service: adding people from the directory', () => {
         teamId: team.teamId,
         actorUserId: team.adminId,
         oid: person.oid,
+        role: 'user',
         idempotencyKey: randomUUID(),
         userAssertion: 'user-token',
         ...overrides
@@ -83,6 +84,77 @@ describe('team-service: adding people from the directory', () => {
       { directory, allowedDomains: DOMAINS }
     )
   }
+
+  // Reads as when two requests race: the first look for the key, and every
+  // look for an existing member, find nothing; the unique indexes decide.
+  function blindToTheRace(team) {
+    const findOne = Collection.prototype.findOne
+    let keyLooks = 0
+
+    vi.spyOn(Collection.prototype, 'findOne').mockImplementation(
+      async function (filter, ...rest) {
+        const isMemberCheck =
+          filter?.status === 'active' &&
+          filter?.userId &&
+          filter.userId !== team.adminId
+        const isFirstKeyLook = filter?.idempotencyKey && keyLooks++ === 0
+
+        return isMemberCheck || isFirstKeyLook
+          ? null
+          : findOne.call(this, filter, ...rest)
+      }
+    )
+  }
+
+  test('addMember replays the first membership when the index shows a twin won the race with the same key', async () => {
+    const team = await teamWithAdmin('svc-race-same')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+    const first = await add(team, person, directory, { idempotencyKey })
+
+    blindToTheRace(team)
+    const again = await add(team, person, directory, { idempotencyKey })
+
+    expect(again._id.toString()).toBe(first._id.toString())
+  })
+
+  test('addMember refuses a key reused for another person when the index shows the key was taken (F2)', async () => {
+    const team = await teamWithAdmin('svc-race-other')
+    const first = ada()
+    const second = ada({ displayName: 'Bea Service' })
+    const directory = directoryOf(first, second)
+    const idempotencyKey = randomUUID()
+
+    await add(team, first, directory, { idempotencyKey })
+    blindToTheRace(team)
+
+    await expect(
+      add(team, second, directory, { idempotencyKey })
+    ).rejects.toMatchObject({
+      output: { statusCode: 409 },
+      data: { code: 'idempotency-key-reused' }
+    })
+  })
+
+  test('addMember refuses a key reused with another role, as a twin or as a replay (F2)', async () => {
+    const team = await teamWithAdmin('svc-role')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+
+    await add(team, person, directory, { idempotencyKey, role: 'user' })
+
+    await expect(
+      add(team, person, directory, { idempotencyKey, role: 'admin' })
+    ).rejects.toMatchObject({ data: { code: 'idempotency-key-reused' } })
+
+    blindToTheRace(team)
+
+    await expect(
+      add(team, person, directory, { idempotencyKey, role: 'admin' })
+    ).rejects.toMatchObject({ data: { code: 'idempotency-key-reused' } })
+  })
 
   test('addMember hands the user assertion to the directory and checks the person against the allowed domains', async () => {
     const team = await teamWithAdmin('svc-assertion')
@@ -122,18 +194,18 @@ describe('team-service: adding people from the directory', () => {
     ).toBe(2)
   })
 
-  test('addMember shows no name or email for a replayed member whose record has gone', async () => {
+  test('addMember cannot confirm a replay whose person’s record has gone, so refuses it as a different request', async () => {
     const team = await teamWithAdmin('svc-gone')
     const person = ada()
     const directory = directoryOf(person)
     const idempotencyKey = randomUUID()
-    const first = await add(team, person, directory, { idempotencyKey })
 
+    await add(team, person, directory, { idempotencyKey })
     await db.collection('users').deleteOne({ oid: person.oid })
-    const replay = await add(team, person, directory, { idempotencyKey })
 
-    expect(replay._id.toString()).toBe(first._id.toString())
-    expect(replay).toMatchObject({ displayName: null, email: null })
+    await expect(
+      add(team, person, directory, { idempotencyKey })
+    ).rejects.toMatchObject({ data: { code: 'idempotency-key-reused' } })
   })
 
   test('addMember does not hide a failure to write the membership', async () => {
@@ -155,19 +227,7 @@ describe('team-service: adding people from the directory', () => {
     const directory = directoryOf(person)
 
     await add(team, person, directory)
-    // The earlier read finds nobody, as when two adds race; the index decides.
-    const findOne = Collection.prototype.findOne
-
-    vi.spyOn(Collection.prototype, 'findOne').mockImplementation(
-      async function (filter, ...rest) {
-        const isMemberCheck =
-          filter?.status === 'active' &&
-          filter?.userId &&
-          filter.userId !== team.adminId
-
-        return isMemberCheck ? null : findOne.call(this, filter, ...rest)
-      }
-    )
+    blindToTheRace(team)
 
     await expect(add(team, person, directory)).rejects.toMatchObject({
       output: { statusCode: 409 },

@@ -147,7 +147,7 @@ git config --global core.autocrlf false
 > Team membership is by person, from the directory (design F `#membership`); there are no invitations,
 > and `teamMembers` carries no email. `POST /v1/teams/{id}/people/search` (body `{ search }`, 2 to 100
 > characters, admins only) returns up to 20 eligible people, sorted by name, leaving out active members.
-> `POST /v1/teams/{id}/members` takes `{ oid, role }`: it reads the person again from the directory,
+> `POST /v1/teams/{id}/members` takes `{ oid, role }` (both required; a key reused for another person or role is `409 idempotency-key-reused`): it reads the person again from the directory,
 > refuses anyone not eligible (a UPN and mail on `DIRECTORY_ALLOWED_DOMAINS`, default `defra.gov.uk` and
 > `defra.onmicrosoft.com`, no guests) with `422 person-not-eligible` - also for an unknown `oid` - and
 > makes the person's `users` record on `{ oid, tid }` (the Admin's own `tid`) if they have never signed
@@ -175,7 +175,7 @@ git config --global core.autocrlf false
 > A team also carries a three-character `serviceCode` (`^[A-Z0-9]{3}$`, stored upper case), required
 > on `POST /v1/teams` and changeable by an admin with `PATCH /v1/teams/{id}`, which also takes a
 > `description` (trimmed, at most 500 characters, may be empty). Adding a member takes a `role`
-> (`admin` or `user`, default `user`), admins only. The service code attributes the
+> (`admin` or `user`, required), admins only. The service code attributes the
 > team's AI use to its service for chargeback and reaches Azure as a resource tag. Every change goes
 > through the `ServiceCodeVerifier` port, whose only adapter today is the mock
 > (`SERVICE_CODE_KNOWN_CODES`, empty by default), so `verified` stays `false` until an authoritative

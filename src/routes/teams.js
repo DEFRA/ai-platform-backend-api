@@ -180,7 +180,7 @@ export const teams = [
         params: idParam,
         payload: Joi.object({
           oid: entraIdField.required(),
-          role: memberRoleField.default('user')
+          role: memberRoleField.required()
         }).unknown(false)
       }
     },

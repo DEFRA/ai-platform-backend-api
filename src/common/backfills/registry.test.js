@@ -1021,9 +1021,33 @@ describe('#backfillRegistry', () => {
         emailsUnset: 1,
         usersDeleted: 1,
         membershipsRemoved: 1,
+        credentialsOrphaned: 0,
         teamsWithoutAdmin: 1
       })
       expect(JSON.stringify(result)).not.toContain('@')
+    })
+
+    test('counts, and keeps, the credentials of a person it deletes (I1)', async () => {
+      const { insertedId } = await db
+        .collection('users')
+        .insertOne({ email: 'owner@defra.gov.uk' })
+      const owner = insertedId.toString()
+
+      await db.collection('credentials').insertMany([
+        { userId: owner, modelSlug: 'gpt-4o', tier: 'research' },
+        { userId: owner, modelSlug: 'gpt-5-nano', tier: 'research' },
+        { userId: 'someone-who-stays', modelSlug: 'gpt-4o', tier: 'research' }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+
+      expect(result.credentialsOrphaned).toBe(2)
+      expect(
+        await db.collection('credentials').countDocuments({ userId: owner })
+      ).toBe(2)
+      await db.collection('credentials').deleteMany({
+        userId: { $in: [owner, 'someone-who-stays'] }
+      })
     })
 
     test('changes nothing the second time it runs', async () => {
@@ -1057,6 +1081,7 @@ describe('#backfillRegistry', () => {
         emailsUnset: 0,
         usersDeleted: 0,
         membershipsRemoved: 0,
+        credentialsOrphaned: 0,
         teamsWithoutAdmin: 0
       })
       expect(await members(teamId)).toEqual(after)

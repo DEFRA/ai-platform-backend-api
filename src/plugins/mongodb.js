@@ -109,8 +109,8 @@ async function createIndexes(db) {
   // `syncCatalogue` upserts providers by `id`.
   await db.collection('providers').createIndex({ id: 1 }, { unique: true })
   // People are keyed on their Entra object and tenant IDs (design F).
-  // Partial: records from before that keying have no `oid` until their next
-  // sign-in binds one.
+  // Partial: a record with no `oid` (from before that keying; nothing binds
+  // one now, and the 2026-11-03 backfill deletes them) stays out of the index.
   await db
     .collection('users')
     .createIndex(
