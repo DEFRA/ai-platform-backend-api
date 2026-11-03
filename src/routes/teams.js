@@ -1,11 +1,13 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
+import { entraIdField } from '#/common/helpers/entra-id.js'
 import {
   createTeam,
   listTeamsForUser,
   findTeamById,
   updateTeam,
+  searchTeamPeople,
   addMember,
   removeMember,
   setMemberRole
@@ -20,11 +22,14 @@ const serviceCodeField = Joi.string()
 
 // Trimmed and optional; empty clears it.
 const MAX_DESCRIPTION_LENGTH = 500
-const MAX_EMAIL_LENGTH = 254
 const descriptionField = Joi.string()
   .trim()
   .max(MAX_DESCRIPTION_LENGTH)
   .allow('')
+
+// What an Admin types to find a person in the directory.
+const MIN_SEARCH_LENGTH = 2
+const MAX_SEARCH_LENGTH = 100
 
 const memberRoleField = Joi.string().valid('admin', 'user')
 
@@ -142,13 +147,39 @@ export const teams = [
   },
   {
     method: 'POST',
+    path: '/v1/teams/{id}/people/search',
+    options: {
+      validate: {
+        headers: userIdHeader,
+        params: idParam,
+        payload: Joi.object({
+          search: Joi.string()
+            .trim()
+            .min(MIN_SEARCH_LENGTH)
+            .max(MAX_SEARCH_LENGTH)
+            .required()
+        }).unknown(false)
+      }
+    },
+    handler: async (request, h) => {
+      const { items } = await searchTeamPeople(request.db, {
+        teamId: request.params.id,
+        actorUserId: request.headers['x-user-id'],
+        search: request.payload.search
+      })
+
+      return h.response({ items })
+    }
+  },
+  {
+    method: 'POST',
     path: '/v1/teams/{id}/members',
     options: {
       validate: {
         headers: idempotentHeaders,
         params: idParam,
         payload: Joi.object({
-          email: Joi.string().email().max(MAX_EMAIL_LENGTH).required(),
+          oid: entraIdField.required(),
           role: memberRoleField.default('user')
         }).unknown(false)
       }
@@ -158,7 +189,7 @@ export const teams = [
         teamId: request.params.id,
         actorUserId: request.headers['x-user-id'],
         idempotencyKey: request.headers['idempotency-key'],
-        email: request.payload.email,
+        oid: request.payload.oid,
         role: request.payload.role
       })
 

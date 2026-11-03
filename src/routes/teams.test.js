@@ -1,6 +1,23 @@
 import { randomUUID } from 'node:crypto'
 
+import { ObjectId } from 'mongodb'
+
 const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
+
+// People the mock directory holds (src/adapters/fixtures/directory-people.json).
+const SEEDED = {
+  journey: '5eed0000-0000-4000-8000-000000000001',
+  amelia: '5eed0000-0000-4000-8000-000000000002',
+  bashir: '5eed0000-0000-4000-8000-000000000003',
+  cerys: '5eed0000-0000-4000-8000-000000000004',
+  daniel: '5eed0000-0000-4000-8000-000000000005',
+  eleanor: '5eed0000-0000-4000-8000-000000000006',
+  farid: '5eed0000-0000-4000-8000-000000000007',
+  grace: '5eed0000-0000-4000-8000-000000000008',
+  supplier: '5eed0000-0000-4000-8000-000000000009',
+  guest: '5eed0000-0000-4000-8000-00000000000a',
+  lookalike: '5eed0000-0000-4000-8000-00000000000b'
+}
 
 describe('#teams routes', () => {
   let server
@@ -19,6 +36,86 @@ describe('#teams routes', () => {
 
   function postHeaders(userId) {
     return { 'x-user-id': userId, 'idempotency-key': randomUUID() }
+  }
+
+  // A person who has signed in, as sign-in makes them; returns their
+  // x-user-id, which is their `users` id.
+  async function signInAs(label) {
+    const { result } = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
+        email: `${label}@defra.gov.uk`,
+        displayName: `Admin ${label}`
+      }
+    })
+
+    return result.user._id.toString()
+  }
+
+  // A team created by a person who has signed in, so they can add people.
+  async function teamWithAdmin(label) {
+    const adminId = await signInAs(label)
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers: postHeaders(adminId),
+      payload: {
+        name: `Team ${label} ${randomUUID().slice(0, 8)}`,
+        serviceCode: 'ABC'
+      }
+    })
+
+    return {
+      adminId,
+      teamId: created.result.team._id.toString(),
+      slug: created.result.team.slug
+    }
+  }
+
+  function addPerson(team, actorId, payload, by = 'id') {
+    return server.inject({
+      method: 'POST',
+      url: `/v1/teams/${by === 'slug' ? team.slug : team.teamId}/members`,
+      headers: postHeaders(actorId),
+      payload
+    })
+  }
+
+  // Adds a seeded person and returns the member as the API shows it.
+  async function addSeeded(team, person, role) {
+    const { result, statusCode } = await addPerson(team, team.adminId, {
+      oid: SEEDED[person],
+      ...(role && { role })
+    })
+
+    expect(statusCode).toBe(201)
+
+    return result.member
+  }
+
+  // A fixture for tests of what members can do, not of how they are added: a
+  // signed-in person who is already an active member, written straight to the
+  // database so the team's creator need not be a real person.
+  async function insertActiveMember(teamId, label, role = 'user') {
+    const now = new Date().toISOString()
+    const { insertedId } = await server.db.collection('users').insertOne({
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: `${label}@defra.gov.uk`,
+      displayName: 'Fixture Member',
+      roles: ['research-user'],
+      createdAt: now
+    })
+    const userId = insertedId.toString()
+
+    await server.db
+      .collection('teamMembers')
+      .insertOne({ teamId, userId, role, status: 'active', createdAt: now })
+
+    return { userId }
   }
 
   test('POST /v1/teams creates a team and makes the creator an admin', async () => {
@@ -89,35 +186,13 @@ describe('#teams routes', () => {
   })
 
   test('PATCH /v1/teams/{id} refuses a member who is not an admin', async () => {
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers: postHeaders('team-patch-admin-2'),
-      payload: { name: 'Service Code Guard Team', serviceCode: 'ABC' }
-    })
-    const teamId = created.result.team._id.toString()
-
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/members`,
-      headers: postHeaders('team-patch-admin-2'),
-      payload: { email: 'service.code.member@defra.gov.uk' }
-    })
-    const member = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'service.code.member@defra.gov.uk',
-        displayName: 'Service Code Member'
-      }
-    })
+    const team = await teamWithAdmin('team-patch-admin-2')
+    const member = await addSeeded(team, 'amelia')
 
     const { statusCode } = await server.inject({
       method: 'PATCH',
-      url: `/v1/teams/${teamId}`,
-      headers: { 'x-user-id': member.result.user._id.toString() },
+      url: `/v1/teams/${team.teamId}`,
+      headers: { 'x-user-id': member.userId },
       payload: { serviceCode: 'XYZ' }
     })
 
@@ -214,41 +289,35 @@ describe('#teams routes', () => {
     expect(responses.every((response) => response.statusCode < 400)).toBe(true)
   })
 
-  test('POST /v1/teams/{id}/members creates one membership when the same email is invited concurrently', async () => {
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers: postHeaders('team-user-2c'),
-      payload: { name: 'Concurrent Invite Team', serviceCode: 'ABC' }
-    })
-    const teamId = created.result.team._id.toString()
+  test('POST /v1/teams/{id}/members creates one membership when the same person is added concurrently', async () => {
+    const team = await teamWithAdmin('team-user-2c')
 
     const responses = await Promise.all(
       Array.from({ length: 5 }, () =>
-        server.inject({
-          method: 'POST',
-          url: `/v1/teams/${teamId}/members`,
-          headers: postHeaders('team-user-2c'),
-          payload: { email: 'concurrent.invite@defra.gov.uk' }
-        })
+        addPerson(team, team.adminId, { oid: SEEDED.bashir })
       )
     )
 
     expect(
       responses.filter((response) => response.statusCode === 201)
     ).toHaveLength(1)
-
-    const team = await server.inject({
-      method: 'GET',
-      url: `/v1/teams/${teamId}`,
-      headers: { 'x-user-id': 'team-user-2c' }
-    })
-
     expect(
-      team.result.members.filter(
-        (member) => member.email === 'concurrent.invite@defra.gov.uk'
-      )
-    ).toHaveLength(1)
+      responses
+        .filter((response) => response.statusCode !== 201)
+        .map((response) => [response.statusCode, response.result.code])
+    ).toEqual(Array(4).fill([409, 'member-exists']))
+
+    const active = await server.db
+      .collection('teamMembers')
+      .find({ teamId: team.teamId, status: 'active' })
+      .toArray()
+
+    expect(active).toHaveLength(2)
+    expect(
+      await server.db
+        .collection('users')
+        .countDocuments({ oid: SEEDED.bashir, tid: ENTRA_TENANT_ID })
+    ).toBe(1)
   })
 
   test('POST /v1/teams rejects a duplicate team name', async () => {
@@ -300,41 +369,14 @@ describe('#teams routes', () => {
     expect(result.items[0].role).toBe('admin')
   })
 
-  test('GET /v1/teams returns role: user for an invited active member', async () => {
-    const headers = {
-      'x-user-id': 'team-user-4b',
-      'idempotency-key': randomUUID()
-    }
-
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 4b', serviceCode: 'ABC' }
-    })
-    const teamId = created.result.team._id.toString()
-
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/members`,
-      headers,
-      payload: { email: 'list-role-teammate@defra.gov.uk' }
-    })
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'list-role-teammate@defra.gov.uk',
-        displayName: 'List Role Teammate'
-      }
-    })
+  test('GET /v1/teams returns role: user for an added member', async () => {
+    const team = await teamWithAdmin('team-user-4b')
+    const member = await addSeeded(team, 'cerys')
 
     const { result, statusCode } = await server.inject({
       method: 'GET',
       url: '/v1/teams',
-      headers: { 'x-user-id': signIn.result.user._id.toString() }
+      headers: { 'x-user-id': member.userId }
     })
 
     expect(statusCode).toBe(200)
@@ -399,109 +441,321 @@ describe('#teams routes', () => {
     expect(statusCode).toBe(404)
   })
 
-  test('POST /v1/teams/{id}/members invites a member with the user role', async () => {
-    const headers = {
-      'x-user-id': 'team-user-7',
-      'idempotency-key': randomUUID()
-    }
+  test('POST /v1/teams/{id}/members adds a member at once, with the user role and no email stored', async () => {
+    const team = await teamWithAdmin('team-user-7')
 
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 7', serviceCode: 'ABC' }
-    })
-
-    const { result, statusCode } = await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${created.result.team._id}/members`,
-      headers: postHeaders('team-user-7'),
-      payload: { email: 'invitee@defra.gov.uk' }
-    })
+    const { result, statusCode, headers } = await addPerson(
+      team,
+      team.adminId,
+      { oid: SEEDED.amelia }
+    )
 
     expect(statusCode).toBe(201)
-    expect(result.member.status).toBe('invited')
-    expect(result.member.role).toBe('user')
+    expect(headers.location).toBe(`/v1/teams/${team.teamId}/members`)
+    expect(result.member).toEqual({
+      _id: expect.anything(),
+      teamId: team.teamId,
+      userId: expect.any(String),
+      displayName: 'Amelia Hartley',
+      email: 'amelia.hartley@defra.gov.uk',
+      role: 'user',
+      status: 'active',
+      createdAt: expect.any(String)
+    })
+
+    const stored = await server.db
+      .collection('teamMembers')
+      .findOne({ _id: result.member._id })
+
+    expect(stored).not.toHaveProperty('email')
+    expect(stored.status).toBe('active')
   })
 
-  test('POST /v1/teams/{id}/members rejects a duplicate invite for the same email', async () => {
-    const headers = {
-      'x-user-id': 'team-user-7b',
-      'idempotency-key': randomUUID()
-    }
+  test('POST /v1/teams/{id}/members lists the team for the person added, with no sign-in', async () => {
+    const team = await teamWithAdmin('team-user-7a')
+    const member = await addSeeded(team, 'bashir')
 
-    const created = await server.inject({
-      method: 'POST',
+    const { result } = await server.inject({
+      method: 'GET',
       url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 7b', serviceCode: 'ABC' }
+      headers: { 'x-user-id': member.userId }
     })
 
-    await server.inject({
+    expect(result.items.map((item) => item._id.toString())).toContain(
+      team.teamId
+    )
+  })
+
+  test('POST /v1/teams/{id}/members makes one record for a person who has never signed in, which their first sign-in then finds', async () => {
+    const team = await teamWithAdmin('team-user-10')
+    const member = await addSeeded(team, 'daniel')
+    const users = server.db.collection('users')
+
+    const made = await users.findOne({ oid: SEEDED.daniel })
+
+    expect(made).toMatchObject({
+      tid: ENTRA_TENANT_ID,
+      displayName: 'Daniel Okafor',
+      email: 'daniel.okafor@defra.gov.uk',
+      roles: ['research-user']
+    })
+    expect(made.lastSignInAt).toBeUndefined()
+    expect(made._id.toString()).toBe(member.userId)
+
+    const signIn = await server.inject({
       method: 'POST',
-      url: `/v1/teams/${created.result.team._id}/members`,
-      headers: postHeaders('team-user-7b'),
-      payload: { email: 'duplicate@defra.gov.uk' }
+      url: '/v1/users',
+      payload: {
+        oid: SEEDED.daniel,
+        tid: ENTRA_TENANT_ID,
+        email: 'daniel.okafor@defra.gov.uk',
+        displayName: 'Daniel Okafor'
+      }
+    })
+    const teams = await server.inject({
+      method: 'GET',
+      url: '/v1/teams',
+      headers: { 'x-user-id': signIn.result.user._id.toString() }
     })
 
-    const { result, statusCode } = await server.inject({
+    expect(signIn.result.user._id.toString()).toBe(member.userId)
+    expect(signIn.result.user.lastSignInAt).toEqual(expect.any(String))
+    expect(
+      await users.countDocuments({ oid: SEEDED.daniel, tid: ENTRA_TENANT_ID })
+    ).toBe(1)
+    expect(teams.result.items.map((item) => item._id.toString())).toContain(
+      team.teamId
+    )
+  })
+
+  test('POST /v1/teams/{id}/members leaves the record of a person who has already signed in as it is', async () => {
+    const team = await teamWithAdmin('team-user-10b')
+    const signedIn = await server.inject({
       method: 'POST',
-      url: `/v1/teams/${created.result.team._id}/members`,
-      headers: postHeaders('team-user-7b'),
-      payload: { email: 'duplicate@defra.gov.uk' }
+      url: '/v1/users',
+      payload: {
+        oid: SEEDED.eleanor,
+        tid: ENTRA_TENANT_ID,
+        email: 'eleanor.own.address@defra.gov.uk',
+        displayName: 'Eleanor Own Name'
+      }
+    })
+
+    const member = await addSeeded(team, 'eleanor')
+
+    expect(member.userId).toBe(signedIn.result.user._id.toString())
+    expect(member.displayName).toBe('Eleanor Own Name')
+    expect(member.email).toBe('eleanor.own.address@defra.gov.uk')
+  })
+
+  test('POST /v1/teams/{id}/members takes the email from the user principal name when the person has no mail', async () => {
+    const team = await teamWithAdmin('team-user-7b2')
+
+    const member = await addSeeded(team, 'farid')
+
+    expect(member.email).toBe('farid.haidari@defra.onmicrosoft.com')
+  })
+
+  test('POST /v1/teams/{id}/members rejects adding the same person twice', async () => {
+    const team = await teamWithAdmin('team-user-7b')
+
+    await addSeeded(team, 'grace')
+    const { result, statusCode } = await addPerson(team, team.adminId, {
+      oid: SEEDED.grace
     })
 
     expect(statusCode).toBe(409)
     expect(result.code).toBe('member-exists')
   })
 
-  test('POST /v1/teams/{id}/members rejects a non-admin member', async () => {
-    const headers = {
-      'x-user-id': 'team-user-8',
-      'idempotency-key': randomUUID()
+  test('POST /v1/teams/{id}/members replays the same membership for the same Idempotency-Key', async () => {
+    const team = await teamWithAdmin('team-user-7c')
+    const headers = postHeaders(team.adminId)
+    const add = () =>
+      server.inject({
+        method: 'POST',
+        url: `/v1/teams/${team.teamId}/members`,
+        headers,
+        payload: { oid: SEEDED.journey, role: 'admin' }
+      })
+
+    const first = await add()
+    const second = await add()
+
+    expect(first.statusCode).toBe(201)
+    expect(second.statusCode).toBe(201)
+    expect(second.result.member).toEqual(first.result.member)
+    expect(
+      await server.db
+        .collection('teamMembers')
+        .countDocuments({ teamId: team.teamId, status: 'active' })
+    ).toBe(2)
+  })
+
+  test('POST /v1/teams/{id}/members lets a person who was removed be added again', async () => {
+    const team = await teamWithAdmin('team-user-7d')
+    const first = await addSeeded(team, 'amelia')
+
+    await server.inject({
+      method: 'DELETE',
+      url: `/v1/teams/${team.teamId}/members/${first._id}`,
+      headers: { 'x-user-id': team.adminId }
+    })
+    const again = await addPerson(team, team.adminId, { oid: SEEDED.amelia })
+
+    expect(again.statusCode).toBe(201)
+    expect(again.result.member._id.toString()).not.toBe(first._id.toString())
+    expect(again.result.member.userId).toBe(first.userId)
+  })
+
+  test.each([
+    ['a supplier', 'supplier'],
+    ['a guest', 'guest'],
+    ['a look-alike domain', 'lookalike']
+  ])(
+    'POST /v1/teams/{id}/members refuses %s as not eligible',
+    async (_, person) => {
+      const team = await teamWithAdmin(`team-not-eligible-${person}`)
+
+      const { result, statusCode } = await addPerson(team, team.adminId, {
+        oid: SEEDED[person]
+      })
+
+      expect(statusCode).toBe(422)
+      expect(result.code).toBe('person-not-eligible')
+      expect(
+        await server.db
+          .collection('users')
+          .countDocuments({ oid: SEEDED[person] })
+      ).toBe(0)
     }
+  )
 
-    const created = await server.inject({
+  test('POST /v1/teams/{id}/members refuses an unknown oid exactly as it refuses an ineligible person', async () => {
+    const team = await teamWithAdmin('team-unknown-oid')
+
+    const unknown = await addPerson(team, team.adminId, { oid: randomUUID() })
+    const ineligible = await addPerson(team, team.adminId, {
+      oid: SEEDED.supplier
+    })
+
+    expect(unknown.statusCode).toBe(422)
+    expect({ ...unknown.result, requestId: undefined }).toEqual({
+      ...ineligible.result,
+      requestId: undefined
+    })
+    expect(unknown.result.code).toBe('person-not-eligible')
+  })
+
+  test.each([
+    ['an email, as before', { email: 'someone@defra.gov.uk' }],
+    ['no oid', { role: 'user' }],
+    ['an oid that is not a GUID', { oid: 'not-a-guid' }],
+    ['a role it does not know', { oid: SEEDED.amelia, role: 'owner' }],
+    ['an unknown key', { oid: SEEDED.amelia, name: 'Someone' }]
+  ])('POST /v1/teams/{id}/members refuses %s', async (_, payload) => {
+    const team = await teamWithAdmin('team-bad-body')
+
+    const { statusCode } = await addPerson(team, team.adminId, payload)
+
+    expect(statusCode).toBe(400)
+  })
+
+  test('POST /v1/teams/{id}/members refuses a missing or malformed Idempotency-Key', async () => {
+    const team = await teamWithAdmin('team-no-key')
+
+    const missing = await server.inject({
       method: 'POST',
-      url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 8', serviceCode: 'ABC' }
+      url: `/v1/teams/${team.teamId}/members`,
+      headers: { 'x-user-id': team.adminId },
+      payload: { oid: SEEDED.amelia }
     })
 
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${created.result.team._id}/members`,
-      headers: postHeaders('team-user-8'),
-      payload: { email: 'user-member@defra.gov.uk' }
+    expect(missing.statusCode).toBe(400)
+  })
+
+  test('POST /v1/teams/{id}/members accepts an upper-case oid and stores it in lower case', async () => {
+    const team = await teamWithAdmin('team-upper-oid')
+
+    const { statusCode, result } = await addPerson(team, team.adminId, {
+      oid: SEEDED.cerys.toUpperCase()
     })
 
-    // binds the invited member so they become an active, non-admin member
-    await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'user-member@defra.gov.uk',
-        displayName: 'User Member'
-      }
+    expect(statusCode).toBe(201)
+    expect(
+      await server.db.collection('users').countDocuments({ oid: SEEDED.cerys })
+    ).toBe(1)
+    expect(result.member.displayName).toBe('Cerys Owen')
+  })
+
+  test('POST /v1/teams/{id}/members asks the person to sign in again when the actor has no tenant', async () => {
+    const team = await teamWithAdmin('team-no-tenant')
+
+    await server.db
+      .collection('users')
+      .updateOne({ _id: new ObjectId(team.adminId) }, { $unset: { tid: '' } })
+    const { result, statusCode } = await addPerson(team, team.adminId, {
+      oid: SEEDED.amelia
     })
 
-    const team = await server.inject({
-      method: 'GET',
-      url: `/v1/teams/${created.result.team._id}`,
-      headers: { 'x-user-id': 'team-user-8' }
-    })
+    expect(statusCode).toBe(403)
+    expect(result.code).toBe('entra-identity-required')
+  })
 
-    const boundMember = team.result.members.find(
-      (member) => member.email === 'user-member@defra.gov.uk'
+  test('POST /v1/teams/{id}/members audits who added whom by object ID, never a name or email', async () => {
+    const team = await teamWithAdmin('team-audit')
+
+    await addSeeded(team, 'journey', 'admin')
+
+    const [event] = await server.db
+      .collection('auditEvents')
+      .find({ resourceId: team.teamId, action: 'team.addMember' })
+      .toArray()
+
+    expect(event).toMatchObject({
+      actorUserId: team.adminId,
+      outcome: 'success',
+      code: 'admin',
+      subjectOid: SEEDED.journey
+    })
+    expect(JSON.stringify(event)).not.toMatch(/Journey|@defra/)
+  })
+
+  test('POST /v1/teams/{id}/members gives 503 directory-unavailable when the directory fails, and adds nobody', async () => {
+    const team = await teamWithAdmin('team-directory-down')
+    const { mockDirectory } = await import('#/adapters/mock-directory.js')
+    const { boomWithCode, Boom } =
+      await import('#/common/helpers/boom-with-code.js')
+
+    vi.spyOn(mockDirectory, 'getPerson').mockRejectedValue(
+      boomWithCode(
+        Boom.serverUnavailable,
+        'The directory is unavailable',
+        'directory-unavailable'
+      )
     )
 
-    const { result, statusCode } = await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${created.result.team._id}/members`,
-      headers: postHeaders(boundMember.userId),
-      payload: { email: 'another@defra.gov.uk' }
+    const { result, statusCode } = await addPerson(team, team.adminId, {
+      oid: SEEDED.amelia
+    })
+
+    vi.restoreAllMocks()
+
+    expect(statusCode).toBe(503)
+    expect(result.code).toBe('directory-unavailable')
+    expect(
+      await server.db
+        .collection('teamMembers')
+        .countDocuments({ teamId: team.teamId })
+    ).toBe(1)
+  })
+
+  test('POST /v1/teams/{id}/members rejects a non-admin member', async () => {
+    const team = await teamWithAdmin('team-user-8')
+    const boundMember = await addSeeded(team, 'bashir')
+
+    const { result, statusCode } = await addPerson(team, boundMember.userId, {
+      oid: SEEDED.cerys
     })
 
     expect(statusCode).toBe(403)
@@ -509,234 +763,113 @@ describe('#teams routes', () => {
   })
 
   test('POST /v1/teams/{id}/members returns 404 for a non-member actor', async () => {
-    const headers = {
-      'x-user-id': 'team-user-9',
-      'idempotency-key': randomUUID()
-    }
+    const team = await teamWithAdmin('team-user-9')
+    const stranger = await signInAs('team-user-9-stranger')
 
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 9', serviceCode: 'ABC' }
-    })
-
-    const { statusCode } = await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${created.result.team._id}/members`,
-      headers: postHeaders('someone-else'),
-      payload: { email: 'invitee2@defra.gov.uk' }
+    const { statusCode } = await addPerson(team, stranger, {
+      oid: SEEDED.amelia
     })
 
     expect(statusCode).toBe(404)
   })
 
-  test('POST /v1/users binds an invited member to the signed-in user on first sign-in', async () => {
-    const headers = {
-      'x-user-id': 'team-user-10',
-      'idempotency-key': randomUUID()
-    }
-
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 10', serviceCode: 'ABC' }
-    })
-
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${created.result.team._id}/members`,
-      headers: postHeaders('team-user-10'),
-      payload: { email: 'bound.member@defra.gov.uk' }
-    })
+  test('GET /v1/teams/{id} shows a member\u2019s own name and email once they have signed in', async () => {
+    const team = await teamWithAdmin('team-user-11')
+    const member = await addSeeded(team, 'eleanor')
 
     await server.inject({
       method: 'POST',
       url: '/v1/users',
       payload: {
-        oid: randomUUID(),
+        oid: SEEDED.eleanor,
         tid: ENTRA_TENANT_ID,
-        email: 'bound.member@defra.gov.uk',
-        displayName: 'Bound Member'
+        email: 'Eleanor.Signed.In@defra.gov.uk',
+        displayName: 'Eleanor Signed In'
       }
     })
 
     const { result } = await server.inject({
       method: 'GET',
-      url: `/v1/teams/${created.result.team._id}`,
-      headers: { 'x-user-id': 'team-user-10' }
+      url: `/v1/teams/${team.teamId}`,
+      headers: { 'x-user-id': team.adminId }
     })
 
-    const bound = result.members.find(
-      (member) => member.email === 'bound.member@defra.gov.uk'
-    )
-
-    expect(bound.status).toBe('active')
-    expect(bound.userId).not.toBeNull()
+    expect(
+      result.members.find((one) => one.userId === member.userId)
+    ).toMatchObject({
+      displayName: 'Eleanor Signed In',
+      email: 'eleanor.signed.in@defra.gov.uk',
+      status: 'active'
+    })
   })
 
-  test('GET /v1/teams/{id} includes a member\u2019s display name once they have signed in', async () => {
-    const headers = {
-      'x-user-id': 'team-user-11',
-      'idempotency-key': randomUUID()
-    }
-
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 11', serviceCode: 'ABC' }
-    })
-
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${created.result.team._id}/members`,
-      headers: postHeaders('team-user-11'),
-      payload: { email: 'named.member@defra.gov.uk' }
-    })
-
-    await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'named.member@defra.gov.uk',
-        displayName: 'Named Member'
-      }
-    })
+  test('GET /v1/teams/{id} shows the directory name and email of a member who has not signed in yet', async () => {
+    const team = await teamWithAdmin('team-user-11b')
+    const member = await addSeeded(team, 'grace')
 
     const { result } = await server.inject({
       method: 'GET',
-      url: `/v1/teams/${created.result.team._id}`,
-      headers: { 'x-user-id': 'team-user-11' }
+      url: `/v1/teams/${team.teamId}`,
+      headers: { 'x-user-id': team.adminId }
     })
 
-    const named = result.members.find(
-      (member) => member.email === 'named.member@defra.gov.uk'
-    )
-
-    expect(named.displayName).toBe('Named Member')
-  })
-
-  test('GET /v1/teams/{id} returns a null display name for a member who has not signed in yet', async () => {
-    const headers = {
-      'x-user-id': 'team-user-11b',
-      'idempotency-key': randomUUID()
-    }
-
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 11b', serviceCode: 'ABC' }
+    expect(
+      result.members.find((one) => one.userId === member.userId)
+    ).toMatchObject({
+      displayName: 'Grace Lindqvist',
+      email: 'grace.lindqvist@defra.gov.uk'
     })
-
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${created.result.team._id}/members`,
-      headers: postHeaders('team-user-11b'),
-      payload: { email: 'not.signed.in@defra.gov.uk' }
-    })
-
-    const { result } = await server.inject({
-      method: 'GET',
-      url: `/v1/teams/${created.result.team._id}`,
-      headers: { 'x-user-id': 'team-user-11b' }
-    })
-
-    const invited = result.members.find(
-      (member) => member.email === 'not.signed.in@defra.gov.uk'
-    )
-
-    expect(invited.displayName).toBeNull()
   })
 
   test('DELETE /v1/teams/{id}/members/{memberId} lets an admin remove a member', async () => {
-    const headers = {
-      'x-user-id': 'team-user-12',
-      'idempotency-key': randomUUID()
-    }
-
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 12', serviceCode: 'ABC' }
-    })
-    const teamId = created.result.team._id.toString()
-
-    const invited = await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/members`,
-      headers: postHeaders('team-user-12'),
-      payload: { email: 'removable@defra.gov.uk' }
-    })
+    const team = await teamWithAdmin('team-user-12')
+    const added = await addSeeded(team, 'amelia')
 
     const { statusCode } = await server.inject({
       method: 'DELETE',
-      url: `/v1/teams/${teamId}/members/${invited.result.member._id}`,
-      headers: { 'x-user-id': 'team-user-12' }
+      url: `/v1/teams/${team.teamId}/members/${added._id}`,
+      headers: { 'x-user-id': team.adminId }
     })
 
     expect(statusCode).toBe(204)
 
-    const team = await server.inject({
+    const view = await server.inject({
       method: 'GET',
-      url: `/v1/teams/${teamId}`,
-      headers: { 'x-user-id': 'team-user-12' }
+      url: `/v1/teams/${team.teamId}`,
+      headers: { 'x-user-id': team.adminId }
     })
-    const removed = team.result.members.find(
-      (member) => member.email === 'removable@defra.gov.uk'
+    const removed = view.result.members.find(
+      (member) => member.userId === added.userId
     )
 
     expect(removed.status).toBe('removed')
   })
 
+  test('DELETE /v1/teams/{id}/members/{memberId} finds no membership that was never active', async () => {
+    const team = await teamWithAdmin('team-user-12b')
+    const { insertedId } = await server.db.collection('teamMembers').insertOne({
+      teamId: team.teamId,
+      userId: null,
+      role: 'user',
+      status: 'invited'
+    })
+
+    const { statusCode } = await server.inject({
+      method: 'DELETE',
+      url: `/v1/teams/${team.teamId}/members/${insertedId}`,
+      headers: { 'x-user-id': team.adminId }
+    })
+
+    expect(statusCode).toBe(404)
+  })
+
   test('DELETE /v1/teams/{id}/members/{memberId} rejects a non-admin', async () => {
-    const headers = {
-      'x-user-id': 'team-user-13',
-      'idempotency-key': randomUUID()
-    }
-
-    const created = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers,
-      payload: { name: 'My Team 13', serviceCode: 'ABC' }
-    })
-    const teamId = created.result.team._id.toString()
-
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/members`,
-      headers: postHeaders('team-user-13'),
-      payload: { email: 'non-admin-actor@defra.gov.uk' }
-    })
-    await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'non-admin-actor@defra.gov.uk',
-        displayName: 'Non Admin Actor'
-      }
-    })
-
-    const team = await server.inject({
-      method: 'GET',
-      url: `/v1/teams/${teamId}`,
-      headers: { 'x-user-id': 'team-user-13' }
-    })
-    const nonAdminMember = team.result.members.find(
-      (member) => member.email === 'non-admin-actor@defra.gov.uk'
-    )
+    const team = await teamWithAdmin('team-user-13')
+    const nonAdminMember = await addSeeded(team, 'bashir')
 
     const { result, statusCode } = await server.inject({
       method: 'DELETE',
-      url: `/v1/teams/${teamId}/members/${nonAdminMember._id}`,
+      url: `/v1/teams/${team.teamId}/members/${nonAdminMember._id}`,
       headers: { 'x-user-id': nonAdminMember.userId }
     })
 
@@ -805,7 +938,6 @@ describe('#teams routes', () => {
   describe('PATCH /v1/teams/{id}/members/{memberId}', () => {
     // A team with its creator as admin and a second, signed-in member.
     async function teamWithMember(label) {
-      const email = `${label}@defra.gov.uk`
       const created = await server.inject({
         method: 'POST',
         url: '/v1/teams',
@@ -813,23 +945,7 @@ describe('#teams routes', () => {
         payload: { name: `Role Team ${label}`, serviceCode: 'ABC' }
       })
       const teamId = created.result.team._id.toString()
-
-      await server.inject({
-        method: 'POST',
-        url: `/v1/teams/${teamId}/members`,
-        headers: postHeaders(label),
-        payload: { email }
-      })
-      const signedIn = await server.inject({
-        method: 'POST',
-        url: '/v1/users',
-        payload: {
-          oid: randomUUID(),
-          tid: ENTRA_TENANT_ID,
-          email,
-          displayName: 'Role Member'
-        }
-      })
+      const { userId } = await insertActiveMember(teamId, label)
 
       const team = await server.inject({
         method: 'GET',
@@ -840,8 +956,8 @@ describe('#teams routes', () => {
       return {
         teamId,
         admin: team.result.members.find((member) => member.role === 'admin'),
-        member: team.result.members.find((member) => member.email === email),
-        memberUserId: signedIn.result.user._id.toString()
+        member: team.result.members.find((member) => member.userId === userId),
+        memberUserId: userId
       }
     }
 
@@ -981,27 +1097,12 @@ describe('#teams routes', () => {
       }
     }
 
-    // Invites the email, then signs them in so they are an active member;
-    // returns their user id, which is their x-user-id.
-    async function activeMember(team, adminLabel, email, role) {
-      await server.inject({
-        method: 'POST',
-        url: `/v1/teams/${team.teamId}/members`,
-        headers: postHeaders(adminLabel),
-        payload: role ? { email, role } : { email }
-      })
-      const signedIn = await server.inject({
-        method: 'POST',
-        url: '/v1/users',
-        payload: {
-          oid: randomUUID(),
-          tid: ENTRA_TENANT_ID,
-          email,
-          displayName: 'Details Member'
-        }
-      })
+    // An active, signed-in member; returns their user id, which is their
+    // x-user-id.
+    async function activeMember(team, label, role) {
+      const { userId } = await insertActiveMember(team.teamId, label, role)
 
-      return signedIn.result.user._id.toString()
+      return userId
     }
 
     function patch(team, userId, payload, by = 'id') {
@@ -1106,11 +1207,7 @@ describe('#teams routes', () => {
 
       test('refuses a member who is not an admin, by id and by slug', async () => {
         const team = await newTeam('details-5')
-        const memberId = await activeMember(
-          team,
-          'details-5',
-          'details.five.member@defra.gov.uk'
-        )
+        const memberId = await activeMember(team, 'details-5')
 
         const byId = await patch(team, memberId, { description: 'Mine now' })
         const bySlug = await patch(
@@ -1151,56 +1248,41 @@ describe('#teams routes', () => {
     })
 
     describe('POST /v1/teams/{id}/members role', () => {
-      function invite(team, userId, payload, by = 'id') {
-        return server.inject({
-          method: 'POST',
-          url: `/v1/teams/${by === 'slug' ? team.slug : team.teamId}/members`,
-          headers: postHeaders(userId),
-          payload
-        })
-      }
-
       test('defaults to user', async () => {
-        const team = await newTeam('role-default')
+        const team = await teamWithAdmin('role-default')
 
-        const { result, statusCode } = await invite(team, 'role-default', {
-          email: 'role.default@defra.gov.uk'
+        const { result, statusCode } = await addPerson(team, team.adminId, {
+          oid: SEEDED.amelia
         })
 
         expect(statusCode).toBe(201)
         expect(result.member.role).toBe('user')
       })
 
-      test.each([['admin'], ['user']])(
-        'lets an admin invite someone as %s, by slug',
-        async (role) => {
-          const label = `role-${role}`
-          const team = await newTeam(label)
+      test.each([
+        ['admin', 'bashir'],
+        ['user', 'cerys']
+      ])('lets an admin add someone as %s, by slug', async (role, person) => {
+        const team = await teamWithAdmin(`role-${role}`)
 
-          const { result, statusCode, headers } = await invite(
-            team,
-            label,
-            { email: `role.${role}@defra.gov.uk`, role },
-            'slug'
-          )
-
-          expect(statusCode).toBe(201)
-          expect(result.member.role).toBe(role)
-          expect(headers.location).toBe(`/v1/teams/${team.slug}/members`)
-        }
-      )
-
-      test('makes an invited admin an active admin once they sign in', async () => {
-        const team = await newTeam('role-signin')
-        const adminId = await activeMember(
+        const { result, statusCode, headers } = await addPerson(
           team,
-          'role-signin',
-          'role.signin@defra.gov.uk',
-          'admin'
+          team.adminId,
+          { oid: SEEDED[person], role },
+          'slug'
         )
 
-        const { statusCode } = await patch(team, adminId, {
-          description: 'Set by the invited admin'
+        expect(statusCode).toBe(201)
+        expect(result.member.role).toBe(role)
+        expect(headers.location).toBe(`/v1/teams/${team.slug}/members`)
+      })
+
+      test('makes an admin added from the directory an admin at once, with no sign-in', async () => {
+        const team = await teamWithAdmin('role-signin')
+        const added = await addSeeded(team, 'daniel', 'admin')
+
+        const { statusCode } = await patch(team, added.userId, {
+          description: 'Set by the added admin'
         })
 
         expect(statusCode).toBe(200)
@@ -1210,10 +1292,10 @@ describe('#teams routes', () => {
         ['a role it does not know', { role: 'owner' }],
         ['an unknown key', { role: 'user', name: 'Someone' }]
       ])('refuses %s', async (_, extra) => {
-        const team = await newTeam('role-bad')
+        const team = await teamWithAdmin('role-bad')
 
-        const { statusCode } = await invite(team, 'role-bad', {
-          email: 'role.bad@defra.gov.uk',
+        const { statusCode } = await addPerson(team, team.adminId, {
+          oid: SEEDED.amelia,
           ...extra
         })
 
@@ -1221,21 +1303,17 @@ describe('#teams routes', () => {
       })
 
       test('refuses a member who is not an admin, even to add a user', async () => {
-        const team = await newTeam('role-member')
-        const memberId = await activeMember(
-          team,
-          'role-member',
-          'role.member@defra.gov.uk'
-        )
+        const team = await teamWithAdmin('role-member')
+        const member = await addSeeded(team, 'eleanor')
 
-        const asAdmin = await invite(
+        const asAdmin = await addPerson(
           team,
-          memberId,
-          { email: 'role.sneaky@defra.gov.uk', role: 'admin' },
+          member.userId,
+          { oid: SEEDED.amelia, role: 'admin' },
           'slug'
         )
-        const asUser = await invite(team, memberId, {
-          email: 'role.sneaky2@defra.gov.uk'
+        const asUser = await addPerson(team, member.userId, {
+          oid: SEEDED.bashir
         })
 
         expect(asAdmin.statusCode).toBe(403)
@@ -1244,18 +1322,19 @@ describe('#teams routes', () => {
       })
 
       test('is not found for someone outside the team, and for an unknown slug', async () => {
-        const team = await newTeam('role-stranger')
+        const team = await teamWithAdmin('role-stranger')
+        const outsider = await signInAs('role-outsider')
 
-        const stranger = await invite(
+        const stranger = await addPerson(
           team,
-          'role-outsider',
-          { email: 'role.outsider@defra.gov.uk', role: 'admin' },
+          outsider,
+          { oid: SEEDED.amelia, role: 'admin' },
           'slug'
         )
-        const unknown = await invite(
+        const unknown = await addPerson(
           { slug: 'no-such-team' },
-          'role-stranger',
-          { email: 'role.nobody@defra.gov.uk' },
+          team.adminId,
+          { oid: SEEDED.amelia },
           'slug'
         )
 
@@ -1315,11 +1394,7 @@ describe('#teams routes', () => {
 
       test('reads, changes and removes members the same as by id', async () => {
         const team = await newTeam('slug-1')
-        const memberId = await activeMember(
-          team,
-          'slug-1',
-          'slug.one.member@defra.gov.uk'
-        )
+        const memberId = await activeMember(team, 'slug-1')
         const bySlug = await server.inject({
           method: 'GET',
           url: `/v1/teams/${team.slug}`,
@@ -1358,11 +1433,7 @@ describe('#teams routes', () => {
 
       test('keeps a member who is not an admin from changing or removing members', async () => {
         const team = await newTeam('slug-2')
-        const memberId = await activeMember(
-          team,
-          'slug-2',
-          'slug.two.member@defra.gov.uk'
-        )
+        const memberId = await activeMember(team, 'slug-2')
         const members = await server.inject({
           method: 'GET',
           url: `/v1/teams/${team.slug}`,
@@ -1459,11 +1530,7 @@ describe('#teams routes', () => {
 
       test('lists each environment the team has a file in, with its own limits, in environment order', async () => {
         const team = await newTeam('env-1')
-        const memberId = await activeMember(
-          team,
-          'env-1',
-          'env.one.member@defra.gov.uk'
-        )
+        const memberId = await activeMember(team, 'env-1')
 
         config.set('teamDeployment.environments', [
           'infradev',
@@ -1531,6 +1598,232 @@ describe('#teams routes', () => {
         expect(statusCode).toBe(404)
         expect(mockTeamFileReader.getCurrentDocument).not.toHaveBeenCalled()
       })
+    })
+  })
+
+  describe('POST /v1/teams/{id}/people/search', () => {
+    function search(team, actorId, payload, by = 'id') {
+      return server.inject({
+        method: 'POST',
+        url: `/v1/teams/${by === 'slug' ? team.slug : team.teamId}/people/search`,
+        headers: { 'x-user-id': actorId },
+        payload
+      })
+    }
+
+    test('finds people by name, in any word order, as oid, displayName and email only', async () => {
+      const team = await teamWithAdmin('search-1')
+
+      const { result, statusCode } = await search(team, team.adminId, {
+        search: 'hartley amelia'
+      })
+
+      expect(statusCode).toBe(200)
+      expect(result).toEqual({
+        items: [
+          {
+            oid: SEEDED.amelia,
+            displayName: 'Amelia Hartley',
+            email: 'amelia.hartley@defra.gov.uk'
+          }
+        ]
+      })
+    })
+
+    test('finds a person by the start of their email, by slug', async () => {
+      const team = await teamWithAdmin('search-2')
+
+      const { result } = await search(
+        team,
+        team.adminId,
+        { search: 'journey.test.me' },
+        'slug'
+      )
+
+      expect(result.items.map((item) => item.oid)).toEqual([SEEDED.journey])
+    })
+
+    test('shows the user principal name when the person has no mail', async () => {
+      const team = await teamWithAdmin('search-3')
+
+      const { result } = await search(team, team.adminId, { search: 'farid' })
+
+      expect(result.items).toEqual([
+        {
+          oid: SEEDED.farid,
+          displayName: 'Farid Haidari',
+          email: 'farid.haidari@defra.onmicrosoft.com'
+        }
+      ])
+    })
+
+    test('leaves out suppliers, guests and look-alike domains', async () => {
+      const team = await teamWithAdmin('search-4')
+
+      for (const text of ['sasha', 'gavin', 'lola']) {
+        const { result, statusCode } = await search(team, team.adminId, {
+          search: text
+        })
+
+        expect(statusCode).toBe(200)
+        expect(result.items).toEqual([])
+      }
+    })
+
+    test('leaves out people who are already active members, but not removed ones', async () => {
+      const team = await teamWithAdmin('search-5')
+      const added = await addSeeded(team, 'cerys')
+      const other = await addSeeded(team, 'daniel')
+
+      await server.inject({
+        method: 'DELETE',
+        url: `/v1/teams/${team.teamId}/members/${other._id}`,
+        headers: { 'x-user-id': team.adminId }
+      })
+      const { result } = await search(team, team.adminId, { search: 'cerys' })
+      const daniel = await search(team, team.adminId, { search: 'daniel' })
+
+      expect(added.userId).toEqual(expect.any(String))
+      expect(result.items).toEqual([])
+      expect(daniel.result.items.map((item) => item.oid)).toEqual([
+        SEEDED.daniel
+      ])
+    })
+
+    test('sorts by name and returns at most 20', async () => {
+      const team = await teamWithAdmin('search-6')
+      const { mockDirectory } = await import('#/adapters/mock-directory.js')
+      const crowd = Array.from({ length: 30 }, (_, index) => ({
+        oid: randomUUID(),
+        displayName: `Zed Person ${String(30 - index).padStart(2, '0')}`,
+        mail: `zed.person.${index}@defra.gov.uk`,
+        userPrincipalName: `zed.person.${index}@defra.gov.uk`
+      }))
+
+      vi.spyOn(mockDirectory, 'searchPeople').mockResolvedValue(crowd)
+      const { result } = await search(team, team.adminId, { search: 'zed' })
+
+      vi.restoreAllMocks()
+
+      expect(result.items).toHaveLength(20)
+      expect(result.items.map((item) => item.displayName)).toEqual(
+        Array.from(
+          { length: 20 },
+          (_, index) => `Zed Person ${String(index + 1).padStart(2, '0')}`
+        )
+      )
+    })
+
+    test.each([
+      ['one character', { search: 'a' }],
+      ['one character once trimmed', { search: ' a ' }],
+      ['101 characters', { search: 'a'.repeat(101) }],
+      ['no search', {}],
+      ['an unknown key', { search: 'amelia', limit: 5 }],
+      ['text that is not a string', { search: 42 }]
+    ])('refuses %s', async (_, payload) => {
+      const team = await teamWithAdmin('search-7')
+
+      const { statusCode } = await search(team, team.adminId, payload)
+
+      expect(statusCode).toBe(400)
+    })
+
+    test('accepts 2 and 100 characters', async () => {
+      const team = await teamWithAdmin('search-8')
+
+      const short = await search(team, team.adminId, { search: 'am' })
+      const long = await search(team, team.adminId, { search: 'a'.repeat(100) })
+
+      expect(short.statusCode).toBe(200)
+      expect(long.statusCode).toBe(200)
+    })
+
+    test('refuses a request with no x-user-id', async () => {
+      const team = await teamWithAdmin('search-9')
+
+      const { statusCode } = await server.inject({
+        method: 'POST',
+        url: `/v1/teams/${team.teamId}/people/search`,
+        payload: { search: 'amelia' }
+      })
+
+      expect(statusCode).toBe(400)
+    })
+
+    test('refuses a member who is not an admin', async () => {
+      const team = await teamWithAdmin('search-10')
+      const member = await addSeeded(team, 'bashir')
+
+      const { result, statusCode } = await search(team, member.userId, {
+        search: 'amelia'
+      })
+
+      expect(statusCode).toBe(403)
+      expect(result.code).toBe('admin-required')
+    })
+
+    test('is not found for someone outside the team, and for an unknown team', async () => {
+      const team = await teamWithAdmin('search-11')
+      const outsider = await signInAs('search-outsider')
+
+      const stranger = await search(team, outsider, { search: 'amelia' })
+      const unknown = await search(
+        { slug: 'no-such-team' },
+        team.adminId,
+        { search: 'amelia' },
+        'slug'
+      )
+
+      expect(stranger.statusCode).toBe(404)
+      expect(unknown.statusCode).toBe(404)
+    })
+
+    test('gives 503 directory-unavailable when the directory fails', async () => {
+      const team = await teamWithAdmin('search-12')
+      const { mockDirectory } = await import('#/adapters/mock-directory.js')
+      const { boomWithCode, Boom } =
+        await import('#/common/helpers/boom-with-code.js')
+
+      vi.spyOn(mockDirectory, 'searchPeople').mockRejectedValue(
+        boomWithCode(
+          Boom.serverUnavailable,
+          'The directory is unavailable',
+          'directory-unavailable'
+        )
+      )
+      const { result, statusCode } = await search(team, team.adminId, {
+        search: 'amelia'
+      })
+
+      vi.restoreAllMocks()
+
+      expect(statusCode).toBe(503)
+      expect(result.code).toBe('directory-unavailable')
+    })
+
+    test('does not call the directory for someone who may not search', async () => {
+      const team = await teamWithAdmin('search-13')
+      const member = await addSeeded(team, 'eleanor')
+      const { mockDirectory } = await import('#/adapters/mock-directory.js')
+      const searchPeople = vi.spyOn(mockDirectory, 'searchPeople')
+
+      await search(team, member.userId, { search: 'amelia' })
+
+      expect(searchPeople).not.toHaveBeenCalled()
+      vi.restoreAllMocks()
+    })
+
+    test('records nothing about the search in the audit trail', async () => {
+      const team = await teamWithAdmin('search-14')
+      const before = await server.db.collection('auditEvents').countDocuments()
+
+      await search(team, team.adminId, { search: 'distinctive-search-text' })
+
+      const events = await server.db.collection('auditEvents').find().toArray()
+
+      expect(events).toHaveLength(before)
+      expect(JSON.stringify(events)).not.toContain('distinctive-search-text')
     })
   })
 })

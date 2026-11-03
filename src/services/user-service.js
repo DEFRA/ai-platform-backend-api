@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb'
 
 import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
+import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 
 function isAllowedEmailDomain(email) {
@@ -15,47 +16,12 @@ function isAllowedEmailDomain(email) {
   return allowedDomains.includes(domain)
 }
 
-// The person's own record, else one from before oid keying (same email, no
-// `oid`) bound to them, else a new one. In that order, so an identity never
-// binds a second record.
-async function signInUser(users, identity, signIn) {
-  const existing = await users.findOneAndUpdate(
-    identity,
-    { $set: signIn },
-    { returnDocument: 'after' }
-  )
-
-  if (existing) {
-    return existing
-  }
-
-  const bound = await users.findOneAndUpdate(
-    { email: signIn.email, oid: null },
-    { $set: { ...signIn, ...identity } },
-    { returnDocument: 'after' }
-  )
-
-  if (bound) {
-    return bound
-  }
-
-  return users.findOneAndUpdate(
-    identity,
-    {
-      $set: signIn,
-      $setOnInsert: { roles: ['research-user'], createdAt: signIn.updatedAt }
-    },
-    { upsert: true, returnDocument: 'after' }
-  )
-}
-
 /**
  * Upserts the user for the Entra ID sign-in journey (B03), keyed on the
  * immutable Entra object ID and tenant ID (design F); email and display
- * name are for display only and refresh on every sign-in. A record from
- * before that keying - the same email and no `oid` - binds to the identity
- * on its first sign-in, as team invitations for this email bind to the
- * signed-in user (B08).
+ * name are for display only and refresh on every sign-in. Sign-in binds no
+ * team membership: an Admin adds a person to a team by object ID, and the
+ * person's own record, made then or here, is the same one (`{ oid, tid }`).
  * @param {import('mongodb').Db} db
  * @param {{oid: string, tid: string, email: string, displayName: string}} params
  */
@@ -71,18 +37,19 @@ export async function upsertUser(db, { oid, tid, email, displayName }) {
   }
 
   const now = new Date().toISOString()
-  const user = await signInUser(
-    db.collection('users'),
+  const user = await db.collection('users').findOneAndUpdate(
     { oid, tid },
-    { email: lowerEmail, displayName, lastSignInAt: now, updatedAt: now }
+    {
+      $set: {
+        email: lowerEmail,
+        displayName,
+        lastSignInAt: now,
+        updatedAt: now
+      },
+      $setOnInsert: { roles: ['research-user'], createdAt: now }
+    },
+    { upsert: true, returnDocument: 'after' }
   )
-
-  await db
-    .collection('teamMembers')
-    .updateMany(
-      { email: lowerEmail, status: 'invited' },
-      { $set: { userId: user._id.toString(), status: 'active' } }
-    )
 
   await recordAuditEvent(db, {
     actorUserId: user._id.toString(),
@@ -93,6 +60,72 @@ export async function upsertUser(db, { oid, tid, email, displayName }) {
   })
 
   return { user, team: null }
+}
+
+/**
+ * The person's record for a team Admin's add from the directory: the one
+ * sign-in upserts (`{ oid, tid }`), made now for a person who has never
+ * signed in, with no `lastSignInAt`. A record that exists - the person has
+ * signed in - is returned as it is; their own sign-in owns their name and
+ * email.
+ * @param {import('mongodb').Db} db
+ * @param {{oid: string, tid: string, email: string, displayName: string}} params
+ */
+export async function ensurePersonFromDirectory(
+  db,
+  { oid, tid, email, displayName }
+) {
+  const users = db.collection('users')
+  const now = new Date().toISOString()
+
+  try {
+    return await users.findOneAndUpdate(
+      { oid, tid },
+      {
+        $setOnInsert: {
+          email: email.toLowerCase(),
+          displayName,
+          roles: ['research-user'],
+          createdAt: now,
+          updatedAt: now
+        }
+      },
+      { upsert: true, returnDocument: 'after' }
+    )
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) {
+      throw error
+    }
+
+    // A concurrent add or sign-in made the record first.
+    return users.findOne({ oid, tid })
+  }
+}
+
+/**
+ * The tenant the signed-in person belongs to, written at sign-in. An Admin
+ * adds people from their own tenant, so the add reads it here. Rejects with
+ * `403 entra-identity-required` for a person with no record or no tenant.
+ * @param {import('mongodb').Db} db
+ * @param {string} userId
+ * @returns {Promise<string>}
+ */
+export async function requireUserTenant(db, userId) {
+  const user = ObjectId.isValid(userId)
+    ? await db
+        .collection('users')
+        .findOne({ _id: new ObjectId(userId) }, { projection: { tid: 1 } })
+    : null
+
+  if (!user?.tid) {
+    throw boomWithCode(
+      Boom.forbidden,
+      'Sign in again so this change can be attributed to you',
+      'entra-identity-required'
+    )
+  }
+
+  return user.tid
 }
 
 /**

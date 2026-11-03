@@ -1,5 +1,6 @@
 import { deriveTeamSlug, firstFreeSlug } from '#/common/helpers/team-slug.js'
 import { rewriteFailureTexts } from '#/common/backfills/failure-texts.js'
+import { makeTeamMembersDirectoryOnly } from '#/common/backfills/team-members-directory-only.js'
 
 /**
  * Ordered registry of one-off data backfills applied by `runBackfills` on
@@ -550,5 +551,17 @@ export const backfillRegistry = [
     description:
       'Rewrites the old failure texts on teamDeployments entries (platform engineers alerted, Azure) to the current wording',
     run: rewriteFailureTexts
+  },
+  // Team membership is by person from the directory only: invitations, the
+  // `email` on a membership and both email binds at sign-in are gone, so
+  // existing data is brought to that shape (invitations removed, one active
+  // membership per person and team, `email` unset, people with no `oid`
+  // deleted). Runs before `createIndexes`, whose unique index on active
+  // memberships would otherwise refuse to build over duplicates.
+  {
+    id: '2026-11-03-team-members-directory-only',
+    description:
+      'Removes team invitations, keeps one active membership per person and team, unsets teamMembers.email and deletes users with no oid',
+    run: makeTeamMembersDirectoryOnly
   }
 ]

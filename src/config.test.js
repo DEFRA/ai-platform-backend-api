@@ -106,6 +106,60 @@ describe('#config provisioning', () => {
   })
 })
 
+describe('#config directory', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  test('defaults to the mock directory with the Defra domains, Graph base URL and a 5 second timeout', async () => {
+    const { config } = await loadConfig({})
+
+    expect(config.get('directory')).toEqual({
+      mode: 'mock',
+      allowedDomains: ['defra.gov.uk', 'defra.onmicrosoft.com'],
+      graphBaseUrl: 'https://graph.microsoft.com',
+      timeoutMs: 5000
+    })
+  })
+
+  test('reads the allowed domains as a comma-separated list', async () => {
+    const { config } = await loadConfig({
+      DIRECTORY_ALLOWED_DOMAINS: 'defra.gov.uk,example.gov.uk'
+    })
+
+    expect(config.get('directory.allowedDomains')).toEqual([
+      'defra.gov.uk',
+      'example.gov.uk'
+    ])
+  })
+
+  test('refuses a mode that is neither mock nor graph', async () => {
+    await expect(loadConfig({ DIRECTORY_MODE: 'ldap' })).rejects.toThrow(
+      /directory\.mode/
+    )
+  })
+
+  test('reads the mode, base URL and timeout from the environment', async () => {
+    const { config } = await loadConfig({
+      DIRECTORY_MODE: 'graph',
+      DIRECTORY_GRAPH_BASE_URL: 'https://graph.microsoft.us',
+      DIRECTORY_TIMEOUT_MS: '2500'
+    })
+
+    expect(config.get('directory')).toMatchObject({
+      mode: 'graph',
+      graphBaseUrl: 'https://graph.microsoft.us',
+      timeoutMs: 2500
+    })
+  })
+
+  test('refuses a Graph base URL that is not a URL', async () => {
+    await expect(
+      loadConfig({ DIRECTORY_GRAPH_BASE_URL: 'not a url' })
+    ).rejects.toThrow(/graphBaseUrl/)
+  })
+})
+
 describe('#config research environment', () => {
   afterEach(() => {
     vi.unstubAllEnvs()

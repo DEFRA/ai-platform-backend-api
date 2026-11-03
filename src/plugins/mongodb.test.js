@@ -159,6 +159,52 @@ describe('#mongoDb', () => {
       await migratedServer.stop({ timeout: 1000 })
       await client.close()
     })
+    test('keeps one active membership per person and team, and drops the invitation email indexes', async () => {
+      // Dynamic import needed due to config being updated by vitest-mongodb
+      const { config } = await import('#/config.js')
+      const client = await MongoClient.connect(config.get('mongo.mongoUrl'))
+      const db = client.db(config.get('mongo.databaseName'))
+      const members = db.collection('teamMembers')
+
+      // The indexes an older deploy built for invitations.
+      await members.createIndex({ email: 1 })
+      await members.createIndex(
+        { teamId: 1, email: 1 },
+        {
+          unique: true,
+          partialFilterExpression: { email: { $type: 'string' } }
+        }
+      )
+
+      const { createServer } = await import('#/server.js')
+      const migratedServer = await createServer()
+      await migratedServer.initialize()
+
+      const indexes = await members.indexes()
+      const names = indexes.map((index) => index.name)
+
+      expect(names).not.toContain('email_1')
+      expect(names).not.toContain('teamId_1_email_1')
+      expect(names).toContain('teamId_1_userId_1')
+      expect(
+        indexes.find((index) => index.name === 'userId_1_teamId_1')
+      ).toMatchObject({
+        unique: true,
+        partialFilterExpression: { status: 'active' }
+      })
+
+      const active = { teamId: 'index-team', userId: 'index-user' }
+
+      await members.insertOne({ ...active, status: 'active', role: 'user' })
+      await expect(
+        members.insertOne({ ...active, status: 'active', role: 'user' })
+      ).rejects.toMatchObject({ code: 11000 })
+      await members.insertOne({ ...active, status: 'removed', role: 'user' })
+      await members.insertOne({ ...active, status: 'removed', role: 'user' })
+
+      await migratedServer.stop({ timeout: 1000 })
+      await client.close()
+    })
   })
 
   describe('Catalogue sync resilience', () => {

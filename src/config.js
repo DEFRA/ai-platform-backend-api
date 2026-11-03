@@ -199,6 +199,32 @@ export const config = convict({
     default: 'mock',
     env: 'TENANT_ORCHESTRATOR'
   },
+  directory: {
+    mode: {
+      doc: 'Where team Admins find people to add: mock searches seeded fictional people; graph searches the Entra directory on behalf of the signed-in Admin. graph is refused until the portal token is wired (B27, hand-off H1); mock is refused in prod',
+      format: ['mock', 'graph'],
+      default: 'mock',
+      env: 'DIRECTORY_MODE'
+    },
+    allowedDomains: {
+      doc: 'Comma-separated domains whose members may be added to a team, matched exactly against the UPN and mail',
+      format: Array,
+      default: ['defra.gov.uk', 'defra.onmicrosoft.com'],
+      env: 'DIRECTORY_ALLOWED_DOMAINS'
+    },
+    graphBaseUrl: {
+      doc: 'Microsoft Graph base URL, used when directory.mode is graph',
+      format: 'url',
+      default: 'https://graph.microsoft.com',
+      env: 'DIRECTORY_GRAPH_BASE_URL'
+    },
+    timeoutMs: {
+      doc: 'Timeout in ms for each Microsoft Graph or token call',
+      format: 'nat',
+      default: 5000,
+      env: 'DIRECTORY_TIMEOUT_MS'
+    }
+  },
   gitops: gitopsConfigSchema,
   aipEnvironments: {
     doc: 'AI Platform environments as JSON keyed by name: {subscriptionId, resourceGroup, apimName, foundryAccounts, tenantsVault}',

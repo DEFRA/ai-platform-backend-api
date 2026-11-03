@@ -139,9 +139,28 @@ git config --global core.autocrlf false
 > A person is keyed on their Entra object ID and tenant ID (`oid`, `tid`), which `POST /v1/users`
 > receives at every sign-in; a unique index on both holds that key. **Email is not unique**: it is
 > display only and mutable (Microsoft advises never to key data on it), so two `users` records can
-> share an email, for example a leaver who returns with a new object ID. A record with no `oid` (an
-> invited member) binds to the first sign-in with its email. Every GitOps change names its requester as
+> share an email, for example a leaver who returns with a new object ID. Sign-in binds nothing by
+> email: no record and no membership is ever matched on it. Every GitOps change names its requester as
 > `entra:{oid}`, so look people up by `oid`, never by email (direction 14 October 2026).
+
+> [!IMPORTANT]
+> Team membership is by person, from the directory (design F `#membership`); there are no invitations,
+> and `teamMembers` carries no email. `POST /v1/teams/{id}/people/search` (body `{ search }`, 2 to 100
+> characters, admins only) returns up to 20 eligible people, sorted by name, leaving out active members.
+> `POST /v1/teams/{id}/members` takes `{ oid, role }`: it reads the person again from the directory,
+> refuses anyone not eligible (a UPN and mail on `DIRECTORY_ALLOWED_DOMAINS`, default `defra.gov.uk` and
+> `defra.onmicrosoft.com`, no guests) with `422 person-not-eligible` - also for an unknown `oid` - and
+> makes the person's `users` record on `{ oid, tid }` (the Admin's own `tid`) if they have never signed
+> in, which their first sign-in then finds. A unique index allows one active membership per person and
+> team. Both calls go through the `Directory` port (`src/adapters/directory.js`), chosen by
+> `DIRECTORY_MODE`: `mock` (the default) searches the fictional people in
+> `src/adapters/fixtures/directory-people.json`, whose `oid`s all start `5eed0000-0000-4000-8000-`, one
+> being the journey person "Journey Test Member" (`journey.test.member@defra.gov.uk`); `graph` is the
+> Microsoft Graph adapter, called on behalf of the signed-in Admin, which is built and tested but
+> refused at start-up until B27 supplies the person's token. Prod refuses `mock`. A failed directory
+> call is `503 directory-unavailable`. The backfill `2026-11-03-team-members-directory-only` removes
+> invitations, keeps one active membership per person and team, unsets `email` and deletes people with
+> no `oid`; its counts, including teams left with no active Admin, are in the start-up log.
 
 > [!IMPORTANT]
 > A team carries an immutable `slug`, derived from its name on `POST /v1/teams` and made unique with a
