@@ -13,12 +13,16 @@ const CLOCK_SKEW_SECONDS = 60
 
 // Entra publishes a new signing key ahead of using it. A key set older than
 // the stale time is fetched again on the next request, so an unknown key ID
-// waits at most that long; a failed fetch keeps serving the last good set.
+// waits at most that long. `dropOnError: false` makes a failed refresh keep
+// serving the last good set until it expires: catbox's default drops it on
+// the error, and every authenticated request would then fail until a fetch
+// succeeds.
 const KEY_CACHE = {
   expiresIn: 24 * 60 * 60 * 1000,
   staleIn: 5 * 60 * 1000,
   staleTimeout: 1000,
-  generateTimeout: 30 * 1000
+  generateTimeout: 30 * 1000,
+  dropOnError: false
 }
 
 /**

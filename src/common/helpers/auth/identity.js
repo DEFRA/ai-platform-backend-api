@@ -128,7 +128,7 @@ function appIdentity(claims, access) {
 export function createIdentityValidator({
   tenantId,
   clientId,
-  now = Date.now
+  now = () => Date.now()
 }) {
   return async function validateIdentity(artifacts, request) {
     const claims = artifacts.decoded.payload

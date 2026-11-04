@@ -484,6 +484,75 @@ describe('#auth start-up', () => {
   })
 })
 
+// Entra or the proxy may fail for a while after start-up. The last good keys
+// keep verifying tokens until they expire, and the failure shows only in the
+// logs: a refresh that fails must not drop them.
+describe('#auth key refresh', () => {
+  const SIX_MINUTES = 6 * 60 * 1000
+  const TWENTY_FIVE_HOURS = 25 * 60 * 60 * 1000
+  let server
+
+  beforeEach(async () => {
+    const { createServer } = await import('#/server.js')
+
+    server = await createServer()
+    server.route({
+      method: 'GET',
+      path: '/probe/catalogue',
+      options: { app: { access: ACCESS.catalogue } },
+      handler: () => 'reached'
+    })
+    await server.initialize()
+  })
+
+  afterEach(async () => {
+    vi.useRealTimers()
+    nock.cleanAll()
+    serveJwks()
+    await server.stop({ timeout: 0 })
+  })
+
+  // Only the clock moves, and the token is minted after it has
+  async function tokenAfter(milliseconds) {
+    vi.useFakeTimers({ toFake: ['Date'], now: Date.now() + milliseconds })
+
+    return mintToken(appClaims())
+  }
+
+  const get = (token) =>
+    server.inject({
+      method: 'GET',
+      url: '/probe/catalogue',
+      headers: { authorization: `Bearer ${token}` }
+    })
+
+  test('keeps verifying tokens when a refresh of stale keys fails', async () => {
+    const token = await tokenAfter(SIX_MINUTES)
+    nock.cleanAll()
+    nock(ENTRA_HOST).get(JWKS_PATH).times(3).reply(503, 'down')
+
+    expect((await get(token)).statusCode).toBe(200)
+    expect((await get(token)).statusCode).toBe(200)
+  })
+
+  test('refuses a token it has no key for once the keys have expired', async () => {
+    const token = await tokenAfter(TWENTY_FIVE_HOURS)
+    nock.cleanAll()
+    nock(ENTRA_HOST).get(JWKS_PATH).times(3).reply(503, 'down')
+
+    expect((await get(token)).statusCode).not.toBe(200)
+  })
+
+  test('uses the keys it fetches again when the endpoint recovers', async () => {
+    const token = await tokenAfter(SIX_MINUTES)
+    nock.cleanAll()
+    const keys = nock(ENTRA_HOST).get(JWKS_PATH).reply(200, publicJwks())
+
+    expect((await get(token)).statusCode).toBe(200)
+    expect(keys.isDone()).toBe(true)
+  })
+})
+
 // CDP gives every service a forward proxy through HTTPS_PROXY and no other
 // route out. The key fetch must use it, or the backend cannot start there.
 describe('#auth key fetch through the CDP proxy', () => {

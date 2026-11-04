@@ -49,6 +49,33 @@ describe('#auditDeployment', () => {
     })
   })
 
+  test('records a step that names the system principal as the system, too', async () => {
+    await auditDeployment(
+      db,
+      { id: 'entry-system-id' },
+      { action: 'deployment.step', actorUserId: SYSTEM_ACTOR }
+    )
+
+    expect(await eventFor('entry-system-id')).toMatchObject({
+      actorUserId: SYSTEM_PRINCIPAL_ID,
+      role: 'system',
+      oid: null
+    })
+  })
+
+  test('records a step on behalf of a named person by that person, not as the system', async () => {
+    await auditDeployment(
+      db,
+      { id: 'entry-named' },
+      { action: 'deployment.step', actorUserId: 'person-2' }
+    )
+
+    expect(await eventFor('entry-named')).toMatchObject({
+      actorUserId: 'person-2',
+      role: null
+    })
+  })
+
   test("records a person's request by that person, with the role it used", async () => {
     await auditDeployment(
       db,
