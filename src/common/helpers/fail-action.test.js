@@ -26,7 +26,45 @@ describe('#fail-action', () => {
     expect(warn).toHaveBeenCalledWith(error, 'Something terrible has happened!')
   })
 
-  test('logs only the paths and rules of a validation error, never the values it refused (F1)', () => {
+  test('logs no key of the payload, so an email sent as an unknown key never reaches the log (thread 1)', () => {
+    const warn = vi.spyOn(createLogger(), 'warn').mockImplementation(() => {})
+    const { error } = Joi.object({ search: Joi.string().min(3).required() })
+      .unknown(false)
+      .validate(
+        { search: 'ab', 'alice@example.com': true },
+        { abortEarly: false }
+      )
+
+    expect(() => failAction({}, {}, error)).toThrow(error)
+
+    const logged = JSON.stringify(warn.mock.calls)
+
+    expect(logged).not.toContain('alice')
+    expect(logged).not.toContain('example.com')
+    expect(logged).not.toContain('"ab"')
+    expect(warn).toHaveBeenCalledWith(
+      {
+        validation: [{ type: 'string.min' }, { type: 'object.unknown' }]
+      },
+      'Request validation failed'
+    )
+  })
+
+  test('logs no key of a wrapped validation error either', () => {
+    const warn = vi.spyOn(createLogger(), 'warn').mockImplementation(() => {})
+    const wrapped = Object.assign(new Error('bad'), {
+      data: {
+        details: [
+          { path: ['payload', 'bob@example.com'], type: 'object.unknown' }
+        ]
+      }
+    })
+
+    expect(() => failAction({}, {}, wrapped)).toThrow('bad')
+    expect(JSON.stringify(warn.mock.calls)).not.toContain('bob@')
+  })
+
+  test('logs only the rules of a validation error, never the values it refused (F1)', () => {
     const warn = vi.spyOn(createLogger(), 'warn').mockImplementation(() => {})
     const { error } = Joi.object({
       search: Joi.string().min(2).required(),
@@ -42,10 +80,7 @@ describe('#fail-action', () => {
     expect(logged).not.toContain('_original')
     expect(warn).toHaveBeenCalledWith(
       {
-        validation: [
-          { path: 'search', type: 'string.min' },
-          { path: 'oid', type: 'string.pattern.base' }
-        ]
+        validation: [{ type: 'string.min' }, { type: 'string.pattern.base' }]
       },
       'Request validation failed'
     )
@@ -59,7 +94,7 @@ describe('#fail-action', () => {
 
     expect(() => failAction({}, {}, wrapped)).toThrow('bad')
     expect(warn).toHaveBeenCalledWith(
-      { validation: [{ path: 'payload.search', type: 'any.required' }] },
+      { validation: [{ type: 'any.required' }] },
       'Request validation failed'
     )
   })
@@ -72,7 +107,7 @@ describe('#fail-action', () => {
 
     expect(() => failAction({}, {}, error)).toThrow('bad')
     expect(warn).toHaveBeenCalledWith(
-      { validation: [{ path: undefined, type: 'object.unknown' }] },
+      { validation: [{ type: 'object.unknown' }] },
       'Request validation failed'
     )
   })
