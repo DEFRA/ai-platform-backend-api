@@ -147,12 +147,13 @@ git config --global core.autocrlf false
 > Team membership is by person, from the directory (design F `#membership`); there are no invitations,
 > and `teamMembers` carries no email. `POST /v1/teams/{id}/people/search` (body `{ search }`, 2 to 100
 > characters, admins only) returns up to 20 eligible people, sorted by name, leaving out active members.
-> `POST /v1/teams/{id}/members` takes `{ oid, role }` (both required; a key reused for another person or role is `409 idempotency-key-reused`): it reads the person again from the directory,
+> `POST /v1/teams/{id}/members` takes `{ oid, role }` (both required; a key reused for another person or role is
+> `409 idempotency-key-reused`): it reads the person again from the directory,
 > refuses anyone not eligible (a UPN and mail on `DIRECTORY_ALLOWED_DOMAINS`, default `defra.gov.uk` and
 > `defra.onmicrosoft.com`, no guests) with `422 person-not-eligible` - also for an unknown `oid` - and
 > makes the person's `users` record on `{ oid, tid }` (the Admin's own `tid`) if they have never signed
 > in, which their first sign-in then finds. A unique index allows one active membership per person and
-> team. Both calls go through the `Directory` port (`src/adapters/directory.js`), chosen by
+> team, and `GET /v1/teams/{id}` lists active members only. Both calls go through the `Directory` port (`src/adapters/directory.js`), chosen by
 > `DIRECTORY_MODE`: `mock` (the default) searches the fictional people in
 > `src/adapters/fixtures/directory-people.json`, whose `oid`s all start `5eed0000-0000-4000-8000-`, one
 > being the journey person "Journey Test Member" (`journey.test.member@defra.gov.uk`); `graph` is the
