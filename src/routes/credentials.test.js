@@ -146,6 +146,40 @@ describe('#credentials routes', () => {
     expect(result.code).toBe('active-credential-exists')
   })
 
+  test('GET /v1/credentials/{id} expires an overdue key as the system, not as its owner', async () => {
+    const userId = `user-lazy-${randomUUID()}`
+    const { insertedId } = await server.db.collection('credentials').insertOne({
+      userId,
+      modelSlug: 'gpt-5-mini',
+      tier: 'research',
+      type: 'apim-subscription',
+      status: 'active',
+      renewalCount: 0,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() - 60 * 1000).toISOString()
+    })
+
+    const { statusCode, result } = await server.inject({
+      method: 'GET',
+      url: `/v1/credentials/${insertedId}`,
+      headers: { 'x-user-id': userId }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.status).toBe('expired')
+    expect(
+      await server.db.collection('auditEvents').findOne({
+        action: 'credential.expire',
+        resourceId: insertedId.toString()
+      })
+    ).toMatchObject({
+      actorUserId: 'app:ai-platform-backend',
+      role: 'system',
+      oid: null,
+      tid: null
+    })
+  })
+
   test('POST /v1/credentials rejects re-issuing for a model with an expired credential, pointing to renew', async () => {
     const headers = {
       'x-user-id': 'user-expired',

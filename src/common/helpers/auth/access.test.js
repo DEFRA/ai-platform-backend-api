@@ -13,6 +13,10 @@ import {
   requireTeamRole
 } from '#/common/helpers/auth/access.js'
 import { Boom } from '#/common/helpers/boom-with-code.js'
+import {
+  SYSTEM_PRINCIPAL_ID,
+  systemActor
+} from '#/common/helpers/auth/system-actor.js'
 
 const TEAM = 'team-1'
 
@@ -240,6 +244,31 @@ describe('#access', () => {
 
     test('names the role the same everywhere', () => {
       expect(PLATFORM_ADMIN_ROLE).toBe('platform-admin')
+    })
+  })
+
+  describe('the system actor', () => {
+    test('holds no team role and no Platform Admin right, and a refusal records it as the system', async () => {
+      await expect(
+        requireTeamRole(db, systemActor, TEAM)
+      ).rejects.toMatchObject({ output: { statusCode: 404 } })
+      await expect(requirePlatformAdmin(db, systemActor)).rejects.toMatchObject(
+        { output: { statusCode: 403 } }
+      )
+
+      expect(await denials()).toEqual([
+        expect.objectContaining({
+          actorUserId: SYSTEM_PRINCIPAL_ID,
+          role: 'system',
+          oid: null,
+          code: 'not-a-member'
+        }),
+        expect.objectContaining({
+          actorUserId: SYSTEM_PRINCIPAL_ID,
+          role: 'system',
+          code: 'platform-admin-required'
+        })
+      ])
     })
   })
 

@@ -8,6 +8,7 @@ import { readResearchDeployments } from '#/services/research-deployments.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
+import { systemActor } from '#/common/helpers/auth/system-actor.js'
 import {
   requireLock,
   acquireLockWithRetry
@@ -822,7 +823,7 @@ async function applyLazyExpiry(db, credential) {
     .updateOne({ _id: credential._id }, { $set: { status: 'expired' } })
 
   await recordAuditEvent(db, {
-    actorUserId: credential.userId,
+    actor: systemActor,
     action: 'credential.expire',
     resource: 'credential',
     resourceId: credential._id.toString(),

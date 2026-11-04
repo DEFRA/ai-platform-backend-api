@@ -155,7 +155,10 @@ Each route declares what it needs in `options.app.access` (`src/common/helpers/a
 that declares none refuses every token, and `src/routes/route-access.test.js` lists every route with its
 access. Team and Platform Admin rights are checked only in `access.js`, which answers `404` to a non-member,
 `403 admin-required` or `403 platform-admin-required`, and audits each refusal. Audit records carry `oid`,
-`tid`, `azp`, `uti` and the role used, never a token. In tests, `src/common/test-helpers/portal-token.js`
+`tid`, `azp`, `uti` and the role used, never a token. Background work with no request (the expiry sweep, a
+lazy expiry, an operation's own steps) acts as the system actor (`src/common/helpers/auth/system-actor.js`):
+`actorUserId` `app:ai-platform-backend`, role `system`, no `oid` or tenant, no team role and not a Platform
+Admin. In tests, `src/common/test-helpers/portal-token.js`
 signs tokens with a throwaway key and serves its JWKS through `nock`.
 
 ### People and identity

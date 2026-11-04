@@ -1,4 +1,8 @@
 import { recordAuditEvent } from '#/services/audit-service.js'
+import {
+  SYSTEM_PRINCIPAL_ID,
+  systemActor
+} from '#/common/helpers/auth/system-actor.js'
 
 describe('#recordAuditEvent', () => {
   let server
@@ -91,6 +95,38 @@ describe('#recordAuditEvent', () => {
       uti: null,
       role: null
     })
+  })
+
+  test("records the backend's own step as the system, with no person, tenant or token", async () => {
+    await recordAuditEvent(db, {
+      actor: systemActor,
+      action: 'credential.expire',
+      resource: 'credential',
+      resourceId: 'audit-system',
+      outcome: 'success'
+    })
+
+    expect(await lastEvent('audit-system')).toMatchObject({
+      actorUserId: SYSTEM_PRINCIPAL_ID,
+      role: 'system',
+      oid: null,
+      tid: null,
+      azp: null,
+      uti: null
+    })
+  })
+
+  test('an explicit role wins over the system role', async () => {
+    await recordAuditEvent(db, {
+      actor: systemActor,
+      role: 'owner',
+      action: 'credential.expire',
+      resource: 'credential',
+      resourceId: 'audit-system-role',
+      outcome: 'success'
+    })
+
+    expect((await lastEvent('audit-system-role')).role).toBe('owner')
   })
 
   test('an explicit actorUserId wins over the actor', async () => {

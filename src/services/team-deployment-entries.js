@@ -1,4 +1,8 @@
 import { recordAuditEvent } from '#/services/audit-service.js'
+import {
+  SYSTEM_PRINCIPAL_ID,
+  systemActor
+} from '#/common/helpers/auth/system-actor.js'
 
 /**
  * A request waiting for the operation in flight on its team file (or for
@@ -38,7 +42,7 @@ export const TERMINAL_FAILURE_STATUSES = new Set([CHECKS_FAILED, DEPLOY_FAILED])
  * The principal the backend attributes its own operations (a revert) and
  * audits its own steps to, in place of a person.
  */
-export const SYSTEM_ACTOR = 'app:ai-platform-backend'
+export const SYSTEM_ACTOR = SYSTEM_PRINCIPAL_ID
 
 /**
  * Finds one entry of a `teamDeployments` document's `deployments[]` by id.
@@ -79,14 +83,17 @@ export async function auditDeployment(
     outcome = 'success',
     actor,
     role,
-    actorUserId = actor?.userId ?? SYSTEM_ACTOR,
+    actorUserId,
     code,
     reason,
     eventId
   }
 ) {
+  const isSystemStep =
+    !actor && (actorUserId === undefined || actorUserId === SYSTEM_PRINCIPAL_ID)
+
   await recordAuditEvent(db, {
-    actor,
+    actor: isSystemStep ? systemActor : actor,
     role,
     actorUserId,
     action,
