@@ -17,9 +17,9 @@ export function selectDirectory(directoriesByMode, mode, cdpEnvironment) {
     throw new Error('DIRECTORY_MODE must not be "mock" in the prod environment')
   }
 
-  const directory = directoriesByMode[mode]
+  const selected = directoriesByMode[mode]
 
-  if (!directory) {
+  if (!selected) {
     throw new Error(
       mode === 'graph'
         ? "DIRECTORY_MODE=graph needs B27's portal token"
@@ -27,7 +27,7 @@ export function selectDirectory(directoriesByMode, mode, cdpEnvironment) {
     )
   }
 
-  return directory
+  return selected
 }
 
 /**
