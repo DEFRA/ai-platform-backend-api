@@ -136,7 +136,7 @@ export const config = convict({
     }
   },
   allowedEmailDomains: {
-    doc: 'Comma-separated email domains allowed to sign in, matched exactly and without regard to case; guests (#EXT#) are refused. The same two domains as directory.allowedDomains by default, so a person an Admin adds can sign in (design F)',
+    doc: 'Comma-separated email domains allowed to sign in, matched exactly and without regard to case; an address with #EXT# is refused (the backend is sent no claims, so the portal refuses other guests from the ID token). The same two domains as directory.allowedDomains by default, so a person an Admin adds can sign in (design F)',
     format: Array,
     default: ['defra.gov.uk', 'defra.onmicrosoft.com'],
     env: 'ALLOWED_EMAIL_DOMAINS'

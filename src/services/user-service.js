@@ -7,7 +7,9 @@ import { recordAuditEvent } from '#/services/audit-service.js'
 import { isEligible } from '#/services/directory-eligibility.js'
 
 // The sign-in rule is the directory's eligibility rule on the email alone:
-// an exact, case-insensitive domain match, no guests, no look-alikes.
+// an exact, case-insensitive domain match, no look-alikes, and no `#EXT#`
+// address. It is sent no claims, so it cannot tell a guest by anything else:
+// the portal's sign-in refuses those from the ID token (until B27).
 function isAllowedEmailDomain(email) {
   return isEligible(
     { userPrincipalName: email },

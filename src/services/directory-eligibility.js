@@ -1,5 +1,9 @@
 const GUEST_MARKER = '#ext#'
 
+// The rule for who is eligible, by address. The frontend repeats it
+// (ai-platform-frontend `src/server/common/helpers/eligibility-rule.js`) and
+// both run the same test table: change one, change the other.
+
 /**
  * The domain of an address that has exactly one `@` and a local part, lower
  * case; null for anything else (so a guest UPN such as

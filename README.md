@@ -167,11 +167,18 @@ git config --global core.autocrlf false
 > validation is logged by rule type only, never a path, key or value.
 
 > [!IMPORTANT]
-> Sign-in and adding use one rule: `POST /v1/users` accepts an email only on `ALLOWED_EMAIL_DOMAINS` (comma
-> separated, default `defra.gov.uk,defra.onmicrosoft.com`, the same two as `DIRECTORY_ALLOWED_DOMAINS`), an exact
-> match without regard to case, so a subdomain or look-alike and a `#EXT#` guest are refused with
+> Sign-in and adding use one address rule, `isEligible` (`src/services/directory-eligibility.js`), which the frontend
+> repeats in `eligibility-rule.js` and tests with the same table: the address is trimmed and lower-cased, has exactly
+> one `@`, no `#EXT#` anywhere, and a domain that is an exact match for one in the list, so a subdomain or look-alike
+> is refused. `POST /v1/users` applies it to the one `email` it is sent, on `ALLOWED_EMAIL_DOMAINS` (comma separated,
+> default `defra.gov.uk,defra.onmicrosoft.com`, the same two as `DIRECTORY_ALLOWED_DOMAINS`), and refuses with
 > `403 domain-not-allowed`; a person an Admin added by their `defra.onmicrosoft.com` user principal name can
-> therefore sign in, and their first sign-in finds the record the add made. A directory search reads up to
+> therefore sign in, and their first sign-in finds the record the add made. The adding rule applies it to the
+> directory's user principal name and, when there is one, its mail. **What the backend does not enforce:** it is sent
+> no token claims, so it cannot tell a guest from a member by anything but an `#EXT#` address. A guest whose address is
+> on an allowed domain is refused only by the portal's sign-in, from the ID token (`idp`, `acct`, the sign-in name and
+> the email: see the frontend README, "Who can sign in"). Until the backend validates tokens itself (B27, the H1/T16
+> follow-on), it relies on that check. A directory search reads up to
 > `DIRECTORY_SEARCH_MAX_PAGES` pages of 50 (default 5, following Graph's `@odata.nextLink`, which is only
 > followed when it is the Graph users endpoint) within `DIRECTORY_SEARCH_TIMEOUT_MS` (default 10000, for the whole
 > search; each call is also bound by `DIRECTORY_TIMEOUT_MS`), then leaves out members and ineligible people, so
