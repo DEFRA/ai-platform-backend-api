@@ -51,6 +51,16 @@ function describeFailure(operation, cause) {
   }
 }
 
+// A call stops at its own timeout and, when it is part of a larger operation
+// (a search), when that operation's signal aborts.
+function callSignal(timeoutMs, signal) {
+  return AbortSignal.any(
+    signal
+      ? [AbortSignal.timeout(timeoutMs), signal]
+      : [AbortSignal.timeout(timeoutMs)]
+  )
+}
+
 function withTimeout(work, timeoutMs) {
   let timer
 
@@ -99,7 +109,7 @@ function directoryUnavailable(logger, operation, cause) {
  * @param {number} params.maxCachedTokens
  * @param {() => number} params.now
  * @param {(options: object) => {getToken: (scope: string, options: {abortSignal: AbortSignal}) => Promise<{token: string, expiresOnTimestamp: number}>}} params.createCredential
- * @returns {(userAssertion: string) => Promise<string>}
+ * @returns {(userAssertion: string, signal?: AbortSignal) => Promise<string>}
  */
 function createTokenSource({
   tenantId,
@@ -113,7 +123,7 @@ function createTokenSource({
 }) {
   const tokens = new Map()
 
-  return async function tokenFor(userAssertion) {
+  return async function tokenFor(userAssertion, signal) {
     const key = createHash('sha256').update(userAssertion).digest('hex')
     const cached = tokens.get(key)
 
@@ -128,11 +138,12 @@ function createTokenSource({
       userAssertionToken: userAssertion,
       disableInstanceDiscovery: true
     })
-    // The signal aborts the exchange's own request at the timeout; the race
-    // still answers at the timeout if the library does not honour it.
+    // The signal aborts the exchange's own request at the timeout, or when the
+    // search it is for runs out of time; the race still answers at the
+    // timeout if the library does not honour it.
     const { token, expiresOnTimestamp } = await withTimeout(
       credential.getToken(scope, {
-        abortSignal: AbortSignal.timeout(timeoutMs)
+        abortSignal: callSignal(timeoutMs, signal)
       }),
       timeoutMs
     )
@@ -334,7 +345,7 @@ export function createGraphDirectory({
     let response
 
     try {
-      const token = await tokenFor(userAssertion)
+      const token = await tokenFor(userAssertion, signal)
 
       response = await fetch(`${baseUrl}/v1.0${path}`, {
         headers: {
@@ -342,11 +353,7 @@ export function createGraphDirectory({
           consistencylevel: 'eventual',
           accept: 'application/json'
         },
-        signal: AbortSignal.any(
-          signal
-            ? [AbortSignal.timeout(timeoutMs), signal]
-            : [AbortSignal.timeout(timeoutMs)]
-        )
+        signal: callSignal(timeoutMs, signal)
       })
     } catch (error) {
       throw unavailable(operation, error)

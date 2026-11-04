@@ -520,6 +520,30 @@ describe('#createGraphDirectory failures', () => {
     await vi.waitFor(() => expect(abortSignal.aborted).toBe(true))
   })
 
+  test('a search that runs out of time during the token exchange cancels the exchange', async () => {
+    let abortSignal
+    const createCredential = () => ({
+      getToken: (_scope, options) => {
+        abortSignal = options.abortSignal
+
+        return new Promise(() => {})
+      }
+    })
+
+    await expectUnavailable(
+      createDirectory({
+        timeoutMs: 60_000,
+        searchTimeoutMs: 50,
+        createCredential
+      }).searchPeople({ userAssertion: USER_TOKEN, query: 'ada' })
+    )
+
+    expect(abortSignal).toBeInstanceOf(AbortSignal)
+    await vi.waitFor(() => expect(abortSignal.aborted).toBe(true), {
+      timeout: 1000
+    })
+  })
+
   test('a slow token exchange gives directory-unavailable at the timeout', async () => {
     nockTokenEndpoint()
       .delay(500)
