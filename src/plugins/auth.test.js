@@ -456,6 +456,11 @@ describe('#auth start-up', () => {
   test.each([
     ['an error from the key endpoint', (scope) => scope.reply(500, 'down')],
     ['no key it can use', (scope) => scope.reply(200, { keys: [] })],
+    [
+      'only a malformed key',
+      (scope) =>
+        scope.reply(200, { keys: [{ ...publicJwks().keys[0], e: 65537 }] })
+    ],
     ['a connection that fails', (scope) => scope.replyWithError('refused')]
   ])('refuses to start with %s', async (_name, reply) => {
     nock.cleanAll()
@@ -530,6 +535,19 @@ describe('#auth key refresh', () => {
     const token = await tokenAfter(SIX_MINUTES)
     nock.cleanAll()
     nock(ENTRA_HOST).get(JWKS_PATH).times(3).reply(503, 'down')
+
+    expect((await get(token)).statusCode).toBe(200)
+    expect((await get(token)).statusCode).toBe(200)
+  })
+
+  test('keeps verifying tokens when a refresh holds only malformed keys', async () => {
+    const token = await tokenAfter(SIX_MINUTES)
+    const [signing] = publicJwks().keys
+    nock.cleanAll()
+    nock(ENTRA_HOST)
+      .get(JWKS_PATH)
+      .times(3)
+      .reply(200, { keys: [{ ...signing, e: 65537 }] })
 
     expect((await get(token)).statusCode).toBe(200)
     expect((await get(token)).statusCode).toBe(200)

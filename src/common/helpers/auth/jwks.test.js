@@ -36,6 +36,34 @@ describe('#fetchSigningKeys', () => {
     expect(keys.map(({ kid }) => kid)).toEqual([KID])
   })
 
+  test('drops an RSA key that createPublicKey cannot read, keeping the good one', async () => {
+    const [signing] = publicJwks().keys
+    nock(HOST)
+      .get(PATH)
+      .reply(200, {
+        keys: [
+          { ...signing, kid: 'numeric-exponent', e: 65537 },
+          { ...signing, kid: 'numeric-modulus', n: 12345 },
+          signing
+        ]
+      })
+
+    const keys = await fetchSigningKeys(`${HOST}${PATH}`)
+
+    expect(keys.map(({ kid }) => kid)).toEqual([KID])
+  })
+
+  test('rejects a key set whose only keys are malformed', async () => {
+    const [signing] = publicJwks().keys
+    nock(HOST)
+      .get(PATH)
+      .reply(200, { keys: [{ ...signing, e: 65537 }] })
+
+    await expect(fetchSigningKeys(`${HOST}${PATH}`)).rejects.toThrow(
+      /no signing key/
+    )
+  })
+
   test('reads a plain http address, the local mock issuer, directly', async () => {
     nock('http://localhost:3010').get('/jwks').reply(200, publicJwks())
 

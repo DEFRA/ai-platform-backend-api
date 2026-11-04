@@ -274,6 +274,14 @@ function resolveIssuer(registry, model, tier) {
   }
 }
 
+// Who an issuance audit names: the person whose request issued the credential,
+// acting with the owner's right, or, when no request did (a team's credential
+// issued as its first model turns active), the system, whose role the audit
+// service records. The person the credential is for is on the credential.
+function issuanceAuditActor(actor) {
+  return actor ? { actor, role: ROLE_OWNER } : { actor: systemActor }
+}
+
 /**
  * Writes the pending document (or resets the one being retried), asks the
  * issuer for the secret, then activates the document, puts the secret in the
@@ -311,9 +319,7 @@ async function issueAndActivate(
         { $set: { status: 'failed', failureReason: 'issuer-error' } }
       )
     await recordAuditEvent(db, {
-      actor,
-      actorUserId: pending.userId,
-      role: actor && ROLE_OWNER,
+      ...issuanceAuditActor(actor),
       action: 'credential.issue',
       resource: 'credential',
       resourceId: insertedId.toString(),
@@ -358,9 +364,7 @@ async function issueAndActivate(
     : unsettled
 
   await recordAuditEvent(db, {
-    actor,
-    actorUserId: pending.userId,
-    role: actor && ROLE_OWNER,
+    ...issuanceAuditActor(actor),
     action: 'credential.issue',
     resource: 'credential',
     resourceId: insertedId.toString(),
@@ -524,7 +528,7 @@ const TEAM_CREDENTIAL_FILTER = {
  * rather than left beside a second row.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string, activatedAt?: string|null, retryAfterMs?: number}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner and the audit actor (an unfinished attempt keeps its own). `activatedAt` is when that activation happened: an admin's revocation made after it is respected, checked again inside the lock. `retryAfterMs` marks a retry from a poll rather than the activation itself (see `teamCredentialNeedsRetry`), so polls that raced for the lock cannot repeat an attempt that has just failed
+ * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string, activatedAt?: string|null, retryAfterMs?: number}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner (an unfinished attempt keeps its own); the issuance audit names the system, not that person. `activatedAt` is when that activation happened: an admin's revocation made after it is respected, checked again inside the lock. `retryAfterMs` marks a retry from a poll rather than the activation itself (see `teamCredentialNeedsRetry`), so polls that raced for the lock cannot repeat an attempt that has just failed
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  * @returns {Promise<{credential: object|null, created: boolean, vaultWritten?: boolean}>} `credential` is null when nothing was owed any longer; `vaultWritten` is false when the credential was created but its secret is not in the vault yet (reconciliation retries it)

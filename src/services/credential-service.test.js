@@ -1,6 +1,10 @@
 import { randomUUID } from 'node:crypto'
 
 import { actorFor } from '#/common/test-helpers/portal-token.js'
+import {
+  SYSTEM_PRINCIPAL_ID,
+  SYSTEM_ROLE
+} from '#/common/helpers/auth/system-actor.js'
 
 // credential-service.js and credential-issuer-registry.js both import
 // #/config.js, which snapshots MONGO_URI via convict on first import -
@@ -597,7 +601,9 @@ describe('#credential-service ensureTeamCredential', () => {
         .collection('auditEvents')
         .findOne({ resourceId: result.credential._id.toString() })
     ).toMatchObject({
-      actorUserId: request.requestedBy,
+      actorUserId: SYSTEM_PRINCIPAL_ID,
+      role: SYSTEM_ROLE,
+      oid: null,
       action: 'credential.issue',
       outcome: 'success'
     })
@@ -711,6 +717,17 @@ describe('#credential-service ensureTeamCredential', () => {
     expect(failed[0]).toMatchObject({
       status: 'failed',
       failureReason: 'issuer-error'
+    })
+    expect(
+      await db
+        .collection('auditEvents')
+        .findOne({ resourceId: failed[0]._id.toString() })
+    ).toMatchObject({
+      actorUserId: SYSTEM_PRINCIPAL_ID,
+      role: SYSTEM_ROLE,
+      action: 'credential.issue',
+      outcome: 'failure',
+      code: 'upstream-unavailable'
     })
     expect(await teamCredentialNeedsRetry(db, request)).toBe(true)
 

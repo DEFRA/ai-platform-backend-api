@@ -73,17 +73,33 @@ function getJson(uri, { agent, timeoutMs }) {
   })
 }
 
+// Whether `createPublicKey` can read the key, the call `keyFor` makes when a
+// token names it. Checked here so a malformed key never reaches the cache:
+// a refresh left with no usable key throws, and the cache keeps the last good
+// set (`dropOnError: false`).
+function isReadableKey(jwk) {
+  try {
+    createPublicKey({ key: jwk, format: 'jwk' })
+
+    return true
+  } catch {
+    return false
+  }
+}
+
 const isSigningKey = (key) =>
   key?.use === 'sig' &&
   key.kty === 'RSA' &&
   typeof key.kid === 'string' &&
   key.kid !== '' &&
   Boolean(key.n) &&
-  Boolean(key.e)
+  Boolean(key.e) &&
+  isReadableKey(key)
 
 /**
- * Fetches a key set and keeps only the RSA signing keys, as plain JSON so a
- * cache can hold it. Throws when the endpoint fails or holds no usable key.
+ * Fetches a key set and keeps only the RSA signing keys that can be read, as
+ * plain JSON so a cache can hold it. Throws when the endpoint fails or holds
+ * no usable key.
  * @param {string} uri
  * @param {{env?: NodeJS.ProcessEnv, timeoutMs?: number}} [options]
  * @returns {Promise<object[]>}
