@@ -296,6 +296,12 @@ NO_PROXY=...
 
 No additional proxy configuration is required in the service.
 
+One exception: `@hapi/jwt` reads the tenant's signing keys with `@hapi/wreck`, whose own HTTPS agent
+ignores `NODE_USE_ENV_PROXY`. The backend therefore fetches the keys itself
+(`src/common/helpers/auth/jwks.js`) with `new https.Agent({ proxyEnv: process.env })`, which honours
+`HTTPS_PROXY` and `NO_PROXY` (Node 24.5 or later). Any new outbound call that does not use the global
+`fetch` or the global agents must do the same.
+
 ### Gateways
 
 Every model is reached through Azure API Management, whichever cloud hosts it. A catalogue model's

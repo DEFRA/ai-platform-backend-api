@@ -1,3 +1,5 @@
+import http from 'node:http'
+
 import nock from 'nock'
 
 import { ACCESS } from '#/common/helpers/auth/access.js'
@@ -414,5 +416,54 @@ describe('#auth start-up', () => {
 
     expect(keys.isDone()).toBe(true)
     await server.stop({ timeout: 0 })
+  })
+})
+
+// CDP gives every service a forward proxy through HTTPS_PROXY and no other
+// route out. The key fetch must use it, or the backend cannot start there.
+describe('#auth key fetch through the CDP proxy', () => {
+  const connects = []
+  let proxy
+
+  beforeAll(async () => {
+    proxy = http.createServer()
+    proxy.on('connect', (request, socket) => {
+      connects.push(request.url)
+      socket.end('HTTP/1.1 502 Bad Gateway\r\n\r\n')
+    })
+    await new Promise((resolve) => proxy.listen(0, '127.0.0.1', resolve))
+  })
+
+  afterAll(async () => {
+    await new Promise((resolve) => proxy.close(resolve))
+  })
+
+  afterEach(() => {
+    connects.length = 0
+    delete process.env.HTTPS_PROXY
+    delete process.env.NO_PROXY
+    nock.activate()
+    nock.cleanAll()
+    serveJwks()
+  })
+
+  // nock replaces Node's request creation, which would hide the agent: a real
+  // socket to the local proxy is the point of this test.
+  async function startUp() {
+    nock.cleanAll()
+    nock.restore()
+    process.env.HTTPS_PROXY = `http://127.0.0.1:${proxy.address().port}`
+
+    const { createServer } = await import('#/server.js')
+    const server = await createServer()
+
+    await expect(server.initialize()).rejects.toThrow()
+    await server.stop({ timeout: 0 }).catch(() => {})
+  }
+
+  test("asks the proxy to reach the tenant's key endpoint", async () => {
+    await startUp()
+
+    expect(connects).toEqual(['login.microsoftonline.com:443'])
   })
 })

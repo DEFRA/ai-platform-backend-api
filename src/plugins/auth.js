@@ -2,13 +2,13 @@ import Jwt from '@hapi/jwt'
 
 import { config } from '#/config.js'
 import { createIdentityValidator } from '#/common/helpers/auth/identity.js'
+import { fetchSigningKeys, keyFor } from '#/common/helpers/auth/jwks.js'
 
 export const STRATEGY = 'portal'
 export const INVALID_TOKEN = 'invalid-token'
 
 const ENTRA_AUTHORITY = 'https://login.microsoftonline.com'
 const REALM = 'aip-portal'
-const ALGORITHMS = ['RS256']
 const CLOCK_SKEW_SECONDS = 60
 
 // Entra publishes a new signing key ahead of using it. A key set older than
@@ -80,9 +80,22 @@ export const auth = {
 
       await server.register(Jwt)
 
+      // Keys come from our own fetch (through the CDP proxy), cached by the
+      // server and warmed before it starts, so a server that cannot reach
+      // them does not start.
+      const keySet = server.cache({
+        segment: 'portal-signing-keys',
+        ...KEY_CACHE,
+        generateFunc: (uri) => fetchSigningKeys(uri)
+      })
+
+      server.ext('onPreStart', () => keySet.get(jwksUri))
+
       server.auth.strategy(STRATEGY, 'jwt', {
-        keys: [{ uri: jwksUri, algorithms: ALGORITHMS }],
-        cache: KEY_CACHE,
+        keys: [
+          async (artifacts) =>
+            keyFor(await keySet.get(jwksUri), artifacts.decoded.header.kid)
+        ],
         verify: {
           aud: audience,
           iss: issuer,
