@@ -958,6 +958,47 @@ describe('#backfillRegistry', () => {
       ).toBe(0)
     })
 
+    test('sets requestedRole from role on memberships that carry an idempotencyKey, and only those (thread 2)', async () => {
+      const teamId = await insertTeam('Requested roles')
+
+      await db.collection('teamMembers').insertMany([
+        {
+          teamId,
+          userId: 'added-as-user',
+          role: 'admin',
+          status: 'active',
+          idempotencyKey: 'key-1'
+        },
+        {
+          teamId,
+          userId: 'already-set',
+          role: 'admin',
+          requestedRole: 'user',
+          status: 'active',
+          idempotencyKey: 'key-2'
+        },
+        { teamId, userId: 'creator', role: 'admin', status: 'active' },
+        {
+          teamId,
+          userId: 'null-key',
+          role: 'user',
+          status: 'removed',
+          idempotencyKey: null
+        }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+      const byUser = Object.fromEntries(
+        (await members(teamId)).map((row) => [row.userId, row])
+      )
+
+      expect(result.requestedRolesSet).toBe(1)
+      expect(byUser['added-as-user'].requestedRole).toBe('admin')
+      expect(byUser['already-set'].requestedRole).toBe('user')
+      expect(byUser.creator).not.toHaveProperty('requestedRole')
+      expect(byUser['null-key']).not.toHaveProperty('requestedRole')
+    })
+
     test('deletes people with no oid and removes their active memberships, keeping people with one', async () => {
       const teamId = await insertTeam('Legacy')
       const { insertedIds } = await db.collection('users').insertMany([
@@ -1019,6 +1060,7 @@ describe('#backfillRegistry', () => {
         invitationsRemoved: 0,
         duplicatesRemoved: 0,
         emailsUnset: 1,
+        requestedRolesSet: 0,
         usersDeleted: 1,
         membershipsRemoved: 1,
         credentialsOrphaned: 0,
@@ -1079,6 +1121,7 @@ describe('#backfillRegistry', () => {
         invitationsRemoved: 0,
         duplicatesRemoved: 0,
         emailsUnset: 0,
+        requestedRolesSet: 0,
         usersDeleted: 0,
         membershipsRemoved: 0,
         credentialsOrphaned: 0,

@@ -557,11 +557,13 @@ export const backfillRegistry = [
   // existing data is brought to that shape (invitations removed, one active
   // membership per person and team, `email` unset, people with no `oid`
   // deleted). Runs before `createIndexes`, whose unique index on active
-  // memberships would otherwise refuse to build over duplicates.
+  // memberships would otherwise refuse to build over duplicates. It also sets
+  // `requestedRole` (the role an add was requested with, kept with its
+  // Idempotency-Key) from `role` for memberships that carry a key.
   {
     id: '2026-11-03-team-members-directory-only',
     description:
-      'Removes team invitations, keeps one active membership per person and team, unsets teamMembers.email and deletes users with no oid',
+      'Removes team invitations, keeps one active membership per person and team, unsets teamMembers.email, sets requestedRole on memberships with an idempotencyKey and deletes users with no oid',
     run: makeTeamMembersDirectoryOnly
   }
 ]

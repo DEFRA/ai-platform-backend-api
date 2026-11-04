@@ -1,6 +1,26 @@
-import { isEligible } from '#/services/directory-eligibility.js'
+import { emailOf, isEligible } from '#/services/directory-eligibility.js'
 
 const DOMAINS = ['defra.gov.uk', 'defra.onmicrosoft.com']
+
+describe('#emailOf', () => {
+  test('is the mail, trimmed, when the person has one', () => {
+    expect(
+      emailOf({
+        userPrincipalName: 'ada@defra.onmicrosoft.com',
+        mail: '  Ada@defra.gov.uk '
+      })
+    ).toBe('Ada@defra.gov.uk')
+  })
+
+  test.each([undefined, null, '', '   ', '\t'])(
+    'is the user principal name when the mail is %j, never a blank (thread 3)',
+    (mail) => {
+      expect(emailOf({ userPrincipalName: 'ada@defra.gov.uk', mail })).toBe(
+        'ada@defra.gov.uk'
+      )
+    }
+  )
+})
 
 describe('#isEligible', () => {
   test.each([
@@ -23,10 +43,19 @@ describe('#isEligible', () => {
     ).toBe(true)
   })
 
-  test.each([undefined, null, ''])('accepts mail %j as absent', (mail) => {
+  test.each([undefined, null, '', '   ', '\t\n'])(
+    'accepts mail %j as absent',
+    (mail) => {
+      expect(
+        isEligible({ userPrincipalName: 'ada@defra.gov.uk', mail }, DOMAINS)
+      ).toBe(true)
+    }
+  )
+
+  test('refuses a mail that is not text, as it is not absent', () => {
     expect(
-      isEligible({ userPrincipalName: 'ada@defra.gov.uk', mail }, DOMAINS)
-    ).toBe(true)
+      isEligible({ userPrincipalName: 'ada@defra.gov.uk', mail: 42 }, DOMAINS)
+    ).toBe(false)
   })
 
   test.each([

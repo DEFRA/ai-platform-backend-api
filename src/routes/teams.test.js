@@ -693,17 +693,63 @@ describe('#teams routes', () => {
     expect(statusCode).toBe(400)
   })
 
-  test('POST /v1/teams/{id}/members refuses a missing or malformed Idempotency-Key', async () => {
-    const team = await teamWithAdmin('team-no-key')
+  test.each([
+    ['missing', undefined, '"idempotency-key" is required'],
+    ['malformed', 'not-a-uuid', '"idempotency-key" must be a valid GUID']
+  ])(
+    'POST /v1/teams/{id}/members refuses a %s Idempotency-Key, with a valid role and oid, and adds nobody (thread 4)',
+    async (_, key, message) => {
+      const team = await teamWithAdmin(`team-key-${key ? 'bad' : 'none'}`)
+      const headers = { 'x-user-id': team.adminId }
 
-    const missing = await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${team.teamId}/members`,
+      if (key) {
+        headers['idempotency-key'] = key
+      }
+
+      const { result, statusCode } = await server.inject({
+        method: 'POST',
+        url: `/v1/teams/${team.teamId}/members`,
+        headers,
+        payload: { oid: SEEDED.amelia, role: 'user' }
+      })
+
+      expect(statusCode).toBe(400)
+      expect(result.message).toContain(message)
+      expect(
+        await server.db
+          .collection('teamMembers')
+          .countDocuments({ teamId: team.teamId })
+      ).toBe(1)
+    }
+  )
+
+  test('POST /v1/teams/{id}/members replays the add after the member’s role was changed, and refuses another role for the key (thread 2)', async () => {
+    const team = await teamWithAdmin('team-replay-role')
+    const headers = postHeaders(team.adminId)
+    const post = (role) =>
+      server.inject({
+        method: 'POST',
+        url: `/v1/teams/${team.teamId}/members`,
+        headers,
+        payload: { oid: SEEDED.bashir, role }
+      })
+
+    const first = await post('user')
+    await server.inject({
+      method: 'PATCH',
+      url: `/v1/teams/${team.teamId}/members/${first.result.member._id}`,
       headers: { 'x-user-id': team.adminId },
-      payload: { oid: SEEDED.amelia }
+      payload: { role: 'admin' }
     })
+    const retry = await post('user')
+    const otherRole = await post('admin')
 
-    expect(missing.statusCode).toBe(400)
+    expect(first.statusCode).toBe(201)
+    expect(retry.statusCode).toBe(201)
+    expect(retry.result.member._id).toEqual(first.result.member._id)
+    expect(retry.result.member.role).toBe('admin')
+    expect(otherRole.statusCode).toBe(409)
+    expect(otherRole.result.code).toBe('idempotency-key-reused')
   })
 
   test('POST /v1/teams/{id}/members accepts an upper-case oid and stores it in lower case', async () => {
@@ -1831,6 +1877,25 @@ describe('#teams routes', () => {
         expect(logged).not.toContain('_original')
       }
     )
+
+    test('never writes an email sent as an unknown key to the log (thread 1)', async () => {
+      const team = await teamWithAdmin('search-log-key')
+      const { createLogger } =
+        await import('#/common/helpers/logging/logger.js')
+      const warn = vi.spyOn(createLogger(), 'warn').mockImplementation(() => {})
+
+      const { statusCode } = await search(team, team.adminId, {
+        search: 'ab',
+        'alice.unknown-key@example.com': true
+      })
+      const logged = JSON.stringify(warn.mock.calls)
+
+      vi.restoreAllMocks()
+
+      expect(statusCode).toBe(400)
+      expect(logged).toContain('Request validation failed')
+      expect(logged).not.toContain('alice.unknown-key')
+    })
 
     test('accepts 2 and 100 characters', async () => {
       const team = await teamWithAdmin('search-8')

@@ -7,11 +7,10 @@ import {
   listTeamsForUser,
   findTeamById,
   updateTeam,
-  searchTeamPeople,
-  addMember,
   removeMember,
   setMemberRole
 } from '#/services/team-service.js'
+import { searchTeamPeople, addMember } from '#/services/team-people-service.js'
 
 // Three characters, as the team file's schema requires; entered in any case
 // and stored upper.

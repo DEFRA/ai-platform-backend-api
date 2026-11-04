@@ -1,13 +1,14 @@
 import { randomUUID } from 'node:crypto'
 
-import { Collection } from 'mongodb'
+import { dbFailingOn } from '#/common/test-helpers/failing-db.js'
 
 const TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 
-describe('team-service: adding people from the directory', () => {
+describe('team-people-service: adding people from the directory', () => {
   let server
   let db
   let service
+  let peopleService
   let userService
 
   beforeAll(async () => {
@@ -18,15 +19,12 @@ describe('team-service: adding people from the directory', () => {
     await server.initialize()
     db = server.db
     service = await import('#/services/team-service.js')
+    peopleService = await import('#/services/team-people-service.js')
     userService = await import('#/services/user-service.js')
   })
 
   afterAll(async () => {
     await server.stop({ timeout: 0 })
-  })
-
-  afterEach(() => {
-    vi.restoreAllMocks()
   })
 
   const DOMAINS = ['defra.gov.uk']
@@ -70,7 +68,7 @@ describe('team-service: adding people from the directory', () => {
   }
 
   function add(team, person, directory, overrides = {}) {
-    return service.addMember(
+    return peopleService.addMember(
       db,
       {
         teamId: team.teamId,
@@ -85,59 +83,90 @@ describe('team-service: adding people from the directory', () => {
     )
   }
 
-  // Reads as when two requests race: the first look for the key, and every
-  // look for an existing member, find nothing; the unique indexes decide.
-  function blindToTheRace(team) {
-    const findOne = Collection.prototype.findOne
-    let keyLooks = 0
+  // Settles every call, so a test sees which of the concurrent requests won
+  // and how the others were refused.
+  async function settled(calls) {
+    const results = await Promise.allSettled(calls)
 
-    vi.spyOn(Collection.prototype, 'findOne').mockImplementation(
-      async function (filter, ...rest) {
-        const isMemberCheck =
-          filter?.status === 'active' &&
-          filter?.userId &&
-          filter.userId !== team.adminId
-        const isFirstKeyLook = filter?.idempotencyKey && keyLooks++ === 0
-
-        return isMemberCheck || isFirstKeyLook
-          ? null
-          : findOne.call(this, filter, ...rest)
-      }
-    )
+    return {
+      won: results.filter((r) => r.status === 'fulfilled').map((r) => r.value),
+      refused: results
+        .filter((r) => r.status === 'rejected')
+        .map((r) => r.reason)
+    }
   }
 
-  test('addMember replays the first membership when the index shows a twin won the race with the same key', async () => {
-    const team = await teamWithAdmin('svc-race-same')
-    const person = ada()
-    const directory = directoryOf(person)
-    const idempotencyKey = randomUUID()
-    const first = await add(team, person, directory, { idempotencyKey })
+  function activeMemberships(team) {
+    return db
+      .collection('teamMembers')
+      .countDocuments({ teamId: team.teamId, status: 'active' })
+  }
 
-    blindToTheRace(team)
-    const again = await add(team, person, directory, { idempotencyKey })
-
-    expect(again._id.toString()).toBe(first._id.toString())
-  })
-
-  test('addMember refuses a key reused for another person when the index shows the key was taken (F2)', async () => {
+  test('addMember lets one of two people who race for the same key win, and refuses the other as a reused key (F2)', async () => {
     const team = await teamWithAdmin('svc-race-other')
     const first = ada()
     const second = ada({ displayName: 'Bea Service' })
     const directory = directoryOf(first, second)
     const idempotencyKey = randomUUID()
 
-    await add(team, first, directory, { idempotencyKey })
-    blindToTheRace(team)
+    const { won, refused } = await settled(
+      Array.from({ length: 8 }, (_, index) =>
+        add(team, index % 2 ? second : first, directory, { idempotencyKey })
+      )
+    )
 
-    await expect(
-      add(team, second, directory, { idempotencyKey })
-    ).rejects.toMatchObject({
-      output: { statusCode: 409 },
-      data: { code: 'idempotency-key-reused' }
-    })
+    expect(new Set(won.map((member) => member.userId)).size).toBe(1)
+    expect(refused).toHaveLength(4)
+    for (const error of refused) {
+      expect(error).toMatchObject({
+        output: { statusCode: 409 },
+        data: { code: 'idempotency-key-reused' }
+      })
+    }
+    expect(await activeMemberships(team)).toBe(2)
   })
 
-  test('addMember refuses a key reused with another role, as a twin or as a replay (F2)', async () => {
+  test('addMember lets one of two roles that race for the same key win, and refuses the other as a reused key (F2)', async () => {
+    const team = await teamWithAdmin('svc-race-role')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+
+    const { won, refused } = await settled(
+      ['user', 'admin', 'user', 'admin'].map((role) =>
+        add(team, person, directory, { idempotencyKey, role })
+      )
+    )
+
+    expect(new Set(won.map((member) => member._id.toString())).size).toBe(1)
+    expect(refused).toHaveLength(2)
+    for (const error of refused) {
+      expect(error).toMatchObject({ data: { code: 'idempotency-key-reused' } })
+    }
+    expect(await activeMemberships(team)).toBe(2)
+  })
+
+  test('addMember adds a person once when requests with different keys race for them, and refuses the rest as a duplicate', async () => {
+    const team = await teamWithAdmin('svc-race-person')
+    const person = ada()
+    const directory = directoryOf(person)
+
+    const { won, refused } = await settled(
+      Array.from({ length: 6 }, () => add(team, person, directory))
+    )
+
+    expect(won).toHaveLength(1)
+    expect(refused).toHaveLength(5)
+    for (const error of refused) {
+      expect(error).toMatchObject({
+        output: { statusCode: 409 },
+        data: { code: 'member-exists' }
+      })
+    }
+    expect(await activeMemberships(team)).toBe(2)
+  })
+
+  test('addMember refuses a key reused with another role, as a replay', async () => {
     const team = await teamWithAdmin('svc-role')
     const person = ada()
     const directory = directoryOf(person)
@@ -148,13 +177,81 @@ describe('team-service: adding people from the directory', () => {
     await expect(
       add(team, person, directory, { idempotencyKey, role: 'admin' })
     ).rejects.toMatchObject({ data: { code: 'idempotency-key-reused' } })
+  })
 
-    blindToTheRace(team)
+  test('addMember refuses a key reused for another person, as a replay', async () => {
+    const team = await teamWithAdmin('svc-other-person')
+    const first = ada()
+    const second = ada({ displayName: 'Bea Service' })
+    const directory = directoryOf(first, second)
+    const idempotencyKey = randomUUID()
 
+    await add(team, first, directory, { idempotencyKey })
+
+    await expect(
+      add(team, second, directory, { idempotencyKey })
+    ).rejects.toMatchObject({ data: { code: 'idempotency-key-reused' } })
+  })
+
+  test('addMember replays a retry after the member’s role was changed, and still refuses another role for the key (thread 2)', async () => {
+    const team = await teamWithAdmin('svc-role-changed')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+    const first = await add(team, person, directory, {
+      idempotencyKey,
+      role: 'user'
+    })
+
+    await db
+      .collection('teamMembers')
+      .updateOne({ _id: first._id }, { $set: { role: 'admin' } })
+    const retry = await add(team, person, directory, {
+      idempotencyKey,
+      role: 'user'
+    })
+
+    expect(retry._id.toString()).toBe(first._id.toString())
+    expect(retry.role).toBe('admin')
     await expect(
       add(team, person, directory, { idempotencyKey, role: 'admin' })
     ).rejects.toMatchObject({ data: { code: 'idempotency-key-reused' } })
   })
+
+  test('addMember keeps the role the add asked for with its key', async () => {
+    const team = await teamWithAdmin('svc-requested-role')
+    const person = ada()
+
+    const member = await add(team, person, directoryOf(person), {
+      role: 'admin'
+    })
+
+    expect(
+      await db.collection('teamMembers').findOne({ _id: member._id })
+    ).toMatchObject({ role: 'admin', requestedRole: 'admin' })
+  })
+
+  test.each([
+    ['empty', ''],
+    ['spaces', '   '],
+    ['a tab', '\t']
+  ])(
+    'addMember stores and returns the user principal name when the mail is %s, never a blank email (thread 3)',
+    async (_, mail) => {
+      const team = await teamWithAdmin('svc-blank-mail')
+      const person = ada({
+        mail,
+        userPrincipalName: 'Blank.Mail@defra.gov.uk'
+      })
+
+      const member = await add(team, person, directoryOf(person))
+
+      expect(member.email).toBe('blank.mail@defra.gov.uk')
+      expect(
+        (await db.collection('users').findOne({ oid: person.oid })).email
+      ).toBe('blank.mail@defra.gov.uk')
+    }
+  )
 
   test('addMember hands the user assertion to the directory and checks the person against the allowed domains', async () => {
     const team = await teamWithAdmin('svc-assertion')
@@ -187,11 +284,7 @@ describe('team-service: adding people from the directory', () => {
     )
 
     expect(new Set(members.map((member) => member._id.toString())).size).toBe(1)
-    expect(
-      await db
-        .collection('teamMembers')
-        .countDocuments({ teamId: team.teamId, status: 'active' })
-    ).toBe(2)
+    expect(await activeMemberships(team)).toBe(2)
   })
 
   test('addMember cannot confirm a replay whose person’s record has gone, so refuses it as a different request', async () => {
@@ -211,28 +304,57 @@ describe('team-service: adding people from the directory', () => {
   test('addMember does not hide a failure to write the membership', async () => {
     const team = await teamWithAdmin('svc-write-fails')
     const person = ada()
-
-    vi.spyOn(Collection.prototype, 'insertOne').mockRejectedValueOnce(
+    // A real MongoDB cannot be made to lose its connection on demand, so
+    // this one write fails through a wrapper over the db the service is given.
+    const failing = dbFailingOn(
+      db,
+      'teamMembers',
+      'insertOne',
       new Error('connection lost')
     )
 
-    await expect(add(team, person, directoryOf(person))).rejects.toThrow(
-      'connection lost'
-    )
+    await expect(
+      peopleService.addMember(
+        failing,
+        {
+          teamId: team.teamId,
+          actorUserId: team.adminId,
+          oid: person.oid,
+          role: 'user',
+          idempotencyKey: randomUUID(),
+          userAssertion: 'user-token'
+        },
+        { directory: directoryOf(person), allowedDomains: DOMAINS }
+      )
+    ).rejects.toThrow('connection lost')
+    expect(await activeMemberships(team)).toBe(1)
   })
 
-  test('addMember refuses as a duplicate when the unique index refuses a person who is not yet seen as a member', async () => {
-    const team = await teamWithAdmin('svc-index')
-    const person = ada()
-    const directory = directoryOf(person)
-
-    await add(team, person, directory)
-    blindToTheRace(team)
-
-    await expect(add(team, person, directory)).rejects.toMatchObject({
-      output: { statusCode: 409 },
-      data: { code: 'member-exists' }
+  test('searchTeamPeople shows the user principal name for a person whose mail is blank (thread 3)', async () => {
+    const team = await teamWithAdmin('svc-search-blank')
+    const person = ada({
+      mail: '   ',
+      userPrincipalName: 'blank.search@defra.gov.uk'
     })
+
+    const { items } = await peopleService.searchTeamPeople(
+      db,
+      {
+        teamId: team.teamId,
+        actorUserId: team.adminId,
+        search: 'blank',
+        userAssertion: 'user-token'
+      },
+      { directory: directoryOf(person), allowedDomains: DOMAINS }
+    )
+
+    expect(items).toEqual([
+      {
+        oid: person.oid,
+        displayName: person.displayName,
+        email: 'blank.search@defra.gov.uk'
+      }
+    ])
   })
 
   test('searchTeamPeople drops ineligible people and members, sorts by name and takes 20', async () => {
@@ -248,7 +370,7 @@ describe('team-service: adding people from the directory', () => {
     })
     const directory = directoryOf(member, stranger, ...crowd)
 
-    const { items } = await service.searchTeamPeople(
+    const { items } = await peopleService.searchTeamPeople(
       db,
       {
         teamId: team.teamId,

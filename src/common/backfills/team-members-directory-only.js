@@ -92,6 +92,23 @@ async function deletePeopleWithNoOid(db) {
   return { usersDeleted: deletedCount, membershipsRemoved, credentialsOrphaned }
 }
 
+/**
+ * Records the role each add was requested with, next to its Idempotency-Key,
+ * so a retry is compared with the request and not with the member's current
+ * role (an Admin can change that). For a membership that already has a key
+ * the role it holds now is the best record there is of what was asked.
+ * @param {import('mongodb').Collection} members
+ * @returns {Promise<number>}
+ */
+async function setRequestedRoles(members) {
+  const { modifiedCount } = await members.updateMany(
+    { idempotencyKey: { $type: 'string' }, requestedRole: { $exists: false } },
+    [{ $set: { requestedRole: '$role' } }]
+  )
+
+  return modifiedCount
+}
+
 async function countTeamsWithoutActiveAdmin(db) {
   const teamIdsWithAdmin = await db
     .collection('teamMembers')
@@ -111,7 +128,9 @@ async function countTeamsWithoutActiveAdmin(db) {
  * `#membership`): invitations, the email field and the sign-in binds are
  * gone, so existing data is brought to that shape. Sets `invited` rows to
  * removed; keeps one active membership per person and team (an Admin, else
- * the earliest), which the new unique index needs; unsets `email`; deletes
+ * the earliest), which the new unique index needs; unsets `email`; sets
+ * `requestedRole` from `role` on memberships that carry an Idempotency-Key;
+ * deletes
  * people with no `oid` (nothing binds them now) and removes their active
  * memberships. Returns counts only - never an address or a name - including
  * the credentials left owned by a deleted person (kept, not deleted) and the
@@ -129,6 +148,7 @@ export async function makeTeamMembersDirectoryOnly(db) {
     { email: { $exists: true } },
     { $unset: { email: '' } }
   )
+  const requestedRolesSet = await setRequestedRoles(members)
   const { usersDeleted, membershipsRemoved, credentialsOrphaned } =
     await deletePeopleWithNoOid(db)
 
@@ -136,6 +156,7 @@ export async function makeTeamMembersDirectoryOnly(db) {
     invitationsRemoved,
     duplicatesRemoved,
     emailsUnset,
+    requestedRolesSet,
     usersDeleted,
     membershipsRemoved,
     credentialsOrphaned,

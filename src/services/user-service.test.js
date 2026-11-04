@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 
-import { Collection, ObjectId } from 'mongodb'
+import { ObjectId } from 'mongodb'
+
+import { dbFailingOn } from '#/common/test-helpers/failing-db.js'
 
 const TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 
@@ -21,10 +23,6 @@ describe('user-service', () => {
 
   afterAll(async () => {
     await server.stop({ timeout: 0 })
-  })
-
-  afterEach(() => {
-    vi.restoreAllMocks()
   })
 
   function person(overrides = {}) {
@@ -69,26 +67,53 @@ describe('user-service', () => {
       expect(second.email).toBe('directory.person@defra.gov.uk')
     })
 
-    test('returns the record a concurrent add or sign-in made first, when the unique index refuses the upsert', async () => {
+    test('returns one record for every concurrent add or sign-in of the same person, when the unique index refuses an upsert', async () => {
+      const params = person()
+
+      const users = await Promise.all(
+        Array.from({ length: 8 }, () =>
+          service.ensurePersonFromDirectory(db, params)
+        )
+      )
+
+      expect(new Set(users.map((user) => user._id.toString())).size).toBe(1)
+      expect(
+        await db
+          .collection('users')
+          .countDocuments({ oid: params.oid, tid: TENANT_ID })
+      ).toBe(1)
+    })
+
+    test('returns the record a concurrent add or sign-in made first when the unique index refuses the upsert', async () => {
       const params = person()
       const made = await service.ensurePersonFromDirectory(db, params)
-
-      vi.spyOn(Collection.prototype, 'findOneAndUpdate').mockRejectedValueOnce(
+      // Which request MongoDB refuses with a duplicate key when upserts race
+      // is not up to the test, so the refusal comes through a wrapper over the
+      // db the service is given; the record it then reads is the real one.
+      const refusing = dbFailingOn(
+        db,
+        'users',
+        'findOneAndUpdate',
         Object.assign(new Error('E11000 duplicate key'), { code: 11000 })
       )
 
-      const found = await service.ensurePersonFromDirectory(db, params)
+      const found = await service.ensurePersonFromDirectory(refusing, params)
 
       expect(found._id.toString()).toBe(made._id.toString())
     })
 
     test('does not hide any other failure', async () => {
-      vi.spyOn(Collection.prototype, 'findOneAndUpdate').mockRejectedValueOnce(
+      // A real MongoDB cannot be made to lose its connection on demand, so
+      // this one write fails through a wrapper over the db the service is given.
+      const failing = dbFailingOn(
+        db,
+        'users',
+        'findOneAndUpdate',
         new Error('connection lost')
       )
 
       await expect(
-        service.ensurePersonFromDirectory(db, person())
+        service.ensurePersonFromDirectory(failing, person())
       ).rejects.toThrow('connection lost')
     })
   })

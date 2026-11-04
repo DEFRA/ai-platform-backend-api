@@ -1,6 +1,5 @@
 import { ObjectId } from 'mongodb'
 
-import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
@@ -9,23 +8,14 @@ import {
   deriveTeamSlug,
   withSlugSuffix
 } from '#/common/helpers/team-slug.js'
-import { directory as defaultDirectory } from '#/adapters/directory-registry.js'
 import { serviceCodeVerifier } from '#/adapters/service-code-verifier-registry.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
-import { isEligible } from '#/services/directory-eligibility.js'
 import { readTeamEnvironments } from '#/services/team-desired-state.js'
-import {
-  ensurePersonFromDirectory,
-  requireUserTenant
-} from '#/services/user-service.js'
 
 // Two names that differ only in punctuation ("Data Team" and "Data Team!")
 // pass the name check but derive one slug, so a clash needs a numbered retry.
 const MAX_SLUG_ATTEMPTS = 10
-
-// The most people one search returns; the Admin narrows the search for more.
-const MAX_PEOPLE_RESULTS = 20
 
 // A team id as `ObjectId#toString` writes it. A slug must start with a letter
 // and may in theory be 24 hex characters, so an id-shaped value is an id only
@@ -74,7 +64,7 @@ export async function resolveTeamId(db, idOrSlug) {
  * @param {string} idOrSlug
  * @returns {Promise<string>}
  */
-async function requireTeamId(db, idOrSlug) {
+export async function requireTeamId(db, idOrSlug) {
   const teamId = await resolveTeamId(db, idOrSlug)
 
   if (!teamId) {
@@ -459,7 +449,7 @@ async function withMemberDisplayNames(db, members) {
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, actorUserId: string, action: string}} params
  */
-async function requireTeamAdmin(db, { teamId, actorUserId, action }) {
+export async function requireTeamAdmin(db, { teamId, actorUserId, action }) {
   const actorMembership = await db
     .collection('teamMembers')
     .findOne({ teamId, userId: actorUserId, status: 'active' })
@@ -518,241 +508,6 @@ async function refuseIfLastAdmin(db, teamId) {
       'last-admin'
     )
   }
-}
-
-/**
- * What a team Admin sees of a member they added: the membership with the
- * person's name and email for display, read from `users` rather than stored
- * on the membership.
- * @param {object} member - the `teamMembers` document
- * @param {{displayName?: string, email?: string}} user
- */
-function toAddedMember(member, user) {
-  return {
-    _id: member._id,
-    teamId: member.teamId,
-    userId: member.userId,
-    displayName: user.displayName ?? null,
-    email: user.email ?? null,
-    role: member.role,
-    status: member.status,
-    createdAt: member.createdAt
-  }
-}
-
-async function findUserById(db, userId) {
-  return db.collection('users').findOne({ _id: new ObjectId(userId) })
-}
-
-/**
- * Searches the directory for people an Admin of the team can add: eligible
- * Defra people who are not already active members, by name, sorted by name
- * and capped at {@link MAX_PEOPLE_RESULTS}. Only an active admin of the team
- * may search, and a non-member is told only that there is nothing there. The
- * search text and the user assertion are never logged or stored.
- * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, search: string, userAssertion?: string}} params - `teamId` is the team's id or slug
- * @param {{directory?: import('#/adapters/directory.js').Directory, allowedDomains?: string[]}} [deps]
- * @returns {Promise<{items: {oid: string, displayName: string, email: string}[]}>}
- */
-export async function searchTeamPeople(
-  db,
-  { teamId: teamRef, actorUserId, search, userAssertion },
-  {
-    directory = defaultDirectory,
-    allowedDomains = config.get('directory.allowedDomains')
-  } = {}
-) {
-  const teamId = await requireTeamId(db, teamRef)
-
-  await requireTeamAdmin(db, { teamId, actorUserId, action: 'add members' })
-
-  const found = await directory.searchPeople({ userAssertion, query: search })
-  const memberOids = await activeMemberOids(db, teamId)
-
-  const items = found
-    .filter(
-      (person) =>
-        isEligible(person, allowedDomains) && !memberOids.has(person.oid)
-    )
-    .sort((a, b) => a.displayName.localeCompare(b.displayName, 'en'))
-    .slice(0, MAX_PEOPLE_RESULTS)
-    .map((person) => ({
-      oid: person.oid,
-      displayName: person.displayName,
-      email: person.mail ?? person.userPrincipalName
-    }))
-
-  return { items }
-}
-
-/**
- * The Entra object IDs of the team's active members, for leaving them out of
- * a search.
- * @param {import('mongodb').Db} db
- * @param {string} teamId
- * @returns {Promise<Set<string>>}
- */
-async function activeMemberOids(db, teamId) {
-  const memberships = await db
-    .collection('teamMembers')
-    .find({ teamId, status: 'active' }, { projection: { userId: 1 } })
-    .toArray()
-  const userIds = memberships
-    .filter((membership) => ObjectId.isValid(membership.userId))
-    .map((membership) => new ObjectId(membership.userId))
-  const users = await db
-    .collection('users')
-    .find({ _id: { $in: userIds } }, { projection: { oid: 1 } })
-    .toArray()
-
-  return new Set(users.map((user) => user.oid).filter(Boolean))
-}
-
-/**
- * The membership a repeated Idempotency-Key stands for, if the repeat is the
- * same request: the same person and role. A key reused for another person or
- * role is refused, so the caller is never told the first person was added
- * when they asked for someone else.
- * @param {object} member - the `teamMembers` document the key made
- * @param {{oid?: string, displayName?: string, email?: string}|null} user - the member's record
- * @param {{oid: string, role: string}} request
- */
-function replayOf(member, user, { oid, role }) {
-  if (!user || user.oid !== oid || member.role !== role) {
-    throw boomWithCode(
-      Boom.conflict,
-      'This idempotency key was used for a different request',
-      'idempotency-key-reused'
-    )
-  }
-
-  return toAddedMember(member, user)
-}
-
-/**
- * Adds a person from the directory to the team, active at once, with the
- * given role (`admin` or `user`, always stated). Only an active admin
- * of the team may do this, so only an admin can make another admin. The
- * directory is read again for the person and checked (a person it does not
- * hold is `422 person-not-eligible`, as an ineligible one is, so existence is
- * not disclosed); their `users` record is made if they have never signed in,
- * and is the one their first sign-in then finds. A repeat of the same
- * Idempotency-Key for the same person and role returns the same membership;
- * for another person or role it is `409 idempotency-key-reused`.
- * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, oid: string, role: 'admin'|'user', idempotencyKey: string, userAssertion?: string}} params - `teamId` is the team's id or slug
- * @param {{directory?: import('#/adapters/directory.js').Directory, allowedDomains?: string[]}} [deps]
- */
-export async function addMember(
-  db,
-  { teamId: teamRef, actorUserId, oid, role, idempotencyKey, userAssertion },
-  {
-    directory = defaultDirectory,
-    allowedDomains = config.get('directory.allowedDomains')
-  } = {}
-) {
-  const teamId = await requireTeamId(db, teamRef)
-
-  await requireTeamAdmin(db, { teamId, actorUserId, action: 'add members' })
-
-  const replay = await db
-    .collection('teamMembers')
-    .findOne({ teamId, idempotencyKey })
-
-  if (replay) {
-    return replayOf(replay, await findUserById(db, replay.userId), {
-      oid,
-      role
-    })
-  }
-
-  const tid = await requireUserTenant(db, actorUserId)
-  const person = await directory.getPerson({ userAssertion, oid })
-
-  if (!person || !isEligible(person, allowedDomains)) {
-    throw boomWithCode(
-      Boom.badData,
-      'This person cannot be added to the team',
-      'person-not-eligible'
-    )
-  }
-
-  const user = await ensurePersonFromDirectory(db, {
-    oid: person.oid,
-    tid,
-    email: person.mail ?? person.userPrincipalName,
-    displayName: person.displayName
-  })
-  const userId = user._id.toString()
-
-  const existingMember = await db
-    .collection('teamMembers')
-    .findOne({ teamId, userId, status: 'active' })
-
-  if (existingMember) {
-    // The same request, arriving while its twin was still being written.
-    if (existingMember.idempotencyKey === idempotencyKey) {
-      return replayOf(existingMember, user, { oid: person.oid, role })
-    }
-
-    throw memberExists()
-  }
-
-  const member = {
-    teamId,
-    userId,
-    role,
-    status: 'active',
-    idempotencyKey,
-    createdAt: new Date().toISOString()
-  }
-
-  let insertedId
-
-  try {
-    ;({ insertedId } = await db.collection('teamMembers').insertOne(member))
-  } catch (error) {
-    if (isDuplicateKeyError(error)) {
-      // Lost a race: either the same key (replay it) or the same person
-      // (a genuine duplicate add). The unique indexes decide, not the
-      // earlier reads, so concurrent adds cannot both succeed.
-      const winner = await db
-        .collection('teamMembers')
-        .findOne({ teamId, idempotencyKey })
-
-      if (winner) {
-        return replayOf(winner, await findUserById(db, winner.userId), {
-          oid: person.oid,
-          role
-        })
-      }
-
-      throw memberExists()
-    }
-
-    throw error
-  }
-
-  await recordAuditEvent(db, {
-    actorUserId,
-    action: 'team.addMember',
-    resource: 'team',
-    resourceId: teamId,
-    outcome: 'success',
-    code: role,
-    subjectOid: person.oid
-  })
-
-  return toAddedMember({ _id: insertedId, ...member }, user)
-}
-
-function memberExists() {
-  return boomWithCode(
-    Boom.conflict,
-    'This person is already a member of the team',
-    'member-exists'
-  )
 }
 
 /**

@@ -148,9 +148,10 @@ git config --global core.autocrlf false
 > and `teamMembers` carries no email. `POST /v1/teams/{id}/people/search` (body `{ search }`, 2 to 100
 > characters, admins only) returns up to 20 eligible people, sorted by name, leaving out active members.
 > `POST /v1/teams/{id}/members` takes `{ oid, role }` (both required; a key reused for another person or role is
-> `409 idempotency-key-reused`): it reads the person again from the directory,
+> `409 idempotency-key-reused`, judged against the role the add asked for, stored on the membership as `requestedRole`,
+> so a retry still replays after the member's role is changed): it reads the person again from the directory,
 > refuses anyone not eligible (a UPN and mail on `DIRECTORY_ALLOWED_DOMAINS`, default `defra.gov.uk` and
-> `defra.onmicrosoft.com`, no guests) with `422 person-not-eligible` - also for an unknown `oid` - and
+> `defra.onmicrosoft.com`, no guests; a blank mail counts as none, and the email shown and stored is then the UPN) with `422 person-not-eligible` - also for an unknown `oid` - and
 > makes the person's `users` record on `{ oid, tid }` (the Admin's own `tid`) if they have never signed
 > in, which their first sign-in then finds. A unique index allows one active membership per person and
 > team, and `GET /v1/teams/{id}` lists active members only. Both calls go through the `Directory` port (`src/adapters/directory.js`), chosen by
@@ -160,8 +161,10 @@ git config --global core.autocrlf false
 > Microsoft Graph adapter, called on behalf of the signed-in Admin, which is built and tested but
 > refused at start-up until B27 supplies the person's token. Prod refuses `mock`. A failed directory
 > call is `503 directory-unavailable`. The backfill `2026-11-03-team-members-directory-only` removes
-> invitations, keeps one active membership per person and team, unsets `email` and deletes people with
-> no `oid`; its counts, including teams left with no active Admin, are in the start-up log.
+> invitations, keeps one active membership per person and team, unsets `email`, sets `requestedRole` from `role` on
+> memberships that carry an `idempotencyKey` and deletes people with
+> no `oid`; its counts, including teams left with no active Admin, are in the start-up log. A request that fails
+> validation is logged by rule type only, never a path, key or value.
 
 > [!IMPORTANT]
 > A team carries an immutable `slug`, derived from its name on `POST /v1/teams` and made unique with a
