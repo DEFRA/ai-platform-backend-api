@@ -158,14 +158,17 @@ access. Team and Platform Admin rights are checked only in `access.js`, which an
 `tid`, `azp`, `uti` and the role used, never a token. Background work with no request (the expiry sweep, a
 lazy expiry, an operation's own steps) acts as the system actor (`src/common/helpers/auth/system-actor.js`):
 `actorUserId` `app:ai-platform-backend`, role `system`, no `oid` or tenant, no team role and not a Platform
-Admin. In tests, `src/common/test-helpers/portal-token.js`
-signs tokens with a throwaway key and serves its JWKS through `nock`.
+Admin. Expiry audit records written before this change name the credential's owner as `actorUserId`; from
+this change they name `app:ai-platform-backend`, so query them by `resourceId`, not by actor (4 November 2026).
+In tests, `src/common/test-helpers/portal-token.js` signs tokens with a throwaway key and serves its JWKS
+through `nock`.
 
 ### People and identity
 
 > [!IMPORTANT]
 > A person is keyed on their Entra object ID and tenant ID (`oid`, `tid`), which `PUT /v1/users/me`
-> takes from the validated token's claims (it reads no body) at every sign-in; a unique index on both holds that key. **Email is not unique**: it is
+> takes from the validated token's claims (it reads no body) at every sign-in and answers `200 { user, team }`
+> (`POST /v1/users` is removed); a unique index on both holds that key. **Email is not unique**: it is
 > display only and mutable (Microsoft advises never to key data on it), so two `users` records can
 > share an email, for example a leaver who returns with a new object ID. A record with no `oid` (an
 > invited member) binds to the first sign-in with its email. Every GitOps change names its requester as
