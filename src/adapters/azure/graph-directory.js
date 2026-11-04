@@ -185,11 +185,7 @@ function nextPagePath(nextLink, usersUrl) {
 
   const link = typeof nextLink === 'string' ? URL.parse(nextLink) : null
 
-  if (
-    !link ||
-    link.origin !== usersUrl.origin ||
-    link.pathname !== usersUrl.pathname
-  ) {
+  if (link?.origin !== usersUrl.origin || link.pathname !== usersUrl.pathname) {
     throw new TypeError('UnexpectedNextLink')
   }
 
@@ -212,6 +208,8 @@ async function readPages(
   let path = `/users?$search=${encodeURIComponent(phrase)}&$select=${SELECT}&$top=${SEARCH_TOP}`
   const people = []
 
+  // The pages are read one after another on purpose: each page's `nextLink`
+  // names the next, so they cannot be requested together (S9382 does not apply).
   for (let page = 0; path && page < maxPages; page++) {
     const response = await send(SEARCH, userAssertion, path, signal)
 
