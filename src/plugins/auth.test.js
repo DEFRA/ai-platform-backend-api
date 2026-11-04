@@ -161,6 +161,15 @@ describe('#auth', () => {
       })
     })
 
+    test('carries no token ID, email or name the token does not hold', async () => {
+      const { result } = await get(
+        '/probe/user',
+        bearer(mintToken(known({ uti: undefined, email: undefined, name: 42 })))
+      )
+
+      expect(result).toMatchObject({ uti: null, email: null, name: null })
+    })
+
     test('ignores an x-user-id header', async () => {
       const { result } = await get('/probe/user', {
         ...bearer(mintToken(known())),
@@ -180,23 +189,28 @@ describe('#auth', () => {
   })
 
   describe('the edges of what is accepted', () => {
+    // Built when each test runs, so a slow run cannot age the times.
     test.each([
       [
         'a lifetime of exactly 2 hours',
-        { exp: now() + 3600, iat: now() - 3600 }
+        () => {
+          const at = now()
+
+          return { exp: at + 3600, iat: at - 3600 }
+        }
       ],
       [
         'an expiry within the clock skew',
-        { exp: now() - 30, iat: now() - 3000 }
+        () => ({ exp: now() - 30, iat: now() - 3000 })
       ],
-      ['a start time within the clock skew', { nbf: now() + 30 }],
-      ['an issue time within the clock skew', { iat: now() + 30 }],
-      ['azpacr 1, a client secret', { azpacr: '1' }],
-      ['an acct sent as the string 0', { acct: '0' }]
+      ['a start time within the clock skew', () => ({ nbf: now() + 30 })],
+      ['an issue time within the clock skew', () => ({ iat: now() + 30 })],
+      ['azpacr 1, a client secret', () => ({ azpacr: '1' })],
+      ['an acct sent as the string 0', () => ({ acct: '0' })]
     ])('accepts %s', async (_name, overrides) => {
       const { statusCode } = await get(
         '/probe/user',
-        bearer(mintToken(known(overrides)))
+        bearer(mintToken(known(overrides())))
       )
 
       expect(statusCode).toBe(200)
@@ -313,6 +327,48 @@ describe('#auth', () => {
       )
     })
 
+    // These routes need no person's record, so each token is refused for its
+    // own claim and for no other reason.
+    test.each([
+      [
+        'a person from another tenant',
+        '/probe/sign-in',
+        () => mintToken(delegatedClaims({ tid: oidFor('other-tenant') }))
+      ],
+      [
+        'an application from another tenant',
+        '/probe/catalogue',
+        () => mintToken(appClaims({ tid: oidFor('other-tenant') }))
+      ],
+      [
+        'an oid that is not a GUID',
+        '/probe/sign-in',
+        () => mintToken(delegatedClaims({ oid: 'someone' }))
+      ],
+      [
+        'an oid in capitals',
+        '/probe/sign-in',
+        () =>
+          mintToken(
+            delegatedClaims({ oid: oidFor('new-person').toUpperCase() })
+          )
+      ]
+    ])('with %s, where no record is needed', async (_name, url, token) => {
+      expectInvalidToken(await get(url, bearer(token())))
+    })
+
+    test.each([
+      ['a person', '/probe/sign-in', () => delegatedClaims()],
+      ['an application', '/probe/catalogue', () => appClaims()]
+    ])(
+      'accepts %s of the right tenant on the same route',
+      async (_name, url, claims) => {
+        const { statusCode } = await get(url, bearer(mintToken(claims())))
+
+        expect(statusCode).toBe(200)
+      }
+    )
+
     test('on a route that declares no access, whatever the token', async () => {
       expectInvalidToken(
         await get('/probe/undeclared', bearer(mintToken(known())))
@@ -336,6 +392,15 @@ describe('#auth', () => {
         userId: null,
         isPlatformAdmin: false
       })
+    })
+
+    test('carries no token ID the token does not hold', async () => {
+      const { result } = await get(
+        '/probe/catalogue',
+        bearer(mintToken(appClaims({ uti: undefined })))
+      )
+
+      expect(result.uti).toBeNull()
     })
 
     test.each(['user', 'sign-in', 'team-member', 'undeclared'])(
