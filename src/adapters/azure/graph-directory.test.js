@@ -1,5 +1,4 @@
 import nock from 'nock'
-import { OnBehalfOfCredential } from '@azure/identity'
 
 import { describeDirectoryContract } from '#/adapters/directory-contract.js'
 import { createGraphDirectory } from '#/adapters/azure/graph-directory.js'
@@ -125,20 +124,194 @@ describe('#createGraphDirectory on-behalf-of exchange', () => {
 
   test('calls Graph with the exchanged token, never the Admin’s own', async () => {
     replyToken()
-    const graph = nock(GRAPH, {
+    let received
+    nock(GRAPH, {
       reqheaders: { authorization: 'Bearer graph-token' }
     })
       .get('/v1.0/users')
       .query(true)
-      .reply(200, { value: [] })
+      .reply(200, function reply() {
+        received = this.req.headers.authorization
 
-    await createDirectory().searchPeople({
+        return { value: [graphUser(ada)] }
+      })
+
+    // Graph answers only a request that carries the exchanged token, so the
+    // people come back only if that is what was sent.
+    const people = await createDirectory().searchPeople({
       userAssertion: USER_TOKEN,
       query: 'ada'
     })
 
-    expect(graph.isDone()).toBe(true)
+    expect(people).toEqual([ada])
+    expect(received).not.toContain(USER_TOKEN)
+    expect(received).not.toContain(CLIENT_ASSERTION)
   })
+})
+
+describe('#createGraphDirectory search pages', () => {
+  // One person per page keeps the pages easy to count.
+  const peopleOnPages = Array.from({ length: 8 }, (_, index) => ({
+    oid: `00000000-0000-4000-8000-00000000000${index}`,
+    displayName: `Person ${index}`,
+    mail: `person.${index}@defra.gov.uk`,
+    userPrincipalName: `person.${index}@defra.gov.uk`
+  }))
+
+  // Graph answers a search one page at a time, each page but the last with
+  // the link to the next (`@odata.nextLink`, carrying a `$skiptoken`).
+  function graphPages(pageCount) {
+    const seen = { pages: [], consistencyLevels: [] }
+
+    nock(GRAPH)
+      .persist()
+      .get('/v1.0/users')
+      .query(true)
+      .reply(200, function reply(uri) {
+        const page = Number(
+          new URL(uri, GRAPH).searchParams.get('$skiptoken') ?? 0
+        )
+
+        seen.pages.push(page)
+        seen.consistencyLevels.push(this.req.headers.consistencylevel)
+
+        return {
+          value: [graphUser(peopleOnPages[page])],
+          ...(page + 1 < pageCount && {
+            '@odata.nextLink': nextLinkTo(page + 1)
+          })
+        }
+      })
+
+    return seen
+  }
+
+  function nextLinkTo(page, base = GRAPH) {
+    return `${base}/v1.0/users?$search=%22displayName%3Aada%22&$select=${SELECT}&$top=50&$skiptoken=${page}`
+  }
+
+  const search = (directory) =>
+    directory.searchPeople({ userAssertion: USER_TOKEN, query: 'ada' })
+
+  async function expectUnavailable(promise) {
+    const error = await promise.then(
+      () => null,
+      (rejected) => rejected
+    )
+
+    expect(error?.isBoom).toBe(true)
+    expect(error.data.code).toBe('directory-unavailable')
+  }
+
+  test('follows @odata.nextLink to the pages after the first, with the same headers', async () => {
+    replyToken()
+    const seen = graphPages(3)
+
+    const people = await search(createDirectory())
+
+    expect(seen.pages).toEqual([0, 1, 2])
+    expect(seen.consistencyLevels).toEqual(['eventual', 'eventual', 'eventual'])
+    expect(people.map((person) => person.oid)).toEqual(
+      peopleOnPages.slice(0, 3).map((person) => person.oid)
+    )
+  })
+
+  test('stops at the page budget when Graph still has more pages, and answers with what it read', async () => {
+    replyToken()
+    const seen = graphPages(8)
+
+    const people = await search(createDirectory({ searchMaxPages: 3 }))
+
+    expect(seen.pages).toEqual([0, 1, 2])
+    expect(people).toHaveLength(3)
+  })
+
+  test('reads at most 5 pages by default', async () => {
+    replyToken()
+    const seen = graphPages(8)
+
+    const people = await search(createDirectory())
+
+    expect(seen.pages).toEqual([0, 1, 2, 3, 4])
+    expect(people).toHaveLength(5)
+  })
+
+  test('gives directory-unavailable when the whole search outlasts its timeout, however fast each page is allowed to be', async () => {
+    replyToken()
+    nock(GRAPH)
+      .get('/v1.0/users')
+      .query(true)
+      .reply(200, {
+        value: [graphUser(peopleOnPages[0])],
+        '@odata.nextLink': nextLinkTo(1)
+      })
+    nock(GRAPH)
+      .get('/v1.0/users')
+      .query((query) => query.$skiptoken === '1')
+      .delay(1000)
+      .reply(200, { value: [graphUser(peopleOnPages[1])] })
+    const started = Date.now()
+
+    await expectUnavailable(
+      search(createDirectory({ timeoutMs: 5000, searchTimeoutMs: 150 }))
+    )
+
+    expect(Date.now() - started).toBeLessThan(800)
+  })
+
+  test('gives directory-unavailable, not a part of the people, when a later page fails', async () => {
+    replyToken()
+    nock(GRAPH)
+      .get('/v1.0/users')
+      .query(true)
+      .reply(200, {
+        value: [graphUser(peopleOnPages[0])],
+        '@odata.nextLink': nextLinkTo(1)
+      })
+    nock(GRAPH)
+      .get('/v1.0/users')
+      .query((query) => query.$skiptoken === '1')
+      .reply(503, {})
+
+    await expectUnavailable(search(createDirectory()))
+  })
+
+  test.each([
+    ['another host', nextLinkTo(1, 'https://evil.example.com')],
+    ['another scheme', nextLinkTo(1, 'http://graph.microsoft.com')],
+    ['another path on Graph', `${GRAPH}/v1.0/me/messages?$skiptoken=1`],
+    ['text that is not a URL', 'not a url']
+  ])(
+    'never sends the Admin’s token to a nextLink on %s',
+    async (_, nextLink) => {
+      replyToken()
+      nock(GRAPH)
+        .get('/v1.0/users')
+        .query(true)
+        .reply(200, {
+          value: [graphUser(peopleOnPages[0])],
+          '@odata.nextLink': nextLink
+        })
+      const elsewhere = nock('https://evil.example.com')
+        .persist()
+        .get(/.*/)
+        .reply(200, { value: [] })
+      const insecure = nock('http://graph.microsoft.com')
+        .persist()
+        .get(/.*/)
+        .reply(200, { value: [] })
+      const messages = nock(GRAPH)
+        .get('/v1.0/me/messages')
+        .query(true)
+        .reply(200)
+
+      await expectUnavailable(search(createDirectory()))
+
+      expect(elsewhere.isDone()).toBe(false)
+      expect(insecure.isDone()).toBe(false)
+      expect(messages.isDone()).toBe(false)
+    }
+  )
 })
 
 describe('#createGraphDirectory search request', () => {
@@ -324,24 +497,27 @@ describe('#createGraphDirectory failures', () => {
     expect(JSON.stringify(logger.warn.mock.calls)).not.toContain('secret-trace')
   })
 
-  test('the token exchange is given an abort signal that fires at the timeout (F10)', async () => {
-    nockTokenEndpoint()
-      .delay(300)
-      .reply(200, { access_token: 'graph-token', expires_in: 3600 })
-    const getToken = vi.spyOn(OnBehalfOfCredential.prototype, 'getToken')
+  test('a slow token exchange is told to stop at the timeout, not left running (F10)', async () => {
+    let abortSignal
+    // The credential is the adapter's port to the token exchange: this one
+    // never answers, and records the signal the adapter gave it.
+    const createCredential = () => ({
+      getToken: (_scope, options) => {
+        abortSignal = options.abortSignal
+
+        return new Promise(() => {})
+      }
+    })
 
     await expectUnavailable(
-      createDirectory({ timeoutMs: 50 }).searchPeople({
+      createDirectory({ timeoutMs: 50, createCredential }).searchPeople({
         userAssertion: USER_TOKEN,
         query: 'ada'
       })
     )
 
-    const options = getToken.mock.calls[0][1]
-
-    expect(options.abortSignal).toBeInstanceOf(AbortSignal)
-    await vi.waitFor(() => expect(options.abortSignal.aborted).toBe(true))
-    getToken.mockRestore()
+    expect(abortSignal).toBeInstanceOf(AbortSignal)
+    await vi.waitFor(() => expect(abortSignal.aborted).toBe(true))
   })
 
   test('a slow token exchange gives directory-unavailable at the timeout', async () => {

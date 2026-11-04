@@ -98,6 +98,7 @@ function directoryUnavailable(logger, operation, cause) {
  * @param {number} params.timeoutMs
  * @param {number} params.maxCachedTokens
  * @param {() => number} params.now
+ * @param {(options: object) => {getToken: (scope: string, options: {abortSignal: AbortSignal}) => Promise<{token: string, expiresOnTimestamp: number}>}} params.createCredential
  * @returns {(userAssertion: string) => Promise<string>}
  */
 function createTokenSource({
@@ -107,7 +108,8 @@ function createTokenSource({
   scope,
   timeoutMs,
   maxCachedTokens,
-  now
+  now,
+  createCredential
 }) {
   const tokens = new Map()
 
@@ -119,7 +121,7 @@ function createTokenSource({
       return cached.token
     }
 
-    const credential = new OnBehalfOfCredential({
+    const credential = createCredential({
       tenantId,
       clientId,
       getAssertion: getClientAssertion,
@@ -148,39 +150,104 @@ function createTokenSource({
 
 /**
  * What the `Directory` methods need of a Graph client: send a request as the
- * person, read its JSON, and make the `503` for a failure.
+ * person (stopping at `signal` as well as at the per-call timeout), read its
+ * JSON, and make the `503` for a failure.
  * @typedef {object} GraphClient
- * @property {(operation: string, userAssertion: string|undefined, path: string) => Promise<Response>} send
+ * @property {(operation: string, userAssertion: string|undefined, path: string, signal?: AbortSignal) => Promise<Response>} send
  * @property {(operation: string, response: Response) => Promise<any>} readJson
  * @property {(operation: string, cause: unknown) => Error} unavailable
  */
 
 /**
+ * The path (relative to `/v1.0`) of the next page of a search, or null when
+ * Graph names none. The link is only followed when it is the users endpoint
+ * on Graph's own origin: the request carries the Admin's token, so a link to
+ * anywhere else is refused, not followed.
+ * @param {unknown} nextLink - `@odata.nextLink` from the page
+ * @param {URL} usersUrl - the users endpoint, `{baseUrl}/v1.0/users`
+ * @returns {string|null}
+ */
+function nextPagePath(nextLink, usersUrl) {
+  if (nextLink === undefined || nextLink === null) {
+    return null
+  }
+
+  const link = typeof nextLink === 'string' ? URL.parse(nextLink) : null
+
+  if (
+    !link ||
+    link.origin !== usersUrl.origin ||
+    link.pathname !== usersUrl.pathname
+  ) {
+    throw new TypeError('UnexpectedNextLink')
+  }
+
+  return `/users${link.search}`
+}
+
+/**
+ * Reads the pages of a search, following `@odata.nextLink`, until Graph has
+ * no more or `maxPages` have been read.
  * @param {GraphClient} graph
  * @param {{userAssertion?: string, query: string}} params
+ * @param {{usersUrl: URL, maxPages: number, signal: AbortSignal}} limits
  */
-async function searchPeople(
+async function readPages(
   { send, readJson, unavailable },
-  { userAssertion, query }
+  { userAssertion, query },
+  { usersUrl, maxPages, signal }
 ) {
   const phrase = `${quoted('displayName', query)} OR ${quoted('mail', query)}`
-  const response = await send(
-    SEARCH,
-    userAssertion,
-    `/users?$search=${encodeURIComponent(phrase)}&$select=${SELECT}&$top=${SEARCH_TOP}`
-  )
+  let path = `/users?$search=${encodeURIComponent(phrase)}&$select=${SELECT}&$top=${SEARCH_TOP}`
+  const people = []
 
-  if (!response.ok) {
-    throw unavailable(SEARCH, response)
+  for (let page = 0; path && page < maxPages; page++) {
+    const response = await send(SEARCH, userAssertion, path, signal)
+
+    if (!response.ok) {
+      throw unavailable(SEARCH, response)
+    }
+
+    const body = await readJson(SEARCH, response)
+
+    if (!Array.isArray(body?.value)) {
+      throw unavailable(SEARCH, { name: 'UnexpectedResponse' })
+    }
+
+    people.push(...body.value.map(toPerson))
+
+    try {
+      path = nextPagePath(body['@odata.nextLink'], usersUrl)
+    } catch {
+      throw unavailable(SEARCH, { name: 'UnexpectedNextLink' })
+    }
   }
 
-  const body = await readJson(SEARCH, response)
+  return people
+}
 
-  if (!Array.isArray(body?.value)) {
-    throw unavailable(SEARCH, { name: 'UnexpectedResponse' })
+/**
+ * Every person the search finds within the page and time budget. The eligible
+ * and not-yet-members are chosen from these by the caller, so the budget is
+ * what lets an addable person behind a first page of members or guests be
+ * found; a search that needs more is answered with what was read.
+ * @param {GraphClient} graph
+ * @param {{userAssertion?: string, query: string}} params
+ * @param {{usersUrl: URL, maxPages: number, timeoutMs: number}} limits
+ */
+async function searchPeople(graph, params, { usersUrl, maxPages, timeoutMs }) {
+  try {
+    return await withTimeout(
+      readPages(graph, params, {
+        usersUrl,
+        maxPages,
+        signal: AbortSignal.timeout(timeoutMs)
+      }),
+      timeoutMs
+    )
+  } catch (error) {
+    throw error?.isBoom ? error : graph.unavailable(SEARCH, error)
   }
-
-  return body.value.map(toPerson)
 }
 
 /**
@@ -222,9 +289,12 @@ async function getPerson(
  * @param {string} params.clientId
  * @param {() => Promise<string>} params.getClientAssertion - the portal's federated client assertion
  * @param {string} [params.baseUrl]
- * @param {number} [params.timeoutMs]
+ * @param {number} [params.timeoutMs] - for each Graph or token call
+ * @param {number} [params.searchMaxPages] - the most pages one search reads
+ * @param {number} [params.searchTimeoutMs] - for the whole search, across its pages
  * @param {number} [params.maxCachedTokens]
  * @param {() => number} [params.now]
+ * @param {(options: object) => {getToken: Function}} [params.createCredential] - the on-behalf-of credential, replaceable in tests
  * @param {{warn: (fields: object, message: string) => void}} [params.logger]
  * @returns {import('#/adapters/directory.js').Directory}
  */
@@ -234,8 +304,11 @@ export function createGraphDirectory({
   getClientAssertion,
   baseUrl = config.get('directory.graphBaseUrl'),
   timeoutMs = config.get('directory.timeoutMs'),
+  searchMaxPages = config.get('directory.searchMaxPages'),
+  searchTimeoutMs = config.get('directory.searchTimeoutMs'),
   maxCachedTokens = DEFAULT_MAX_CACHED_TOKENS,
   now = Date.now,
+  createCredential = (options) => new OnBehalfOfCredential(options),
   logger = createLogger()
 }) {
   const tokenFor = createTokenSource({
@@ -245,14 +318,15 @@ export function createGraphDirectory({
     scope: `${baseUrl}/.default`,
     timeoutMs,
     maxCachedTokens,
-    now
+    now,
+    createCredential
   })
 
   function unavailable(operation, cause) {
     return directoryUnavailable(logger, operation, cause)
   }
 
-  async function send(operation, userAssertion, path) {
+  async function send(operation, userAssertion, path, signal) {
     if (!userAssertion) {
       throw unavailable(operation, { name: 'MissingUserAssertion' })
     }
@@ -268,7 +342,11 @@ export function createGraphDirectory({
           consistencylevel: 'eventual',
           accept: 'application/json'
         },
-        signal: AbortSignal.timeout(timeoutMs)
+        signal: AbortSignal.any(
+          signal
+            ? [AbortSignal.timeout(timeoutMs), signal]
+            : [AbortSignal.timeout(timeoutMs)]
+        )
       })
     } catch (error) {
       throw unavailable(operation, error)
@@ -286,9 +364,14 @@ export function createGraphDirectory({
   }
 
   const graph = { send, readJson, unavailable }
+  const searchLimits = {
+    usersUrl: new URL(`${baseUrl}/v1.0/users`),
+    maxPages: searchMaxPages,
+    timeoutMs: searchTimeoutMs
+  }
 
   return {
-    searchPeople: (params) => searchPeople(graph, params),
+    searchPeople: (params) => searchPeople(graph, params, searchLimits),
     getPerson: (params) => getPerson(graph, params)
   }
 }

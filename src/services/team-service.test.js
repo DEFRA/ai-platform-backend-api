@@ -1,6 +1,13 @@
 import { randomUUID } from 'node:crypto'
 
+import nock from 'nock'
+
+import { createGraphDirectory } from '#/adapters/azure/graph-directory.js'
 import { dbFailingOn } from '#/common/test-helpers/failing-db.js'
+
+// The repo's global test setup swaps global.fetch for a mock when each file
+// starts; nock intercepts the real one.
+const realFetch = globalThis.fetch
 
 const TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 
@@ -58,7 +65,10 @@ describe('team-people-service: adding people from the directory', () => {
     })
     const adminId = user._id.toString()
     const { team } = await service.createTeam(db, {
-      name: `Service ${label} ${randomUUID().slice(0, 6)}`,
+      // The unique part comes after the label alone, so a slug cut to its
+      // length limit still holds it: the test database outlives a run, and a
+      // label shared across runs would use up the numbered suffixes.
+      name: `${label} ${randomUUID().slice(0, 6)}`,
       serviceCode: 'ABC',
       createdBy: adminId,
       idempotencyKey: randomUUID()
@@ -389,5 +399,75 @@ describe('team-people-service: adding people from the directory', () => {
     expect(items[0].displayName).toBe('Zed 01')
     expect(items.map((item) => item.oid)).not.toContain(member.oid)
     expect(items.map((item) => item.oid)).not.toContain(stranger.oid)
+  })
+
+  test('searchTeamPeople finds an addable person on the second Graph page, behind a first page of a member, a guest and an outsider', async () => {
+    const team = await teamWithAdmin('svc-search-pages')
+    const member = ada({ displayName: 'Page One Member' })
+    await add(team, member, directoryOf(member))
+    const guest = ada({
+      displayName: 'Page One Guest',
+      userPrincipalName: 'guest_example.com#EXT#@defra.onmicrosoft.com'
+    })
+    const outsider = ada({
+      displayName: 'Page One Outsider',
+      mail: 'outsider@example.com',
+      userPrincipalName: 'outsider@example.com'
+    })
+    const addable = ada({ displayName: 'Page Two Addable' })
+    const asGraph = (person) => ({
+      id: person.oid,
+      displayName: person.displayName,
+      mail: person.mail,
+      userPrincipalName: person.userPrincipalName
+    })
+    const graph = 'https://graph.microsoft.com'
+
+    nock('https://login.microsoftonline.com')
+      .persist()
+      .post(`/${TENANT_ID}/oauth2/v2.0/token`)
+      .query(true)
+      .reply(200, { access_token: 'graph-token', expires_in: 3600 })
+    nock(graph)
+      .get('/v1.0/users')
+      .query((query) => !query.$skiptoken)
+      .reply(200, {
+        value: [member, guest, outsider].map(asGraph),
+        '@odata.nextLink': `${graph}/v1.0/users?$search=%22x%22&$skiptoken=2`
+      })
+    nock(graph)
+      .get('/v1.0/users')
+      .query((query) => query.$skiptoken === '2')
+      .reply(200, { value: [asGraph(addable)] })
+
+    const mockedFetch = globalThis.fetch
+
+    globalThis.fetch = realFetch
+
+    try {
+      const { items } = await peopleService.searchTeamPeople(
+        db,
+        {
+          teamId: team.teamId,
+          actorUserId: team.adminId,
+          search: 'page',
+          userAssertion: 'user-token'
+        },
+        {
+          directory: createGraphDirectory({
+            tenantId: TENANT_ID,
+            clientId: '11111111-1111-4111-8111-111111111111',
+            getClientAssertion: async () => 'client-assertion',
+            logger: { warn: vi.fn() }
+          }),
+          allowedDomains: ['defra.gov.uk', 'defra.onmicrosoft.com']
+        }
+      )
+
+      expect(items.map((item) => item.oid)).toEqual([addable.oid])
+    } finally {
+      globalThis.fetch = mockedFetch
+      nock.cleanAll()
+    }
   })
 })

@@ -167,6 +167,18 @@ git config --global core.autocrlf false
 > validation is logged by rule type only, never a path, key or value.
 
 > [!IMPORTANT]
+> Sign-in and adding use one rule: `POST /v1/users` accepts an email only on `ALLOWED_EMAIL_DOMAINS` (comma
+> separated, default `defra.gov.uk,defra.onmicrosoft.com`, the same two as `DIRECTORY_ALLOWED_DOMAINS`), an exact
+> match without regard to case, so a subdomain or look-alike and a `#EXT#` guest are refused with
+> `403 domain-not-allowed`; a person an Admin added by their `defra.onmicrosoft.com` user principal name can
+> therefore sign in, and their first sign-in finds the record the add made. A directory search reads up to
+> `DIRECTORY_SEARCH_MAX_PAGES` pages of 50 (default 5, following Graph's `@odata.nextLink`, which is only
+> followed when it is the Graph users endpoint) within `DIRECTORY_SEARCH_TIMEOUT_MS` (default 10000, for the whole
+> search; each call is also bound by `DIRECTORY_TIMEOUT_MS`), then leaves out members and ineligible people, so
+> an addable person behind a first page of them is found; a search needing more pages answers with what it read,
+> and the Admin narrows the search.
+
+> [!IMPORTANT]
 > A team carries an immutable `slug`, derived from its name on `POST /v1/teams` and made unique with a
 > numbered suffix when two names derive the same one. It names the team's GitOps file
 > (`environments/{env}/{slug}.json`), its gateway API path (`/{slug}`) and its model deployments
