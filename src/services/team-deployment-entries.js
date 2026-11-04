@@ -65,10 +65,11 @@ export function withStatusTime(statusTimes, status, at) {
 
 /**
  * Records an audit event against one deployment entry, as the backend
- * itself unless an actor is given.
+ * itself unless an actor is given. A request's change passes the `actor`
+ * (the token's credentials) and the `role` it used.
  * @param {import('mongodb').Db} db
  * @param {{id: string}} entry
- * @param {{action: string, outcome?: string, actorUserId?: string, code?: string, reason?: string, eventId?: string}} event
+ * @param {{action: string, outcome?: string, actor?: object, role?: string, actorUserId?: string, code?: string, reason?: string, eventId?: string}} event
  */
 export async function auditDeployment(
   db,
@@ -76,13 +77,17 @@ export async function auditDeployment(
   {
     action,
     outcome = 'success',
-    actorUserId = SYSTEM_ACTOR,
+    actor,
+    role,
+    actorUserId = actor?.userId ?? SYSTEM_ACTOR,
     code,
     reason,
     eventId
   }
 ) {
   await recordAuditEvent(db, {
+    actor,
+    role,
     actorUserId,
     action,
     resource: 'teamDeployment',

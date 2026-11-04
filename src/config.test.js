@@ -323,3 +323,79 @@ describe('#config tenant orchestrator and GitOps', () => {
     expect(config.get('gitops')).not.toHaveProperty(key)
   })
 })
+
+describe('#config portalAuth', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  const tenant = '6f504113-6b64-43f2-ade9-242e05780007'
+  const api = '11111111-1111-4111-8111-111111111111'
+  const frontend = '22222222-2222-4222-8222-222222222222'
+  const portalEnv = {
+    PORTAL_AUTH_TENANT_ID: tenant,
+    PORTAL_AUTH_AUDIENCE: api,
+    PORTAL_AUTH_CLIENT_ID: frontend
+  }
+
+  test('reads the tenant, the API audience and the frontend client ID', async () => {
+    const { config } = await loadConfig(portalEnv)
+
+    expect(config.get('portalAuth')).toEqual({
+      tenantId: tenant,
+      audience: api,
+      clientId: frontend,
+      mockIssuerUrl: null
+    })
+  })
+
+  test.each([
+    ['PORTAL_AUTH_TENANT_ID'],
+    ['PORTAL_AUTH_AUDIENCE'],
+    ['PORTAL_AUTH_CLIENT_ID']
+  ])('refuses to start without %s', async (name) => {
+    await expect(
+      loadConfig({ ...portalEnv, [name]: undefined })
+    ).rejects.toThrow(name)
+  })
+
+  test.each([
+    ['PORTAL_AUTH_TENANT_ID', 'portalAuth.tenantId'],
+    ['PORTAL_AUTH_AUDIENCE', 'portalAuth.audience'],
+    ['PORTAL_AUTH_CLIENT_ID', 'portalAuth.clientId']
+  ])('refuses %s that is not a GUID', async (name, key) => {
+    await expect(
+      loadConfig({ ...portalEnv, [name]: 'not-a-guid' })
+    ).rejects.toThrow(`${key}: must be a GUID`)
+  })
+
+  test('accepts a mock issuer outside production', async () => {
+    const { config } = await loadConfig({
+      ...portalEnv,
+      PORTAL_AUTH_MOCK_ISSUER_URL: 'http://localhost:3010'
+    })
+
+    expect(config.get('portalAuth.mockIssuerUrl')).toBe('http://localhost:3010')
+  })
+
+  test('refuses a mock issuer in production', async () => {
+    await expect(
+      loadConfig({
+        ...portalEnv,
+        NODE_ENV: 'production',
+        PORTAL_AUTH_MOCK_ISSUER_URL: 'http://localhost:3010'
+      })
+    ).rejects.toThrow(
+      'PORTAL_AUTH_MOCK_ISSUER_URL must not be set in production'
+    )
+  })
+
+  test('has no ALLOWED_EMAIL_DOMAINS setting any more', async () => {
+    const { config } = await loadConfig({
+      ...portalEnv,
+      ALLOWED_EMAIL_DOMAINS: 'example.com'
+    })
+
+    expect(() => config.get('allowedEmailDomains')).toThrow()
+  })
+})

@@ -31,7 +31,7 @@ services:
       - ./compose/mongo:/docker-entrypoint-initdb.d:ro
       - mongodb-data:/data
     healthcheck:
-      test: ["CMD", "mongosh", "--eval", "db.hello().ok"]
+      test: ['CMD', 'mongosh', '--eval', 'db.hello().ok']
       interval: 10s
       timeout: 5s
       retries: 3
@@ -59,6 +59,13 @@ services:
       PORT: 3001
       NODE_ENV: development
       MONGO_URI: mongodb://mongodb:27017/
+      # Entra token validation (README, Authentication): read from the host
+      # shell. A mock issuer, the frontend's mock OpenID provider, replaces the
+      # tenant's keys for local development only.
+      PORTAL_AUTH_TENANT_ID: ${PORTAL_AUTH_TENANT_ID:?set PORTAL_AUTH_TENANT_ID}
+      PORTAL_AUTH_AUDIENCE: ${PORTAL_AUTH_AUDIENCE:?set PORTAL_AUTH_AUDIENCE}
+      PORTAL_AUTH_CLIENT_ID: ${PORTAL_AUTH_CLIENT_ID:?set PORTAL_AUTH_CLIENT_ID}
+      PORTAL_AUTH_MOCK_ISSUER_URL: ${PORTAL_AUTH_MOCK_ISSUER_URL:-}
       # mock (the default) stages the GitOps events itself. TENANT_ORCHESTRATOR=sqs
       # runs against the topic and queues floci creates
       # (compose/floci/start.d/20-gitops-queues.sh): the messaging settings

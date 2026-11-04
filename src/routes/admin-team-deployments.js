@@ -1,11 +1,8 @@
 import Joi from 'joi'
 
 import { statusCodes } from '#/common/constants/status-codes.js'
+import { ACCESS } from '#/common/helpers/auth/access.js'
 import { redispatchApply } from '#/services/team-deployment-service.js'
-
-const userIdHeader = Joi.object({
-  'x-user-id': Joi.string().required()
-}).unknown(true)
 
 const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
 
@@ -18,14 +15,15 @@ function redispatchRoute(kind) {
     method: 'POST',
     path: `/v1/admin/team-deployments/{id}/${kind}`,
     options: {
-      validate: { headers: userIdHeader, params: idParam }
+      app: { access: ACCESS.platformAdmin },
+      validate: { params: idParam }
     },
     handler: async (request, h) => {
       const deployment = await redispatchApply(
         request.db,
         {
           id: request.params.id,
-          actorUserId: request.headers['x-user-id'],
+          actor: request.auth.credentials,
           kind
         },
         { operations: request.operations }

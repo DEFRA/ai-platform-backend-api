@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { actorFor } from '#/common/test-helpers/portal-token.js'
+
 // credential-service.js and credential-issuer-registry.js both import
 // #/config.js, which snapshots MONGO_URI via convict on first import -
 // these must stay dynamic imports loaded from inside beforeAll (after the
@@ -21,15 +23,27 @@ let restoreResearchDeployments
 async function loadCredentialService() {
   ;({ deployInResearch, restoreResearchDeployments } =
     await import('#/common/test-helpers/research-deployments.js'))
-  ;({
-    issueCredential,
-    rotateCredential,
-    renewCredential,
-    revokeCredential,
-    revealCredential,
-    ensureTeamCredential,
-    teamCredentialNeedsRetry
-  } = await import('#/services/credential-service.js'))
+  const service = await import('#/services/credential-service.js')
+
+  ;({ ensureTeamCredential, teamCredentialNeedsRetry } = service)
+
+  // The service takes the actor from the token's credentials; these tests
+  // name a user, so each call is made as that user.
+  const asUser = ({ userId, actorUserId, ...params }) => ({
+    ...params,
+    actor: actorFor(userId ?? actorUserId)
+  })
+
+  issueCredential = (db, locker, params, ...deps) =>
+    service.issueCredential(db, locker, asUser(params), ...deps)
+  rotateCredential = (db, locker, params, ...deps) =>
+    service.rotateCredential(db, locker, asUser(params), ...deps)
+  renewCredential = (db, locker, params, ...deps) =>
+    service.renewCredential(db, locker, asUser(params), ...deps)
+  revokeCredential = (db, locker, params, ...deps) =>
+    service.revokeCredential(db, locker, asUser(params), ...deps)
+  revealCredential = (db, params, ...deps) =>
+    service.revealCredential(db, asUser(params), ...deps)
   ;({ credentialIssuerRegistry, createCredentialIssuerRegistry } =
     await import('#/adapters/credential-issuer-registry.js'))
   ;({ createCredentialVaultRegistry } =

@@ -1,5 +1,16 @@
+import {
+  appAuth,
+  authFor,
+  delegatedClaims,
+  mintToken,
+  oidFor,
+  withDefaultHeaders,
+  withTestUsers
+} from '#/common/test-helpers/portal-token.js'
+
 describe('#models routes', () => {
   let server
+  let anonymousInject
   let invalidateModelsCache
   let deployInResearch
   let failResearchRead
@@ -14,6 +25,9 @@ describe('#models routes', () => {
       await import('#/common/test-helpers/research-deployments.js'))
     server = await createServer()
     await server.initialize()
+    anonymousInject = server.inject.bind(server)
+    withDefaultHeaders(server, appAuth())
+    withTestUsers(server)
   })
 
   afterEach(() => {
@@ -306,5 +320,51 @@ describe('#models routes', () => {
     })
 
     expect(statusCode).toBe(404)
+  })
+
+  describe('who may read the catalogue', () => {
+    const urls = ['/v1/models', '/v1/models/gpt-4o']
+
+    test.each(urls)('GET %s takes the frontend app-only token', async (url) => {
+      const { statusCode } = await server.inject({ method: 'GET', url })
+
+      expect(statusCode).toBe(200)
+    })
+
+    test.each(urls)("GET %s takes a signed-in person's token", async (url) => {
+      const { statusCode } = await server.inject({
+        method: 'GET',
+        url,
+        headers: authFor('catalogue-reader')
+      })
+
+      expect(statusCode).toBe(200)
+    })
+
+    test.each(urls)('GET %s refuses a request with no token', async (url) => {
+      const { statusCode, result, headers } = await anonymousInject({
+        method: 'GET',
+        url
+      })
+
+      expect(statusCode).toBe(401)
+      expect(result.code).toBe('invalid-token')
+      expect(headers['www-authenticate']).toContain('Bearer')
+    })
+
+    test.each(urls)(
+      'GET %s refuses a person who has never signed in',
+      async (url) => {
+        const { statusCode } = await server.inject({
+          method: 'GET',
+          url,
+          headers: {
+            authorization: `Bearer ${mintToken(delegatedClaims({ oid: oidFor('never-signed-in') }))}`
+          }
+        })
+
+        expect(statusCode).toBe(401)
+      }
+    )
   })
 })

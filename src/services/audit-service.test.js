@@ -1,0 +1,113 @@
+import { recordAuditEvent } from '#/services/audit-service.js'
+
+describe('#recordAuditEvent', () => {
+  let server
+  let db
+
+  beforeAll(async () => {
+    const { createServer } = await import('#/server.js')
+
+    server = await createServer()
+    await server.initialize()
+    db = server.db
+  })
+
+  afterAll(async () => {
+    await server.stop({ timeout: 0 })
+  })
+
+  const actor = {
+    kind: 'user',
+    userId: 'user-record-1',
+    oid: 'oid-1',
+    tid: 'tid-1',
+    azp: 'azp-1',
+    uti: 'uti-1',
+    email: 'someone@defra.gov.uk',
+    name: 'Someone',
+    // A token, were one ever carried on the credentials, must not be copied
+    token: 'eyJ.secret.token',
+    authorization: 'Bearer eyJ.secret.token'
+  }
+
+  async function lastEvent(resourceId) {
+    return db.collection('auditEvents').findOne({ resourceId })
+  }
+
+  test('records who acted, from the token, with the role used', async () => {
+    await recordAuditEvent(db, {
+      actor,
+      role: 'admin',
+      action: 'team.addMember',
+      resource: 'team',
+      resourceId: 'audit-actor',
+      outcome: 'success'
+    })
+
+    expect(await lastEvent('audit-actor')).toMatchObject({
+      actorUserId: 'user-record-1',
+      oid: 'oid-1',
+      tid: 'tid-1',
+      azp: 'azp-1',
+      uti: 'uti-1',
+      role: 'admin',
+      action: 'team.addMember',
+      outcome: 'success'
+    })
+  })
+
+  test('never records a token, or anything else the credentials carry', async () => {
+    await recordAuditEvent(db, {
+      actor,
+      action: 'team.create',
+      resource: 'team',
+      resourceId: 'audit-no-token',
+      outcome: 'success'
+    })
+
+    const event = await lastEvent('audit-no-token')
+
+    expect(JSON.stringify(event)).not.toContain('eyJ')
+    expect(JSON.stringify(event)).not.toContain('Bearer')
+    expect(event).not.toHaveProperty('token')
+    expect(event).not.toHaveProperty('authorization')
+    expect(event).not.toHaveProperty('email')
+  })
+
+  test('records background work by the user it acts for, with no token fields', async () => {
+    await recordAuditEvent(db, {
+      actorUserId: 'user-record-2',
+      action: 'credential.expire',
+      resource: 'credential',
+      resourceId: 'audit-background',
+      outcome: 'success'
+    })
+
+    expect(await lastEvent('audit-background')).toMatchObject({
+      actorUserId: 'user-record-2',
+      oid: null,
+      tid: null,
+      azp: null,
+      uti: null,
+      role: null
+    })
+  })
+
+  test('an explicit actorUserId wins over the actor', async () => {
+    await recordAuditEvent(db, {
+      actor,
+      actorUserId: 'someone-else',
+      action: 'credential.issue',
+      resource: 'credential',
+      resourceId: 'audit-explicit',
+      outcome: 'failure',
+      code: 'upstream-unavailable'
+    })
+
+    expect(await lastEvent('audit-explicit')).toMatchObject({
+      actorUserId: 'someone-else',
+      oid: 'oid-1',
+      code: 'upstream-unavailable'
+    })
+  })
+})

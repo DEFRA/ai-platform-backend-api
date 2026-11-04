@@ -13,7 +13,13 @@ import {
   acquireLockWithRetry
 } from '#/common/helpers/mongo-lock.js'
 import { grantedModelSlugs } from '#/services/team-deployment-gateway.js'
-import { getMemberRole } from '#/services/team-service.js'
+import {
+  TEAM_ADMIN,
+  getActiveTeamIds,
+  getTeamRole,
+  refuse,
+  requireTeamRole
+} from '#/common/helpers/auth/access.js'
 
 // The team tier is OAuth only - a client secret or a federated credential,
 // local development included. Research credentials are subscription keys.
@@ -21,14 +27,15 @@ import { getMemberRole } from '#/services/team-service.js'
 // there turns active (`ensureTeamCredential`), never by a request.
 const TEAM_CREDENTIAL_TYPE = 'oauth'
 
+// The right a person uses on their own research credential.
+const ROLE_OWNER = 'owner'
+
 // Research credentials issued before `environment` was persisted were all
 // minted against the hand-built sandbox resources.
 const LEGACY_RESEARCH_ENVIRONMENT = 'sandbox'
 
 /**
- * Best-effort lookup of a user's team, tolerant of the day-1 interim trust
- * model where `x-user-id` is an unverified, caller-asserted value that may
- * not match a real `users._id`.
+ * The team of the person's record, if any.
  * @param {import('mongodb').Db} db
  * @param {string} userId
  */
@@ -188,7 +195,7 @@ export async function writeSecretToVault(db, vault, credential, secret) {
  * when the deployed models cannot be read.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{userId: string, modelSlug: string, purpose?: string, idempotencyKey: string, environment?: string}} params
+ * @param {{actor: {userId: string}, modelSlug: string, purpose?: string, idempotencyKey: string, environment?: string}} params - `actor` is the token's credentials
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
@@ -199,7 +206,8 @@ export async function issueCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const { userId, modelSlug } = params
+  const { modelSlug } = params
+  const { userId } = params.actor
   const environment = resolveIssueEnvironment(params.environment)
 
   // Guards the check-for-reusable-pending/failed-doc-then-write below
@@ -274,7 +282,7 @@ function resolveIssuer(registry, model, tier) {
 async function issueAndActivate(
   db,
   vault,
-  { issuer, pending, reusable, insertId, issueParams, expiresAt }
+  { issuer, pending, reusable, insertId, issueParams, expiresAt, actor }
 ) {
   let insertedId
   if (reusable) {
@@ -302,7 +310,9 @@ async function issueAndActivate(
         { $set: { status: 'failed', failureReason: 'issuer-error' } }
       )
     await recordAuditEvent(db, {
+      actor,
       actorUserId: pending.userId,
+      role: actor && ROLE_OWNER,
       action: 'credential.issue',
       resource: 'credential',
       resourceId: insertedId.toString(),
@@ -347,7 +357,9 @@ async function issueAndActivate(
     : unsettled
 
   await recordAuditEvent(db, {
+    actor,
     actorUserId: pending.userId,
+    role: actor && ROLE_OWNER,
     action: 'credential.issue',
     resource: 'credential',
     resourceId: insertedId.toString(),
@@ -380,10 +392,11 @@ async function assertResearchModelUsable(model) {
 async function issueCredentialForParams(
   db,
   locker,
-  { userId, modelSlug, purpose, idempotencyKey, environment },
+  { actor, modelSlug, purpose, idempotencyKey, environment },
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
+  const { userId } = actor
   const existing = await db
     .collection('credentials')
     .findOne({ userId, idempotencyKey })
@@ -476,6 +489,7 @@ async function issueCredentialForParams(
         pending,
         reusable,
         insertId: rowId,
+        actor,
         issueParams: {
           userId,
           modelSlug,
@@ -867,15 +881,11 @@ async function presentCredential(db, credential) {
  * Lists a user's own credentials plus any shared team credentials for teams
  * they're an active member of (never includes secrets), applying lazy expiry.
  * @param {import('mongodb').Db} db
- * @param {{userId: string}} params
+ * @param {{actor: {userId: string}}} params
  */
-export async function listCredentials(db, { userId }) {
-  const memberships = await db
-    .collection('teamMembers')
-    .find({ userId, status: 'active' })
-    .toArray()
-
-  const teamIds = memberships.map((membership) => membership.teamId)
+export async function listCredentials(db, { actor }) {
+  const { userId } = actor
+  const teamIds = await getActiveTeamIds(db, actor)
 
   // The membership side is restricted to tier:'team' because research
   // credentials also persist a teamId - without it a teammate's personal
@@ -890,116 +900,108 @@ export async function listCredentials(db, { userId }) {
   return Promise.all(items.map((item) => presentCredential(db, item)))
 }
 
-/**
- * Finds one of a user's own credentials by id, applying lazy expiry.
- * Returns null for another user's credential id, matching the spec's 404 behaviour.
- * @param {import('mongodb').Db} db
- * @param {{id: string, userId: string}} params
- */
-export async function findCredentialForUser(db, { id, userId }) {
-  if (!ObjectId.isValid(id)) {
-    return null
-  }
+async function findCredentialById(db, id) {
+  return ObjectId.isValid(id)
+    ? db.collection('credentials').findOne({ _id: new ObjectId(id) })
+    : null
+}
 
-  const credential = await db
-    .collection('credentials')
-    .findOne({ _id: new ObjectId(id), userId })
+// A credential that exists but is not the actor's to see: refused as not
+// found, so its existence is not disclosed, and audited.
+function refuseCredential(db, actor, id, code) {
+  return refuse(db, actor, {
+    resource: 'credential',
+    resourceId: id,
+    code,
+    error: Boom.notFound()
+  })
+}
+
+/**
+ * Finds one of the actor's own credentials by id, applying lazy expiry.
+ * Returns null for an id that matches nothing; another person's credential is
+ * a refused 404, audited.
+ * @param {import('mongodb').Db} db
+ * @param {{id: string, actor: {userId: string}}} params
+ */
+export async function findCredentialForUser(db, { id, actor }) {
+  const credential = await findCredentialById(db, id)
 
   if (!credential) {
     return null
+  }
+
+  if (credential.userId !== actor.userId) {
+    throw await refuseCredential(db, actor, id, 'not-owner')
   }
 
   return presentCredential(db, credential)
 }
 
 /**
- * Finds a credential for read-only viewing - a user's own credential, OR a
+ * Finds a credential for read-only viewing - the actor's own credential, OR a
  * shared team credential for a team they're an active member of (mirrors
  * `listCredentials`' access rule). Used only by the GET-by-id route; renew
  * stays owner-only via `findCredentialForUser` above (team credentials
  * don't renew as a concept - they don't expire on the research TTL/cap).
  * Rotate/revoke use the role-aware `loadCredentialForAction` below instead,
  * since any admin member (not just the original requester) may act on a
- * shared team credential.
+ * shared team credential. Returns null for an id that matches nothing;
+ * a credential the actor may not see is a refused 404, audited.
  * @param {import('mongodb').Db} db
- * @param {{id: string, userId: string}} params
+ * @param {{id: string, actor: {userId: string}}} params
  */
-export async function findCredentialForViewing(db, { id, userId }) {
-  if (!ObjectId.isValid(id)) {
-    return null
-  }
-
-  const memberships = await db
-    .collection('teamMembers')
-    .find({ userId, status: 'active' })
-    .toArray()
-
-  const teamIds = memberships.map((membership) => membership.teamId)
-
-  const query =
-    teamIds.length > 0
-      ? {
-          _id: new ObjectId(id),
-          $or: [{ userId }, { teamId: { $in: teamIds }, tier: 'team' }]
-        }
-      : { _id: new ObjectId(id), userId }
-
-  const credential = await db.collection('credentials').findOne(query)
+export async function findCredentialForViewing(db, { id, actor }) {
+  const credential = await findCredentialById(db, id)
 
   if (!credential) {
     return null
+  }
+
+  const isOwner = credential.userId === actor.userId
+  const isTeamMember =
+    credential.tier === 'team' &&
+    (await getTeamRole(db, actor, credential.teamId)) !== null
+
+  if (!isOwner && !isTeamMember) {
+    throw await refuseCredential(db, actor, id, 'not-owner-or-member')
   }
 
   return presentCredential(db, credential)
 }
 
 /**
- * Loads a credential for an admin-gated action (rotate/revoke) - the
- * requester need not be the original requester, only an active member of
- * the credential's team (research credentials, `teamId: null`, stay
- * owner-only). Returns null (not 403) for a non-member/non-owner so
- * existence isn't disclosed; the caller's role is attached as `actorRole`
- * for `requireAdminForTeamCredential` to check.
+ * Loads a credential for an admin-gated action (rotate/revoke/reveal): the
+ * owner of a research credential, or an admin of the team a team credential
+ * belongs to - the requester need not be the original requester. Returns null
+ * for an id that matches nothing. Anyone else gets a refused 404 (not a
+ * member, so existence isn't disclosed) or, for a team member who is not an
+ * admin, a refused 403; both are audited. The right used comes back
+ * with the credential, for the audit record.
  * @param {import('mongodb').Db} db
- * @param {{id: string, userId: string}} params
+ * @param {{id: string, actor: {userId: string}}} params
+ * @returns {Promise<{credential: object, role: string}|null>}
  */
-async function loadCredentialForAction(db, { id, userId }) {
-  if (!ObjectId.isValid(id)) {
-    return null
-  }
-
-  const credential = await db
-    .collection('credentials')
-    .findOne({ _id: new ObjectId(id) })
+async function loadCredentialForAction(db, { id, actor }) {
+  const credential = await findCredentialById(db, id)
 
   if (!credential) {
     return null
   }
 
   if (credential.tier !== 'team') {
-    return credential.userId === userId ? credential : null
+    if (credential.userId !== actor.userId) {
+      throw await refuseCredential(db, actor, id, 'not-owner')
+    }
+
+    return { credential, role: ROLE_OWNER }
   }
 
-  const role = await getMemberRole(db, { teamId: credential.teamId, userId })
+  const role = await requireTeamRole(db, actor, credential.teamId, {
+    role: TEAM_ADMIN
+  })
 
-  return role ? { ...credential, actorRole: role } : null
-}
-
-/**
- * Only a team admin may rotate or revoke a shared team credential; a
- * `user`-role member may still view it. Research credentials (`teamId:
- * null`) are unaffected - they stay self-service, checked by
- * `loadCredentialForAction` returning null for anyone but the owner.
- * @param {object} credential
- */
-function requireAdminForTeamCredential(credential) {
-  if (credential.tier === 'team' && credential.actorRole !== 'admin') {
-    throw boomWithCode(
-      Boom.forbidden,
-      'Only a team admin can do this',
-      'admin-required'
-    )
-  }
+  return { credential, role }
 }
 
 /**
@@ -1010,21 +1012,21 @@ function requireAdminForTeamCredential(credential) {
  * using the already-renewed `expiresAt` from Mongo).
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{id: string, userId: string}} params
+ * @param {{id: string, actor: {userId: string}}} params
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function renewCredential(
   db,
   locker,
-  { id, userId },
+  { id, actor },
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
   const lock = await requireLock(locker, credentialLockName(id))
 
   try {
-    const credential = await findCredentialForUser(db, { id, userId })
+    const credential = await findCredentialForUser(db, { id, actor })
 
     if (!credential) {
       throw Boom.notFound()
@@ -1102,7 +1104,8 @@ export async function renewCredential(
     }
 
     await recordAuditEvent(db, {
-      actorUserId: userId,
+      actor,
+      role: ROLE_OWNER,
       action: 'credential.renew',
       resource: 'credential',
       resourceId: id,
@@ -1118,34 +1121,33 @@ export async function renewCredential(
 /**
  * Rotates a credential's secret in place, keeping its existing
  * `expiresAt`/policy - distinct from `renewCredential`, which extends
- * expiry. Team credentials require the requester to be an admin member
- * (`admin-required`); research credentials stay self-service. No
+ * expiry. Team credentials require the requester to be an admin member;
+ * research credentials stay self-service. No
  * overlap/grace window in this slice - the old secret is invalidated
  * immediately.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{id: string, userId: string}} params
+ * @param {{id: string, actor: {userId: string}}} params
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function rotateCredential(
   db,
   locker,
-  { id, userId },
+  { id, actor },
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
   const lock = await requireLock(locker, credentialLockName(id))
 
   try {
-    const credential = await loadCredentialForAction(db, { id, userId })
+    const loaded = await loadCredentialForAction(db, { id, actor })
 
-    if (!credential) {
+    if (!loaded) {
       throw Boom.notFound()
     }
 
-    requireAdminForTeamCredential(credential)
-
+    const { credential, role } = loaded
     if (credential.status === 'revoked') {
       throw boomWithCode(
         Boom.conflict,
@@ -1174,7 +1176,8 @@ export async function rotateCredential(
     await writeSecretToVault(db, vault, updated, rotated.secret)
 
     await recordAuditEvent(db, {
-      actorUserId: userId,
+      actor,
+      role,
       action: 'credential.rotate',
       resource: 'credential',
       resourceId: id,
@@ -1196,27 +1199,27 @@ export async function rotateCredential(
  * originally requested it.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{id: string, userId: string}} params
+ * @param {{id: string, actor: {userId: string}}} params
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function revokeCredential(
   db,
   locker,
-  { id, userId },
+  { id, actor },
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
   const lock = await requireLock(locker, credentialLockName(id))
 
   try {
-    const credential = await loadCredentialForAction(db, { id, userId })
+    const loaded = await loadCredentialForAction(db, { id, actor })
 
-    if (!credential) {
+    if (!loaded) {
       throw Boom.notFound()
     }
 
-    requireAdminForTeamCredential(credential)
+    const { credential, role } = loaded
 
     if (credential.status === 'revoked') {
       return credential
@@ -1262,7 +1265,8 @@ export async function revokeCredential(
     )
 
     await recordAuditEvent(db, {
-      actorUserId: userId,
+      actor,
+      role,
       action: 'credential.revoke',
       resource: 'credential',
       resourceId: id,
@@ -1280,29 +1284,26 @@ export async function revokeCredential(
  * state-changing, audited action (never a GET: the secret must never sit in
  * a URL, query string or access log). Authorisation reuses
  * `loadCredentialForAction`: owner-only for a research credential, team-admin
- * only for a team credential (`admin-required`). A platform-operator
+ * only for a team credential. A platform-operator
  * override is also in the design pack, but no such role exists anywhere
  * else in this codebase yet (no operator collection/flag) - deferred until
  * that lands rather than invented here.
  * @param {import('mongodb').Db} db
- * @param {{id: string, actorUserId: string, reason: string}} params
+ * @param {{id: string, actor: {userId: string}, reason: string}} params
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
 export async function revealCredential(
   db,
-  { id, actorUserId, reason },
+  { id, actor, reason },
   vault = credentialVault
 ) {
-  const credential = await loadCredentialForAction(db, {
-    id,
-    userId: actorUserId
-  })
+  const loaded = await loadCredentialForAction(db, { id, actor })
 
-  if (!credential) {
+  if (!loaded) {
     throw Boom.notFound()
   }
 
-  requireAdminForTeamCredential(credential)
+  const { credential, role } = loaded
 
   if (credential.status === 'revoked') {
     throw boomWithCode(
@@ -1330,7 +1331,8 @@ export async function revealCredential(
   }
 
   await recordAuditEvent(db, {
-    actorUserId,
+    actor,
+    role,
     action: 'credential.reveal',
     resource: 'credential',
     resourceId: id,

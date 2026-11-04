@@ -1,6 +1,7 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
+import { ACCESS } from '#/common/helpers/auth/access.js'
 import {
   issueCredential,
   listCredentials,
@@ -11,10 +12,6 @@ import {
   revealCredential
 } from '#/services/credential-service.js'
 
-const userIdHeader = Joi.object({
-  'x-user-id': Joi.string().required()
-}).unknown(true)
-
 const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
 
 export const credentials = [
@@ -22,9 +19,9 @@ export const credentials = [
     method: 'POST',
     path: '/v1/credentials',
     options: {
+      app: { access: ACCESS.user },
       validate: {
         headers: Joi.object({
-          'x-user-id': Joi.string().required(),
           'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
         }).unknown(true),
         payload: Joi.object({
@@ -45,14 +42,19 @@ export const credentials = [
       }
     },
     handler: async (request, h) => {
-      const userId = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
       const { modelSlug, environment, purpose } = request.payload
 
       const { credential, secret, replay } = await issueCredential(
         request.db,
         request.locker,
-        { userId, modelSlug, environment, purpose, idempotencyKey }
+        {
+          actor: request.auth.credentials,
+          modelSlug,
+          environment,
+          purpose,
+          idempotencyKey
+        }
       )
 
       const response = h.response({ credential, secret })
@@ -67,12 +69,10 @@ export const credentials = [
   {
     method: 'GET',
     path: '/v1/credentials',
-    options: {
-      validate: { headers: userIdHeader }
-    },
+    options: { app: { access: ACCESS.user } },
     handler: async (request, h) => {
       const items = await listCredentials(request.db, {
-        userId: request.headers['x-user-id']
+        actor: request.auth.credentials
       })
 
       return h.response({ items })
@@ -82,12 +82,13 @@ export const credentials = [
     method: 'GET',
     path: '/v1/credentials/{id}',
     options: {
-      validate: { headers: userIdHeader, params: idParam }
+      app: { access: ACCESS.credentialOwnerOrTeamMember },
+      validate: { params: idParam }
     },
     handler: async (request, h) => {
       const credential = await findCredentialForViewing(request.db, {
         id: request.params.id,
-        userId: request.headers['x-user-id']
+        actor: request.auth.credentials
       })
 
       if (!credential) {
@@ -101,12 +102,13 @@ export const credentials = [
     method: 'POST',
     path: '/v1/credentials/{id}/renew',
     options: {
-      validate: { headers: userIdHeader, params: idParam }
+      app: { access: ACCESS.credentialOwner },
+      validate: { params: idParam }
     },
     handler: async (request, h) => {
       const credential = await renewCredential(request.db, request.locker, {
         id: request.params.id,
-        userId: request.headers['x-user-id']
+        actor: request.auth.credentials
       })
 
       return h.response(credential)
@@ -116,7 +118,8 @@ export const credentials = [
     method: 'POST',
     path: '/v1/credentials/{id}/rotate',
     options: {
-      validate: { headers: userIdHeader, params: idParam }
+      app: { access: ACCESS.credentialOwnerOrTeamAdmin },
+      validate: { params: idParam }
     },
     handler: async (request, h) => {
       const { credential, secret } = await rotateCredential(
@@ -124,7 +127,7 @@ export const credentials = [
         request.locker,
         {
           id: request.params.id,
-          userId: request.headers['x-user-id']
+          actor: request.auth.credentials
         }
       )
 
@@ -135,12 +138,13 @@ export const credentials = [
     method: 'DELETE',
     path: '/v1/credentials/{id}',
     options: {
-      validate: { headers: userIdHeader, params: idParam }
+      app: { access: ACCESS.credentialOwnerOrTeamAdmin },
+      validate: { params: idParam }
     },
     handler: async (request, h) => {
       await revokeCredential(request.db, request.locker, {
         id: request.params.id,
-        userId: request.headers['x-user-id']
+        actor: request.auth.credentials
       })
 
       return h.response().code(204)
@@ -150,8 +154,8 @@ export const credentials = [
     method: 'POST',
     path: '/v1/credentials/{id}/reveal',
     options: {
+      app: { access: ACCESS.credentialOwnerOrTeamAdmin },
       validate: {
-        headers: userIdHeader,
         params: idParam,
         payload: Joi.object({
           reason: Joi.string().trim().max(500).required()
@@ -161,7 +165,7 @@ export const credentials = [
     handler: async (request, h) => {
       const secret = await revealCredential(request.db, {
         id: request.params.id,
-        actorUserId: request.headers['x-user-id'],
+        actor: request.auth.credentials,
         reason: request.payload.reason
       })
 

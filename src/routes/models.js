@@ -2,6 +2,7 @@ import Joi from 'joi'
 import Boom from '@hapi/boom'
 
 import { findModelBySlug } from '#/services/models-service.js'
+import { ACCESS } from '#/common/helpers/auth/access.js'
 import {
   listModelsWithResearchAvailability,
   listResearchModels,
@@ -39,6 +40,7 @@ export const models = [
     method: 'GET',
     path: '/v1/models',
     options: {
+      app: { access: ACCESS.catalogue },
       validate: {
         query: Joi.object({
           provider: Joi.string().trim().lowercase(),
@@ -70,6 +72,7 @@ export const models = [
     method: 'GET',
     path: '/v1/models/{slug}',
     options: {
+      app: { access: ACCESS.catalogue },
       validate: {
         params: Joi.object({
           slug: Joi.string()

@@ -1,6 +1,7 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
+import { ACCESS } from '#/common/helpers/auth/access.js'
 import {
   createTeam,
   listTeamsForUser,
@@ -28,10 +29,6 @@ const descriptionField = Joi.string()
 
 const memberRoleField = Joi.string().valid('admin', 'user')
 
-const userIdHeader = Joi.object({
-  'x-user-id': Joi.string().required()
-}).unknown(true)
-
 const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
 
 const memberIdParam = Joi.object({
@@ -40,7 +37,6 @@ const memberIdParam = Joi.object({
 }).unknown(false)
 
 const idempotentHeaders = Joi.object({
-  'x-user-id': Joi.string().required(),
   'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
 }).unknown(true)
 
@@ -49,6 +45,7 @@ export const teams = [
     method: 'POST',
     path: '/v1/teams',
     options: {
+      app: { access: ACCESS.user },
       validate: {
         headers: idempotentHeaders,
         payload: Joi.object({
@@ -59,7 +56,6 @@ export const teams = [
       }
     },
     handler: async (request, h) => {
-      const createdBy = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
       const { name, serviceCode, description } = request.payload
 
@@ -67,7 +63,7 @@ export const teams = [
         name,
         serviceCode,
         description,
-        createdBy,
+        actor: request.auth.credentials,
         idempotencyKey
       })
 
@@ -83,14 +79,9 @@ export const teams = [
   {
     method: 'GET',
     path: '/v1/teams',
-    options: {
-      validate: { headers: userIdHeader }
-    },
+    options: { app: { access: ACCESS.user } },
     handler: async (request, h) => {
-      const items = await listTeamsForUser(
-        request.db,
-        request.headers['x-user-id']
-      )
+      const items = await listTeamsForUser(request.db, request.auth.credentials)
 
       return h.response({ items })
     }
@@ -99,12 +90,13 @@ export const teams = [
     method: 'GET',
     path: '/v1/teams/{id}',
     options: {
-      validate: { headers: userIdHeader, params: idParam }
+      app: { access: ACCESS.teamMember },
+      validate: { params: idParam }
     },
     handler: async (request, h) => {
       const result = await findTeamById(request.db, {
         id: request.params.id,
-        userId: request.headers['x-user-id']
+        actor: request.auth.credentials
       })
 
       if (!result) {
@@ -118,8 +110,8 @@ export const teams = [
     method: 'PATCH',
     path: '/v1/teams/{id}',
     options: {
+      app: { access: ACCESS.teamAdmin },
       validate: {
-        headers: userIdHeader,
         params: idParam,
         payload: Joi.object({
           serviceCode: serviceCodeField,
@@ -132,7 +124,7 @@ export const teams = [
     handler: async (request, h) => {
       const { team } = await updateTeam(request.db, {
         teamId: request.params.id,
-        actorUserId: request.headers['x-user-id'],
+        actor: request.auth.credentials,
         serviceCode: request.payload.serviceCode,
         description: request.payload.description
       })
@@ -144,6 +136,7 @@ export const teams = [
     method: 'POST',
     path: '/v1/teams/{id}/members',
     options: {
+      app: { access: ACCESS.teamAdmin },
       validate: {
         headers: idempotentHeaders,
         params: idParam,
@@ -156,7 +149,7 @@ export const teams = [
     handler: async (request, h) => {
       const member = await addMember(request.db, {
         teamId: request.params.id,
-        actorUserId: request.headers['x-user-id'],
+        actor: request.auth.credentials,
         idempotencyKey: request.headers['idempotency-key'],
         email: request.payload.email,
         role: request.payload.role
@@ -172,8 +165,8 @@ export const teams = [
     method: 'PATCH',
     path: '/v1/teams/{id}/members/{memberId}',
     options: {
+      app: { access: ACCESS.teamAdmin },
       validate: {
-        headers: userIdHeader,
         params: memberIdParam,
         payload: Joi.object({
           role: memberRoleField.required()
@@ -183,7 +176,7 @@ export const teams = [
     handler: async (request, h) => {
       const { member } = await setMemberRole(request.db, request.locker, {
         teamId: request.params.id,
-        actorUserId: request.headers['x-user-id'],
+        actor: request.auth.credentials,
         memberId: request.params.memberId,
         role: request.payload.role
       })
@@ -195,12 +188,13 @@ export const teams = [
     method: 'DELETE',
     path: '/v1/teams/{id}/members/{memberId}',
     options: {
-      validate: { headers: userIdHeader, params: memberIdParam }
+      app: { access: ACCESS.teamAdmin },
+      validate: { params: memberIdParam }
     },
     handler: async (request, h) => {
       await removeMember(request.db, request.locker, {
         teamId: request.params.id,
-        actorUserId: request.headers['x-user-id'],
+        actor: request.auth.credentials,
         memberId: request.params.memberId
       })
 

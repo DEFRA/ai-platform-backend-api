@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { signInAs, withTestUsers } from '#/common/test-helpers/portal-token.js'
+
 const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 
 describe('#teams routes', () => {
@@ -11,6 +13,7 @@ describe('#teams routes', () => {
 
     server = await createServer()
     await server.initialize()
+    withTestUsers(server)
   })
 
   afterAll(async () => {
@@ -103,15 +106,11 @@ describe('#teams routes', () => {
       headers: postHeaders('team-patch-admin-2'),
       payload: { email: 'service.code.member@defra.gov.uk' }
     })
-    const member = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'service.code.member@defra.gov.uk',
-        displayName: 'Service Code Member'
-      }
+    const member = await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: 'service.code.member@defra.gov.uk',
+      displayName: 'Service Code Member'
     })
 
     const { statusCode } = await server.inject({
@@ -320,15 +319,11 @@ describe('#teams routes', () => {
       headers,
       payload: { email: 'list-role-teammate@defra.gov.uk' }
     })
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'list-role-teammate@defra.gov.uk',
-        displayName: 'List Role Teammate'
-      }
+    const signIn = await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: 'list-role-teammate@defra.gov.uk',
+      displayName: 'List Role Teammate'
     })
 
     const { result, statusCode } = await server.inject({
@@ -476,15 +471,11 @@ describe('#teams routes', () => {
     })
 
     // binds the invited member so they become an active, non-admin member
-    await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'user-member@defra.gov.uk',
-        displayName: 'User Member'
-      }
+    await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: 'user-member@defra.gov.uk',
+      displayName: 'User Member'
     })
 
     const team = await server.inject({
@@ -531,7 +522,7 @@ describe('#teams routes', () => {
     expect(statusCode).toBe(404)
   })
 
-  test('POST /v1/users binds an invited member to the signed-in user on first sign-in', async () => {
+  test('PUT /v1/users/me binds an invited member to the signed-in user on first sign-in', async () => {
     const headers = {
       'x-user-id': 'team-user-10',
       'idempotency-key': randomUUID()
@@ -551,15 +542,11 @@ describe('#teams routes', () => {
       payload: { email: 'bound.member@defra.gov.uk' }
     })
 
-    await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'bound.member@defra.gov.uk',
-        displayName: 'Bound Member'
-      }
+    await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: 'bound.member@defra.gov.uk',
+      displayName: 'Bound Member'
     })
 
     const { result } = await server.inject({
@@ -596,15 +583,11 @@ describe('#teams routes', () => {
       payload: { email: 'named.member@defra.gov.uk' }
     })
 
-    await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'named.member@defra.gov.uk',
-        displayName: 'Named Member'
-      }
+    await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: 'named.member@defra.gov.uk',
+      displayName: 'Named Member'
     })
 
     const { result } = await server.inject({
@@ -714,15 +697,11 @@ describe('#teams routes', () => {
       headers: postHeaders('team-user-13'),
       payload: { email: 'non-admin-actor@defra.gov.uk' }
     })
-    await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'non-admin-actor@defra.gov.uk',
-        displayName: 'Non Admin Actor'
-      }
+    await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: 'non-admin-actor@defra.gov.uk',
+      displayName: 'Non Admin Actor'
     })
 
     const team = await server.inject({
@@ -820,15 +799,11 @@ describe('#teams routes', () => {
         headers: postHeaders(label),
         payload: { email }
       })
-      const signedIn = await server.inject({
-        method: 'POST',
-        url: '/v1/users',
-        payload: {
-          oid: randomUUID(),
-          tid: ENTRA_TENANT_ID,
-          email,
-          displayName: 'Role Member'
-        }
+      const signedIn = await signInAs(server, {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
+        email,
+        displayName: 'Role Member'
       })
 
       const team = await server.inject({
@@ -990,15 +965,11 @@ describe('#teams routes', () => {
         headers: postHeaders(adminLabel),
         payload: role ? { email, role } : { email }
       })
-      const signedIn = await server.inject({
-        method: 'POST',
-        url: '/v1/users',
-        payload: {
-          oid: randomUUID(),
-          tid: ENTRA_TENANT_ID,
-          email,
-          displayName: 'Details Member'
-        }
+      const signedIn = await signInAs(server, {
+        oid: randomUUID(),
+        tid: ENTRA_TENANT_ID,
+        email,
+        displayName: 'Details Member'
       })
 
       return signedIn.result.user._id.toString()

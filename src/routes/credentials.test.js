@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 
 import { ObjectId } from 'mongodb'
 
+import { signInAs, withTestUsers } from '#/common/test-helpers/portal-token.js'
+
 const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 
 // The research models these tests issue keys for; the mock research file
@@ -33,6 +35,7 @@ describe('#credentials routes', () => {
 
     server = await createServer()
     await server.initialize()
+    withTestUsers(server)
     deployInResearch(DEPLOYED_FOR_RESEARCH)
   })
 
@@ -484,15 +487,11 @@ describe('#credentials routes', () => {
       payload: { email: 'viewer-teammate@defra.gov.uk' }
     })
 
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'viewer-teammate@defra.gov.uk',
-        displayName: 'Viewer Teammate'
-      }
+    const signIn = await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: 'viewer-teammate@defra.gov.uk',
+      displayName: 'Viewer Teammate'
     })
 
     const { statusCode, result } = await server.inject({
@@ -531,15 +530,11 @@ describe('#credentials routes', () => {
       payload: { email: 'leak-teammate@defra.gov.uk' }
     })
 
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'leak-teammate@defra.gov.uk',
-        displayName: 'Leak Teammate'
-      }
+    const signIn = await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: 'leak-teammate@defra.gov.uk',
+      displayName: 'Leak Teammate'
     })
 
     const teammateId = signIn.result.user._id.toString()
@@ -1091,15 +1086,11 @@ describe('#credentials routes', () => {
       payload: { email: 'teammate@defra.gov.uk' }
     })
 
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'teammate@defra.gov.uk',
-        displayName: 'Teammate'
-      }
+    const signIn = await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: 'teammate@defra.gov.uk',
+      displayName: 'Teammate'
     })
 
     const { result, statusCode } = await server.inject({
@@ -1122,10 +1113,11 @@ describe('#credentials routes', () => {
       payload: { email }
     })
 
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: { oid: randomUUID(), tid: ENTRA_TENANT_ID, email, displayName }
+    const signIn = await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email,
+      displayName
     })
 
     return signIn.result.user._id.toString()
