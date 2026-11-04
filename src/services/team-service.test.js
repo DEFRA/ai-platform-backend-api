@@ -2,8 +2,14 @@ import { randomUUID } from 'node:crypto'
 
 import nock from 'nock'
 
-import { createGraphDirectory } from '#/adapters/azure/graph-directory.js'
 import { dbFailingOn } from '#/common/test-helpers/failing-db.js'
+
+// The graph directory adapter imports #/config.js, which snapshots MONGO_URI
+// on first import, so it is loaded in beforeAll (after the in-memory Mongo
+// setup file has set that variable), never as a static import: a static one
+// makes the server connect to the default 127.0.0.1:27017, which only works
+// where a Mongo happens to run there (not on CI).
+let createGraphDirectory
 
 // The repo's global test setup swaps global.fetch for a mock when each file
 // starts; nock intercepts the real one.
@@ -22,6 +28,9 @@ describe('team-people-service: adding people from the directory', () => {
     // Dynamic imports needed due to config being updated by vitest-mongodb
     const { createServer } = await import('#/server.js')
 
+    ;({ createGraphDirectory } =
+      await import('#/adapters/azure/graph-directory.js'))
+
     server = await createServer()
     await server.initialize()
     db = server.db
@@ -31,7 +40,13 @@ describe('team-people-service: adding people from the directory', () => {
   })
 
   afterAll(async () => {
-    await server.stop({ timeout: 0 })
+    await server?.stop({ timeout: 0 })
+  })
+
+  test('runs against the in-memory database the setup file started, not a localhost one', async () => {
+    const { config } = await import('#/config.js')
+
+    expect(config.get('mongo.mongoUrl')).toBe(process.env.MONGO_URI)
   })
 
   const DOMAINS = ['defra.gov.uk']
