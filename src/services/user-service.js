@@ -4,16 +4,15 @@ import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
+import { isEligible } from '#/services/directory-eligibility.js'
 
+// The sign-in rule is the directory's eligibility rule on the email alone:
+// an exact, case-insensitive domain match, no guests, no look-alikes.
 function isAllowedEmailDomain(email) {
-  const domain = email.split('@')[1]
-  const allowedDomains = config
-    .get('allowedEmailDomains')
-    .split(',')
-    .map((d) => d.trim().toLowerCase())
-    .filter(Boolean)
-
-  return allowedDomains.includes(domain)
+  return isEligible(
+    { userPrincipalName: email },
+    config.get('allowedEmailDomains')
+  )
 }
 
 /**

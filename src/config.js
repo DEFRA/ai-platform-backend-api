@@ -136,9 +136,9 @@ export const config = convict({
     }
   },
   allowedEmailDomains: {
-    doc: 'Comma-separated list of email domains allowed to sign in',
-    format: String,
-    default: 'defra.gov.uk',
+    doc: 'Comma-separated email domains allowed to sign in, matched exactly and without regard to case; guests (#EXT#) are refused. The same two domains as directory.allowedDomains by default, so a person an Admin adds can sign in (design F)',
+    format: Array,
+    default: ['defra.gov.uk', 'defra.onmicrosoft.com'],
     env: 'ALLOWED_EMAIL_DOMAINS'
   },
   research: {
@@ -223,6 +223,22 @@ export const config = convict({
       format: 'nat',
       default: 5000,
       env: 'DIRECTORY_TIMEOUT_MS'
+    },
+    searchMaxPages: {
+      doc: 'The most pages of 50 people one directory search reads, following Graph @odata.nextLink, so people who can be added are found behind members and ineligible people. A search that would need more returns what it read; the Admin narrows the search',
+      format: (value) => {
+        if (!Number.isInteger(value) || value < 1) {
+          throw new TypeError('must be a whole number of at least 1')
+        }
+      },
+      default: 5,
+      env: 'DIRECTORY_SEARCH_MAX_PAGES'
+    },
+    searchTimeoutMs: {
+      doc: 'Timeout in ms for the whole of one directory search across its pages, so a slow Graph cannot hold the Admin for pages times the per-call timeout',
+      format: 'nat',
+      default: 10000,
+      env: 'DIRECTORY_SEARCH_TIMEOUT_MS'
     }
   },
   gitops: gitopsConfigSchema,

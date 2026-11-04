@@ -157,6 +157,33 @@ describe('#users routes', () => {
   })
 
   test.each([
+    ['defra.gov.uk', 'test.user@defra.gov.uk'],
+    ['defra.onmicrosoft.com', 'test.user@defra.onmicrosoft.com'],
+    ['defra.onmicrosoft.com in any case', 'Test.User@DEFRA.OnMicrosoft.com']
+  ])('POST /v1/users accepts an email on %s', async (_, email) => {
+    const { result, statusCode } = await signIn({ email })
+
+    expect(statusCode).toBe(200)
+    expect(result.user.email).toBe(email.toLowerCase())
+  })
+
+  test.each([
+    ['a guest', 'test.user_example.com#EXT#@defra.onmicrosoft.com'],
+    ['a guest in any case', 'test.user_example.com#ext#@DEFRA.onmicrosoft.com'],
+    ['a subdomain', 'test.user@mail.defra.gov.uk'],
+    ['a subdomain of the tenant domain', 'test.user@x.defra.onmicrosoft.com'],
+    ['a look-alike prefix', 'test.user@notdefra.gov.uk'],
+    ['a look-alike suffix', 'test.user@defra.gov.uk.example.com'],
+    ['a look-alike tenant', 'test.user@defra.onmicrosoft.com.example.com'],
+    ['another tenant', 'test.user@other.onmicrosoft.com']
+  ])('POST /v1/users refuses an email that is %s', async (_, email) => {
+    const { result, statusCode } = await signIn({ email })
+
+    expect(statusCode).toBe(403)
+    expect(result.code).toBe('domain-not-allowed')
+  })
+
+  test.each([
     ['a missing oid', { oid: undefined }],
     ['a missing tid', { tid: undefined }],
     ['an oid that is not a GUID', { oid: 'not-a-guid' }],

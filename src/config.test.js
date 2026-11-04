@@ -118,8 +118,30 @@ describe('#config directory', () => {
       mode: 'mock',
       allowedDomains: ['defra.gov.uk', 'defra.onmicrosoft.com'],
       graphBaseUrl: 'https://graph.microsoft.com',
-      timeoutMs: 5000
+      timeoutMs: 5000,
+      searchMaxPages: 5,
+      searchTimeoutMs: 10000
     })
+  })
+
+  test('lets people sign in from the same two domains by default, as a list', async () => {
+    const { config } = await loadConfig({})
+
+    expect(config.get('allowedEmailDomains')).toEqual([
+      'defra.gov.uk',
+      'defra.onmicrosoft.com'
+    ])
+  })
+
+  test('reads the sign-in domains as a comma-separated list', async () => {
+    const { config } = await loadConfig({
+      ALLOWED_EMAIL_DOMAINS: 'defra.gov.uk,example.gov.uk'
+    })
+
+    expect(config.get('allowedEmailDomains')).toEqual([
+      'defra.gov.uk',
+      'example.gov.uk'
+    ])
   })
 
   test('reads the allowed domains as a comma-separated list', async () => {
@@ -151,6 +173,24 @@ describe('#config directory', () => {
       graphBaseUrl: 'https://graph.microsoft.us',
       timeoutMs: 2500
     })
+  })
+
+  test('reads the search bounds from the environment', async () => {
+    const { config } = await loadConfig({
+      DIRECTORY_SEARCH_MAX_PAGES: '3',
+      DIRECTORY_SEARCH_TIMEOUT_MS: '8000'
+    })
+
+    expect(config.get('directory')).toMatchObject({
+      searchMaxPages: 3,
+      searchTimeoutMs: 8000
+    })
+  })
+
+  test('refuses a search that may read no page', async () => {
+    await expect(
+      loadConfig({ DIRECTORY_SEARCH_MAX_PAGES: '0' })
+    ).rejects.toThrow(/searchMaxPages/)
   })
 
   test('refuses a Graph base URL that is not a URL', async () => {

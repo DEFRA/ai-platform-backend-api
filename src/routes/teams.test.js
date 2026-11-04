@@ -530,6 +530,31 @@ describe('#teams routes', () => {
     )
   })
 
+  test('POST /v1/teams/{id}/members makes a record for a person on defra.onmicrosoft.com only by user principal name, which their first sign-in binds to', async () => {
+    const team = await teamWithAdmin('team-user-10c')
+    const member = await addSeeded(team, 'farid')
+
+    const signIn = await server.inject({
+      method: 'POST',
+      url: '/v1/users',
+      payload: {
+        oid: SEEDED.farid,
+        tid: ENTRA_TENANT_ID,
+        email: 'Farid.Haidari@defra.onmicrosoft.com',
+        displayName: 'Farid Haidari'
+      }
+    })
+
+    expect(signIn.statusCode).toBe(200)
+    expect(signIn.result.user._id.toString()).toBe(member.userId)
+    expect(signIn.result.user.lastSignInAt).toEqual(expect.any(String))
+    expect(
+      await server.db
+        .collection('users')
+        .countDocuments({ oid: SEEDED.farid, tid: ENTRA_TENANT_ID })
+    ).toBe(1)
+  })
+
   test('POST /v1/teams/{id}/members leaves the record of a person who has already signed in as it is', async () => {
     const team = await teamWithAdmin('team-user-10b')
     const signedIn = await server.inject({
