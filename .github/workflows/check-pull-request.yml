@@ -28,8 +28,22 @@ jobs:
       - name: Security audit
         run: npm run security-audit
 
+      - name: Install dependencies
+        run: npm ci
+
+      # The test setup downloads a MongoDB binary from fastdl.mongodb.org, which
+      # sometimes resets the connection on GitHub runners and fails every test
+      # file. Fetch it once here, with retries, so the tests find it on disk.
+      - name: Download the MongoDB test binary
+        run: |
+          for attempt in 1 2 3 4 5 6; do
+            npx vitest run src/common/helpers/uuid-v7.test.js && exit 0
+            echo "MongoDB binary download attempt $attempt failed"
+            sleep $((attempt * 15))
+          done
+          exit 1
+
       - run: |
-          npm ci
           npm run format:check
           npm run lint
           npm run contracts:check
