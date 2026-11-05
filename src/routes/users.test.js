@@ -71,7 +71,7 @@ describe('#users routes', () => {
     expect(await server.db.collection('users').countDocuments({ oid })).toBe(1)
   })
 
-  test('POST /v1/users binds a record from before oid keying to the identity on first sign-in', async () => {
+  test('POST /v1/users never binds a record with the same email and no oid; it makes a new one', async () => {
     const { insertedId } = await server.db.collection('users').insertOne({
       email: 'legacy.user@defra.gov.uk',
       displayName: 'Legacy User',
@@ -81,13 +81,59 @@ describe('#users routes', () => {
 
     const { result } = await signIn({ oid, email: 'legacy.user@defra.gov.uk' })
 
-    expect(result.user._id.toString()).toBe(insertedId.toString())
+    expect(result.user._id.toString()).not.toBe(insertedId.toString())
     expect(result.user).toMatchObject({
       oid,
       tid: TENANT_ID,
-      roles: ['research-user', 'platform-admin']
+      roles: ['research-user']
     })
-    expect(await usersWithEmail('legacy.user@defra.gov.uk')).toHaveLength(1)
+    expect(await usersWithEmail('legacy.user@defra.gov.uk')).toHaveLength(2)
+    expect(
+      await server.db.collection('users').findOne({ _id: insertedId })
+    ).not.toHaveProperty('oid')
+  })
+
+  test('POST /v1/users changes no membership, even with an old invited row for the same email', async () => {
+    const { insertedId } = await server.db.collection('teamMembers').insertOne({
+      teamId: 'team-with-old-invitation',
+      userId: null,
+      email: 'old.invitee@defra.gov.uk',
+      role: 'admin',
+      status: 'invited'
+    })
+
+    const { result } = await signIn({ email: 'old.invitee@defra.gov.uk' })
+
+    expect(result.user.email).toBe('old.invitee@defra.gov.uk')
+    expect(
+      await server.db.collection('teamMembers').findOne({ _id: insertedId })
+    ).toMatchObject({ userId: null, status: 'invited' })
+    expect(
+      await server.db
+        .collection('teamMembers')
+        .countDocuments({ userId: result.user._id.toString() })
+    ).toBe(0)
+  })
+
+  test('POST /v1/users returns the record an Admin made from the directory, and keeps one', async () => {
+    const oid = randomUUID()
+    const { insertedId } = await server.db.collection('users').insertOne({
+      oid,
+      tid: TENANT_ID,
+      email: 'directory.person@defra.gov.uk',
+      displayName: 'Directory Person',
+      roles: ['research-user']
+    })
+
+    const { result } = await signIn({
+      oid,
+      email: 'directory.person@defra.gov.uk',
+      displayName: 'Directory Person'
+    })
+
+    expect(result.user._id.toString()).toBe(insertedId.toString())
+    expect(result.user.lastSignInAt).toEqual(expect.any(String))
+    expect(await server.db.collection('users').countDocuments({ oid })).toBe(1)
   })
 
   test('POST /v1/users gives another identity with the same email its own record', async () => {
@@ -105,6 +151,33 @@ describe('#users routes', () => {
     const { result, statusCode } = await signIn({
       email: 'test.user@example.com'
     })
+
+    expect(statusCode).toBe(403)
+    expect(result.code).toBe('domain-not-allowed')
+  })
+
+  test.each([
+    ['defra.gov.uk', 'test.user@defra.gov.uk'],
+    ['defra.onmicrosoft.com', 'test.user@defra.onmicrosoft.com'],
+    ['defra.onmicrosoft.com in any case', 'Test.User@DEFRA.OnMicrosoft.com']
+  ])('POST /v1/users accepts an email on %s', async (_, email) => {
+    const { result, statusCode } = await signIn({ email })
+
+    expect(statusCode).toBe(200)
+    expect(result.user.email).toBe(email.toLowerCase())
+  })
+
+  test.each([
+    ['a guest', 'test.user_example.com#EXT#@defra.onmicrosoft.com'],
+    ['a guest in any case', 'test.user_example.com#ext#@DEFRA.onmicrosoft.com'],
+    ['a subdomain', 'test.user@mail.defra.gov.uk'],
+    ['a subdomain of the tenant domain', 'test.user@x.defra.onmicrosoft.com'],
+    ['a look-alike prefix', 'test.user@notdefra.gov.uk'],
+    ['a look-alike suffix', 'test.user@defra.gov.uk.example.com'],
+    ['a look-alike tenant', 'test.user@defra.onmicrosoft.com.example.com'],
+    ['another tenant', 'test.user@other.onmicrosoft.com']
+  ])('POST /v1/users refuses an email that is %s', async (_, email) => {
+    const { result, statusCode } = await signIn({ email })
 
     expect(statusCode).toBe(403)
     expect(result.code).toBe('domain-not-allowed')

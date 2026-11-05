@@ -1,17 +1,10 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
+import { entraIdField } from '#/common/helpers/entra-id.js'
 import { upsertUser, findCurrentUser } from '#/services/user-service.js'
 
-// Entra object and tenant IDs, stored lowercase so `entra:{oid}` always
-// matches the GitOps contract's principal pattern.
-const entraId = Joi.string()
-  .lowercase()
-  .pattern(
-    /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/,
-    'GUID'
-  )
-  .required()
+const entraId = entraIdField.required()
 
 export const users = [
   {

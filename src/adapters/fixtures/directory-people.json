@@ -1,0 +1,68 @@
+[
+  {
+    "oid": "5eed0000-0000-4000-8000-000000000001",
+    "displayName": "Journey Test Member",
+    "mail": "journey.test.member@defra.gov.uk",
+    "userPrincipalName": "journey.test.member@defra.gov.uk"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-000000000002",
+    "displayName": "Amelia Hartley",
+    "mail": "amelia.hartley@defra.gov.uk",
+    "userPrincipalName": "amelia.hartley@defra.gov.uk"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-000000000003",
+    "displayName": "Bashir Nasser",
+    "mail": "bashir.nasser@defra.gov.uk",
+    "userPrincipalName": "bashir.nasser@defra.gov.uk"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-000000000004",
+    "displayName": "Cerys Owen",
+    "mail": "cerys.owen@defra.gov.uk",
+    "userPrincipalName": "cerys.owen@defra.gov.uk"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-000000000005",
+    "displayName": "Daniel Okafor",
+    "mail": "daniel.okafor@defra.gov.uk",
+    "userPrincipalName": "daniel.okafor@defra.gov.uk"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-000000000006",
+    "displayName": "Eleanor Whitcombe",
+    "mail": "eleanor.whitcombe@defra.gov.uk",
+    "userPrincipalName": "eleanor.whitcombe@defra.gov.uk"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-000000000007",
+    "displayName": "Farid Haidari",
+    "mail": null,
+    "userPrincipalName": "farid.haidari@defra.onmicrosoft.com"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-000000000008",
+    "displayName": "Grace Lindqvist",
+    "mail": "grace.lindqvist@defra.gov.uk",
+    "userPrincipalName": "grace.lindqvist@defra.gov.uk"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-000000000009",
+    "displayName": "Sasha Supplier",
+    "mail": "sasha.supplier@supplier.example.com",
+    "userPrincipalName": "sasha.supplier@supplier.example.com"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-00000000000a",
+    "displayName": "Gavin Guest",
+    "mail": "gavin.guest@example.com",
+    "userPrincipalName": "gavin.guest_example.com#EXT#@defra.onmicrosoft.com"
+  },
+  {
+    "oid": "5eed0000-0000-4000-8000-00000000000b",
+    "displayName": "Lola Lookalike",
+    "mail": "lola.lookalike@defra.gov.uk.example.com",
+    "userPrincipalName": "lola.lookalike@defra.gov.uk.example.com"
+  }
+]

@@ -773,4 +773,361 @@ describe('#backfillRegistry', () => {
       })
     })
   })
+
+  describe('2026-11-03-team-members-directory-only', () => {
+    const backfillId = '2026-11-03-team-members-directory-only'
+    const ACTIVE_INDEX = 'userId_1_teamId_1'
+    const SYSTEM = 'app:ai-platform-backend'
+
+    // The backfill runs before the index that forbids duplicate active
+    // memberships exists, so build the old shape with that index dropped.
+    beforeAll(async () => {
+      await db.collection('teamMembers').dropIndex(ACTIVE_INDEX)
+    })
+
+    afterAll(async () => {
+      await db.collection('teamMembers').deleteMany({})
+      await db
+        .collection('teamMembers')
+        .createIndex(
+          { userId: 1, teamId: 1 },
+          { unique: true, partialFilterExpression: { status: 'active' } }
+        )
+    })
+
+    beforeEach(async () => {
+      await db.collection('teamMembers').deleteMany({})
+      await db.collection('users').deleteMany({})
+      await db.collection('teams').deleteMany({})
+    })
+
+    async function insertTeam(name) {
+      const slug = name.toLowerCase().replaceAll(' ', '-')
+      const { insertedId } = await db
+        .collection('teams')
+        .insertOne({ name, normalisedName: slug, slug })
+
+      return insertedId.toString()
+    }
+
+    async function members(teamId) {
+      return db.collection('teamMembers').find({ teamId }).toArray()
+    }
+
+    test('sets invited rows to removed by the system, and leaves active rows alone', async () => {
+      const teamId = await insertTeam('Invitations')
+
+      await db.collection('teamMembers').insertMany([
+        {
+          teamId,
+          userId: 'admin-1',
+          email: null,
+          role: 'admin',
+          status: 'active'
+        },
+        {
+          teamId,
+          userId: null,
+          email: 'invitee@defra.gov.uk',
+          role: 'user',
+          status: 'invited'
+        }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+
+      const rows = await members(teamId)
+      const invited = rows.find((row) => row.userId === null)
+
+      expect(result.invitationsRemoved).toBe(1)
+      expect(invited).toMatchObject({ status: 'removed', removedBy: SYSTEM })
+      expect(invited.removedAt).toEqual(expect.any(String))
+      expect(rows.find((row) => row.userId === 'admin-1').status).toBe('active')
+    })
+
+    test('keeps one active membership per person and team: an Admin, else the earliest', async () => {
+      const adminWins = await insertTeam('Admin wins')
+      const earliestWins = await insertTeam('Earliest wins')
+
+      await db.collection('teamMembers').insertMany([
+        {
+          teamId: adminWins,
+          userId: 'dup',
+          role: 'user',
+          status: 'active',
+          createdAt: '2026-01-01T00:00:00.000Z'
+        },
+        {
+          teamId: adminWins,
+          userId: 'dup',
+          role: 'admin',
+          status: 'active',
+          createdAt: '2026-02-01T00:00:00.000Z'
+        },
+        {
+          teamId: earliestWins,
+          userId: 'dup',
+          role: 'user',
+          status: 'active',
+          createdAt: '2026-03-01T00:00:00.000Z'
+        },
+        {
+          teamId: earliestWins,
+          userId: 'dup',
+          role: 'user',
+          status: 'active',
+          createdAt: '2026-01-01T00:00:00.000Z'
+        }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+
+      const adminRows = await members(adminWins)
+      const earliestRows = await members(earliestWins)
+      const active = (rows) => rows.filter((row) => row.status === 'active')
+
+      expect(result.duplicatesRemoved).toBe(2)
+      expect(active(adminRows)).toHaveLength(1)
+      expect(active(adminRows)[0].role).toBe('admin')
+      expect(active(earliestRows)).toHaveLength(1)
+      expect(active(earliestRows)[0].createdAt).toBe('2026-01-01T00:00:00.000Z')
+      expect(
+        [...adminRows, ...earliestRows].filter(
+          (row) => row.status === 'removed'
+        )
+      ).toHaveLength(2)
+    })
+
+    test('keeps the first-written of duplicates that carry no createdAt', async () => {
+      const teamId = await insertTeam('No dates')
+      const { insertedIds } = await db.collection('teamMembers').insertMany([
+        { teamId, userId: 'old', role: 'user', status: 'active' },
+        { teamId, userId: 'old', role: 'user', status: 'active' }
+      ])
+
+      await findBackfill(backfillId).run(db)
+
+      const rows = await members(teamId)
+
+      expect(
+        rows.filter((row) => row.status === 'active').map((row) => row._id)
+      ).toEqual([insertedIds[0]])
+    })
+
+    test('leaves a person who is active in two teams, or removed twice, alone', async () => {
+      const one = await insertTeam('One')
+      const two = await insertTeam('Two')
+
+      await db.collection('teamMembers').insertMany([
+        { teamId: one, userId: 'both', role: 'admin', status: 'active' },
+        { teamId: two, userId: 'both', role: 'admin', status: 'active' },
+        { teamId: one, userId: 'gone', role: 'user', status: 'removed' },
+        { teamId: one, userId: 'gone', role: 'user', status: 'removed' }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+
+      expect(result.duplicatesRemoved).toBe(0)
+      expect(
+        await db.collection('teamMembers').countDocuments({ status: 'active' })
+      ).toBe(2)
+    })
+
+    test('unsets email on every membership', async () => {
+      const teamId = await insertTeam('Emails')
+
+      await db.collection('teamMembers').insertMany([
+        { teamId, userId: 'a', email: null, role: 'admin', status: 'active' },
+        {
+          teamId,
+          userId: 'b',
+          email: 'b@defra.gov.uk',
+          role: 'user',
+          status: 'active'
+        },
+        { teamId, userId: 'c', role: 'user', status: 'active' }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+
+      expect(result.emailsUnset).toBe(2)
+      expect(
+        await db
+          .collection('teamMembers')
+          .countDocuments({ email: { $exists: true } })
+      ).toBe(0)
+    })
+
+    test('sets requestedRole from role on memberships that carry an idempotencyKey, and only those (thread 2)', async () => {
+      const teamId = await insertTeam('Requested roles')
+
+      await db.collection('teamMembers').insertMany([
+        {
+          teamId,
+          userId: 'added-as-user',
+          role: 'admin',
+          status: 'active',
+          idempotencyKey: 'key-1'
+        },
+        {
+          teamId,
+          userId: 'already-set',
+          role: 'admin',
+          requestedRole: 'user',
+          status: 'active',
+          idempotencyKey: 'key-2'
+        },
+        { teamId, userId: 'creator', role: 'admin', status: 'active' },
+        {
+          teamId,
+          userId: 'null-key',
+          role: 'user',
+          status: 'removed',
+          idempotencyKey: null
+        }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+      const byUser = Object.fromEntries(
+        (await members(teamId)).map((row) => [row.userId, row])
+      )
+
+      expect(result.requestedRolesSet).toBe(1)
+      expect(byUser['added-as-user'].requestedRole).toBe('admin')
+      expect(byUser['already-set'].requestedRole).toBe('user')
+      expect(byUser.creator).not.toHaveProperty('requestedRole')
+      expect(byUser['null-key']).not.toHaveProperty('requestedRole')
+    })
+
+    test('deletes people with no oid and removes their active memberships, keeping people with one', async () => {
+      const teamId = await insertTeam('Legacy')
+      const { insertedIds } = await db.collection('users').insertMany([
+        { email: 'legacy@defra.gov.uk', displayName: 'Legacy' },
+        { email: 'nulled@defra.gov.uk', oid: null },
+        { oid: 'real-oid', tid: 'real-tid', email: 'real@defra.gov.uk' }
+      ])
+      const [legacyId, nulledId, realId] =
+        Object.values(insertedIds).map(String)
+
+      await db.collection('teamMembers').insertMany([
+        { teamId, userId: legacyId, role: 'user', status: 'active' },
+        { teamId, userId: nulledId, role: 'user', status: 'active' },
+        { teamId, userId: realId, role: 'admin', status: 'active' }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+
+      expect(result).toMatchObject({ usersDeleted: 2, membershipsRemoved: 2 })
+      expect(await db.collection('users').countDocuments({})).toBe(1)
+      expect(
+        (await members(teamId)).map((row) => [
+          row.userId === realId,
+          row.status
+        ])
+      ).toEqual([
+        [false, 'removed'],
+        [false, 'removed'],
+        [true, 'active']
+      ])
+    })
+
+    test('returns counts only, with the number of teams left with no active Admin', async () => {
+      const orphaned = await insertTeam('Orphaned')
+      const healthy = await insertTeam('Healthy')
+      const { insertedId } = await db
+        .collection('users')
+        .insertOne({ email: 'only.admin@defra.gov.uk' })
+
+      await db.collection('teamMembers').insertMany([
+        {
+          teamId: orphaned,
+          userId: insertedId.toString(),
+          email: 'only.admin@defra.gov.uk',
+          role: 'admin',
+          status: 'active'
+        },
+        {
+          teamId: healthy,
+          userId: 'real-admin',
+          role: 'admin',
+          status: 'active'
+        }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+
+      expect(result).toEqual({
+        invitationsRemoved: 0,
+        duplicatesRemoved: 0,
+        emailsUnset: 1,
+        requestedRolesSet: 0,
+        usersDeleted: 1,
+        membershipsRemoved: 1,
+        credentialsOrphaned: 0,
+        teamsWithoutAdmin: 1
+      })
+      expect(JSON.stringify(result)).not.toContain('@')
+    })
+
+    test('counts, and keeps, the credentials of a person it deletes (I1)', async () => {
+      const { insertedId } = await db
+        .collection('users')
+        .insertOne({ email: 'owner@defra.gov.uk' })
+      const owner = insertedId.toString()
+
+      await db.collection('credentials').insertMany([
+        { userId: owner, modelSlug: 'gpt-4o', tier: 'research' },
+        { userId: owner, modelSlug: 'gpt-5-nano', tier: 'research' },
+        { userId: 'someone-who-stays', modelSlug: 'gpt-4o', tier: 'research' }
+      ])
+
+      const result = await findBackfill(backfillId).run(db)
+
+      expect(result.credentialsOrphaned).toBe(2)
+      expect(
+        await db.collection('credentials').countDocuments({ userId: owner })
+      ).toBe(2)
+      await db.collection('credentials').deleteMany({
+        userId: { $in: [owner, 'someone-who-stays'] }
+      })
+    })
+
+    test('changes nothing the second time it runs', async () => {
+      const teamId = await insertTeam('Twice')
+
+      await db.collection('teamMembers').insertMany([
+        {
+          teamId,
+          userId: 'admin',
+          email: 'a@defra.gov.uk',
+          role: 'admin',
+          status: 'active'
+        },
+        { teamId, userId: 'admin', role: 'user', status: 'active' },
+        {
+          teamId,
+          userId: null,
+          email: 'i@defra.gov.uk',
+          role: 'user',
+          status: 'invited'
+        }
+      ])
+      await findBackfill(backfillId).run(db)
+      const after = await members(teamId)
+
+      const second = await findBackfill(backfillId).run(db)
+
+      expect(second).toEqual({
+        invitationsRemoved: 0,
+        duplicatesRemoved: 0,
+        emailsUnset: 0,
+        requestedRolesSet: 0,
+        usersDeleted: 0,
+        membershipsRemoved: 0,
+        credentialsOrphaned: 0,
+        teamsWithoutAdmin: 0
+      })
+      expect(await members(teamId)).toEqual(after)
+    })
+  })
 })

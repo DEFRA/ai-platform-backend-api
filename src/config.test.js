@@ -106,6 +106,100 @@ describe('#config provisioning', () => {
   })
 })
 
+describe('#config directory', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  test('defaults to the mock directory with the Defra domains, Graph base URL and a 5 second timeout', async () => {
+    const { config } = await loadConfig({})
+
+    expect(config.get('directory')).toEqual({
+      mode: 'mock',
+      allowedDomains: ['defra.gov.uk', 'defra.onmicrosoft.com'],
+      graphBaseUrl: 'https://graph.microsoft.com',
+      timeoutMs: 5000,
+      searchMaxPages: 5,
+      searchTimeoutMs: 10000
+    })
+  })
+
+  test('lets people sign in from the same two domains by default, as a list', async () => {
+    const { config } = await loadConfig({})
+
+    expect(config.get('allowedEmailDomains')).toEqual([
+      'defra.gov.uk',
+      'defra.onmicrosoft.com'
+    ])
+  })
+
+  test('reads the sign-in domains as a comma-separated list', async () => {
+    const { config } = await loadConfig({
+      ALLOWED_EMAIL_DOMAINS: 'defra.gov.uk,example.gov.uk'
+    })
+
+    expect(config.get('allowedEmailDomains')).toEqual([
+      'defra.gov.uk',
+      'example.gov.uk'
+    ])
+  })
+
+  test('reads the allowed domains as a comma-separated list', async () => {
+    const { config } = await loadConfig({
+      DIRECTORY_ALLOWED_DOMAINS: 'defra.gov.uk,example.gov.uk'
+    })
+
+    expect(config.get('directory.allowedDomains')).toEqual([
+      'defra.gov.uk',
+      'example.gov.uk'
+    ])
+  })
+
+  test('refuses a mode that is neither mock nor graph', async () => {
+    await expect(loadConfig({ DIRECTORY_MODE: 'ldap' })).rejects.toThrow(
+      /directory\.mode/
+    )
+  })
+
+  test('reads the mode, base URL and timeout from the environment', async () => {
+    const { config } = await loadConfig({
+      DIRECTORY_MODE: 'graph',
+      DIRECTORY_GRAPH_BASE_URL: 'https://graph.microsoft.us',
+      DIRECTORY_TIMEOUT_MS: '2500'
+    })
+
+    expect(config.get('directory')).toMatchObject({
+      mode: 'graph',
+      graphBaseUrl: 'https://graph.microsoft.us',
+      timeoutMs: 2500
+    })
+  })
+
+  test('reads the search bounds from the environment', async () => {
+    const { config } = await loadConfig({
+      DIRECTORY_SEARCH_MAX_PAGES: '3',
+      DIRECTORY_SEARCH_TIMEOUT_MS: '8000'
+    })
+
+    expect(config.get('directory')).toMatchObject({
+      searchMaxPages: 3,
+      searchTimeoutMs: 8000
+    })
+  })
+
+  test('refuses a search that may read no page', async () => {
+    await expect(
+      loadConfig({ DIRECTORY_SEARCH_MAX_PAGES: '0' })
+    ).rejects.toThrow(/searchMaxPages/)
+  })
+
+  test('refuses a Graph base URL that is not a URL', async () => {
+    await expect(
+      loadConfig({ DIRECTORY_GRAPH_BASE_URL: 'not a url' })
+    ).rejects.toThrow(/graphBaseUrl/)
+  })
+})
+
 describe('#config research environment', () => {
   afterEach(() => {
     vi.unstubAllEnvs()

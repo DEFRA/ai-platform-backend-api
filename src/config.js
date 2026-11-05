@@ -136,9 +136,9 @@ export const config = convict({
     }
   },
   allowedEmailDomains: {
-    doc: 'Comma-separated list of email domains allowed to sign in',
-    format: String,
-    default: 'defra.gov.uk',
+    doc: 'Comma-separated email domains allowed to sign in, matched exactly and without regard to case; an address with #EXT# is refused (the backend is sent no claims, so the portal refuses other guests from the ID token). The same two domains as directory.allowedDomains by default, so a person an Admin adds can sign in (design F)',
+    format: Array,
+    default: ['defra.gov.uk', 'defra.onmicrosoft.com'],
     env: 'ALLOWED_EMAIL_DOMAINS'
   },
   research: {
@@ -198,6 +198,48 @@ export const config = convict({
     format: ['mock', 'sqs'],
     default: 'mock',
     env: 'TENANT_ORCHESTRATOR'
+  },
+  directory: {
+    mode: {
+      doc: 'Where team Admins find people to add: mock searches seeded fictional people; graph searches the Entra directory on behalf of the signed-in Admin. graph is refused until the portal token is wired (B27, hand-off H1); mock is refused in prod',
+      format: ['mock', 'graph'],
+      default: 'mock',
+      env: 'DIRECTORY_MODE'
+    },
+    allowedDomains: {
+      doc: 'Comma-separated domains whose members may be added to a team, matched exactly against the UPN and mail',
+      format: Array,
+      default: ['defra.gov.uk', 'defra.onmicrosoft.com'],
+      env: 'DIRECTORY_ALLOWED_DOMAINS'
+    },
+    graphBaseUrl: {
+      doc: 'Microsoft Graph base URL, used when directory.mode is graph',
+      format: 'url',
+      default: 'https://graph.microsoft.com',
+      env: 'DIRECTORY_GRAPH_BASE_URL'
+    },
+    timeoutMs: {
+      doc: 'Timeout in ms for each Microsoft Graph or token call',
+      format: 'nat',
+      default: 5000,
+      env: 'DIRECTORY_TIMEOUT_MS'
+    },
+    searchMaxPages: {
+      doc: 'The most pages of 50 people one directory search reads, following Graph @odata.nextLink, so people who can be added are found behind members and ineligible people. A search that would need more returns what it read; the Admin narrows the search',
+      format: (value) => {
+        if (!Number.isInteger(value) || value < 1) {
+          throw new TypeError('must be a whole number of at least 1')
+        }
+      },
+      default: 5,
+      env: 'DIRECTORY_SEARCH_MAX_PAGES'
+    },
+    searchTimeoutMs: {
+      doc: 'Timeout in ms for the whole of one directory search across its pages, so a slow Graph cannot hold the Admin for pages times the per-call timeout',
+      format: 'nat',
+      default: 10000,
+      env: 'DIRECTORY_SEARCH_TIMEOUT_MS'
+    }
   },
   gitops: gitopsConfigSchema,
   aipEnvironments: {

@@ -32,6 +32,42 @@ describe('#runBackfills', () => {
     expect(record.result).toEqual({ modifiedCount: 3 })
   })
 
+  test('logs the counts a backfill returns, so an operator can read them at start-up', async () => {
+    const logger = { info: vi.fn() }
+    const registry = [
+      {
+        id: 'test-backfill-logged',
+        description: 'logged',
+        run: vi.fn().mockResolvedValue({ usersDeleted: 2 })
+      }
+    ]
+
+    await runBackfills(db, logger, registry)
+
+    expect(logger.info).toHaveBeenCalledWith(
+      { result: { usersDeleted: 2 } },
+      'Applied backfill "test-backfill-logged": logged'
+    )
+  })
+
+  test('logs a null result for a backfill that returns nothing', async () => {
+    const logger = { info: vi.fn() }
+    const registry = [
+      {
+        id: 'test-backfill-silent',
+        description: 'silent',
+        run: vi.fn().mockResolvedValue(undefined)
+      }
+    ]
+
+    await runBackfills(db, logger, registry)
+
+    expect(logger.info).toHaveBeenCalledWith(
+      { result: null },
+      'Applied backfill "test-backfill-silent": silent'
+    )
+  })
+
   test('does not reapply a backfill already recorded as applied', async () => {
     const run = vi.fn().mockResolvedValue({ modifiedCount: 0 })
     const registry = [{ id: 'test-backfill-apply', description: 'test', run }]
