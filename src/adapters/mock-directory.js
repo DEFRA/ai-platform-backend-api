@@ -23,7 +23,7 @@ function userDocToDirectoryPerson(userDoc) {
     oid: userDoc.oid,
     displayName: userDoc.displayName,
     mail: userDoc.mail ?? userDoc.email ?? null,
-    userPrincipalName: userDoc.userPrincipalName
+    userPrincipalName: userDoc.userPrincipalName ?? userDoc.email
   }
 }
 
