@@ -1,27 +1,39 @@
-import Joi from 'joi'
 import Boom from '@hapi/boom'
 
-import { entraIdField } from '#/common/helpers/entra-id.js'
+import { ACCESS } from '#/common/helpers/auth/access.js'
+import { boomWithCode } from '#/common/helpers/boom-with-code.js'
 import { upsertUser, findCurrentUser } from '#/services/user-service.js'
 
-const entraId = entraIdField.required()
+const MAX_DISPLAY_NAME_LENGTH = 100
 
 export const users = [
   {
-    method: 'POST',
-    path: '/v1/users',
+    // Sign-in records the person from the validated token's claims and
+    // nothing the caller sends: the body, if any, is never read.
+    method: 'PUT',
+    path: '/v1/users/me',
     options: {
-      validate: {
-        payload: Joi.object({
-          oid: entraId,
-          tid: entraId,
-          email: Joi.string().email().max(254).required(),
-          displayName: Joi.string().min(1).max(100).required()
-        }).unknown(false)
-      }
+      app: { access: ACCESS.signIn },
+      payload: { parse: false }
     },
     handler: async (request, h) => {
-      const { user, team } = await upsertUser(request.db, request.payload)
+      const { oid, tid, email, name } = request.auth.credentials
+
+      if (!email || !name) {
+        throw boomWithCode(
+          Boom.unauthorized,
+          'The token has no email or name claim',
+          'invalid-token'
+        )
+      }
+
+      const { user, team } = await upsertUser(request.db, {
+        oid,
+        tid,
+        email,
+        displayName: name.slice(0, MAX_DISPLAY_NAME_LENGTH),
+        actor: request.auth.credentials
+      })
 
       return h.response({ user, team })
     }
@@ -29,17 +41,11 @@ export const users = [
   {
     method: 'GET',
     path: '/v1/users/me',
-    options: {
-      validate: {
-        headers: Joi.object({
-          'x-user-id': Joi.string().required()
-        }).unknown(true)
-      }
-    },
+    options: { app: { access: ACCESS.user } },
     handler: async (request, h) => {
       const result = await findCurrentUser(
         request.db,
-        request.headers['x-user-id']
+        request.auth.credentials.userId
       )
 
       if (!result) {

@@ -6,6 +6,7 @@ import { convictValidateAipEnvironments } from '#/common/helpers/convict/validat
 import { AZURE_APIM, DEFAULT_GATEWAY } from '#/adapters/gateway-keys.js'
 import { gitopsConfigSchema } from '#/config-gitops.js'
 import { githubConfigSchema } from '#/config-github.js'
+import { portalAuthConfigSchema } from '#/config-portal-auth.js'
 
 convict.addFormat(convictValidateMongoUri)
 convict.addFormat(convictValidateAipEnvironments)
@@ -135,12 +136,7 @@ export const config = convict({
       env: 'TRACING_HEADER'
     }
   },
-  allowedEmailDomains: {
-    doc: 'Comma-separated email domains allowed to sign in, matched exactly and without regard to case; an address with #EXT# is refused (the backend is sent no claims, so the portal refuses other guests from the ID token). The same two domains as directory.allowedDomains by default, so a person an Admin adds can sign in (design F)',
-    format: Array,
-    default: ['defra.gov.uk', 'defra.onmicrosoft.com'],
-    env: 'ALLOWED_EMAIL_DOMAINS'
-  },
+  portalAuth: portalAuthConfigSchema,
   research: {
     environment: {
       doc: 'The AIP_ENVIRONMENTS entry research keys are issued into (subscription, API Management instance and tenants vault). Each credential records the environment it was issued in, so changing this never strands an existing key',
@@ -384,6 +380,22 @@ export const config = convict({
 })
 
 config.validate({ allowed: 'strict' })
+
+// The backend refuses to start without the identifiers every token is checked
+// against, rather than accept tokens it cannot check.
+for (const [key, name] of [
+  ['portalAuth.tenantId', 'PORTAL_AUTH_TENANT_ID'],
+  ['portalAuth.audience', 'PORTAL_AUTH_AUDIENCE'],
+  ['portalAuth.clientId', 'PORTAL_AUTH_CLIENT_ID']
+]) {
+  if (!config.get(key)) {
+    throw new Error(`${name} must be set`)
+  }
+}
+
+if (isProduction && config.get('portalAuth.mockIssuerUrl')) {
+  throw new Error('PORTAL_AUTH_MOCK_ISSUER_URL must not be set in production')
+}
 
 // Client secret is only required for the local-only client-secret auth
 // method; federated auth proves identity via the AWS STS token instead.

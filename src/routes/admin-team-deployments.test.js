@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { signInAs, withTestUsers } from '#/common/test-helpers/portal-token.js'
+
 describe('#admin team-deployments routes', () => {
   let server
   let adminId
@@ -13,8 +15,11 @@ describe('#admin team-deployments routes', () => {
 
     server = await createServer()
     await server.initialize()
+    withTestUsers(server)
 
     const { insertedId } = await server.db.collection('users').insertOne({
+      oid: randomUUID(),
+      tid: '6f504113-6b64-43f2-ade9-242e05780007',
       email: 'route-platform-admin@defra.gov.uk',
       displayName: 'Platform Admin',
       roles: ['research-user', 'platform-admin']
@@ -41,15 +46,11 @@ describe('#admin team-deployments routes', () => {
     const oid = failing
       ? `00000000-0000-0000-0002-${randomUUID().slice(-12)}`
       : randomUUID()
-    const { result: signedIn } = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid,
-        tid: '6f504113-6b64-43f2-ade9-242e05780007',
-        email: `requester-${oid}@defra.gov.uk`,
-        displayName: 'Requester'
-      }
+    const { result: signedIn } = await signInAs(server, {
+      oid,
+      tid: '6f504113-6b64-43f2-ade9-242e05780007',
+      email: `requester-${oid}@defra.gov.uk`,
+      displayName: 'Requester'
     })
     const userId = signedIn.user._id.toString()
     const { result: created } = await server.inject({
@@ -182,12 +183,13 @@ describe('#admin team-deployments routes', () => {
     expect(statusCode).toBe(404)
   })
 
-  test('POST /v1/admin/team-deployments/{id}/retry requires the x-user-id header', async () => {
-    const { statusCode } = await server.inject({
+  test('POST /v1/admin/team-deployments/{id}/retry requires a token', async () => {
+    const { result, statusCode } = await server.inject({
       method: 'POST',
       url: '/v1/admin/team-deployments/any/retry'
     })
 
-    expect(statusCode).toBe(400)
+    expect(statusCode).toBe(401)
+    expect(result.code).toBe('invalid-token')
   })
 })

@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 
 import { ObjectId } from 'mongodb'
 
+import { signInAs, withTestUsers } from '#/common/test-helpers/portal-token.js'
+
 const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 
 // The research models these tests issue keys for; the mock research file
@@ -33,6 +35,7 @@ describe('#credentials routes', () => {
 
     server = await createServer()
     await server.initialize()
+    withTestUsers(server)
     deployInResearch(DEPLOYED_FOR_RESEARCH)
   })
 
@@ -141,6 +144,40 @@ describe('#credentials routes', () => {
 
     expect(statusCode).toBe(409)
     expect(result.code).toBe('active-credential-exists')
+  })
+
+  test('GET /v1/credentials/{id} expires an overdue key as the system, not as its owner', async () => {
+    const userId = `user-lazy-${randomUUID()}`
+    const { insertedId } = await server.db.collection('credentials').insertOne({
+      userId,
+      modelSlug: 'gpt-5-mini',
+      tier: 'research',
+      type: 'apim-subscription',
+      status: 'active',
+      renewalCount: 0,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() - 60 * 1000).toISOString()
+    })
+
+    const { statusCode, result } = await server.inject({
+      method: 'GET',
+      url: `/v1/credentials/${insertedId}`,
+      headers: { 'x-user-id': userId }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.status).toBe('expired')
+    expect(
+      await server.db.collection('auditEvents').findOne({
+        action: 'credential.expire',
+        resourceId: insertedId.toString()
+      })
+    ).toMatchObject({
+      actorUserId: 'app:ai-platform-backend',
+      role: 'system',
+      oid: null,
+      tid: null
+    })
   })
 
   test('POST /v1/credentials rejects re-issuing for a model with an expired credential, pointing to renew', async () => {
@@ -1076,10 +1113,11 @@ describe('#credentials routes', () => {
   // made-up id in these tests) need not be a real person. The name is from
   // when this invited by email.
   async function inviteAndSignIn(teamId, _adminUserId, email, displayName) {
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: { oid: randomUUID(), tid: ENTRA_TENANT_ID, email, displayName }
+    const signIn = await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email,
+      displayName
     })
     const userId = signIn.result.user._id.toString()
 

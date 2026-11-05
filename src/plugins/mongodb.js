@@ -100,9 +100,6 @@ async function dropIndexIfExists(collection, name) {
 async function createIndexes(db) {
   await db.collection('mongo-locks').createIndex({ id: 1 })
 
-  // Example of how to create a mongodb index. Remove as required
-  await db.collection('example-data').createIndex({ id: 1 })
-
   await db.collection('models').createIndex({ slug: 1 }, { unique: true })
   // Backs the provider filter on GET /v1/models and provider -> offering lookups.
   await db.collection('models').createIndex({ provider: 1, offering: 1 })

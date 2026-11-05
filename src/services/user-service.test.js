@@ -1,7 +1,5 @@
 import { randomUUID } from 'node:crypto'
 
-import { ObjectId } from 'mongodb'
-
 import { dbFailingOn } from '#/common/test-helpers/failing-db.js'
 
 const TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
@@ -115,40 +113,6 @@ describe('user-service', () => {
       await expect(
         service.ensurePersonFromDirectory(failing, person())
       ).rejects.toThrow('connection lost')
-    })
-  })
-
-  describe('#requireUserTenant', () => {
-    test('returns the tenant of a person who has signed in', async () => {
-      const { insertedId } = await db
-        .collection('users')
-        .insertOne({ oid: randomUUID(), tid: TENANT_ID })
-
-      await expect(
-        service.requireUserTenant(db, insertedId.toString())
-      ).resolves.toBe(TENANT_ID)
-    })
-
-    test.each([
-      ['an id that is not an ObjectId', 'not-an-id'],
-      ['a person who does not exist', new ObjectId().toString()]
-    ])('asks to sign in again for %s', async (_, userId) => {
-      await expect(service.requireUserTenant(db, userId)).rejects.toMatchObject(
-        {
-          output: { statusCode: 403 },
-          data: { code: 'entra-identity-required' }
-        }
-      )
-    })
-
-    test('asks to sign in again for a record with no tenant', async () => {
-      const { insertedId } = await db
-        .collection('users')
-        .insertOne({ email: 'no.tenant@defra.gov.uk' })
-
-      await expect(
-        service.requireUserTenant(db, insertedId.toString())
-      ).rejects.toMatchObject({ data: { code: 'entra-identity-required' } })
     })
   })
 })

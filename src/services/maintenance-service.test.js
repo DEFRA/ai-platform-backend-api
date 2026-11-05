@@ -61,6 +61,33 @@ describe('#expireCredentials', () => {
     )
   })
 
+  test('audits each expiry as the system, not as the credential owner', async () => {
+    const recordAuditEvent = vi.fn().mockResolvedValue(undefined)
+    vi.doMock('#/services/audit-service.js', () => ({ recordAuditEvent }))
+
+    const { expireCredentials } =
+      await import('#/services/maintenance-service.js')
+    const { systemActor } =
+      await import('#/common/helpers/auth/system-actor.js')
+
+    const db = fakeDb([{ _id: 'cred-9', userId: 'user-9' }])
+    const suspend = vi.fn().mockResolvedValue({ externalId: 'cred-9' })
+    const registry = { forCredential: () => ({ issuer: { suspend } }) }
+
+    await expireCredentials(db, fakeLocker(), registry)
+
+    expect(recordAuditEvent).toHaveBeenCalledTimes(1)
+    expect(recordAuditEvent).toHaveBeenCalledWith(
+      db,
+      expect.objectContaining({
+        actor: systemActor,
+        action: 'credential.expire',
+        resourceId: 'cred-9'
+      })
+    )
+    expect(recordAuditEvent.mock.calls[0][1]).not.toHaveProperty('actorUserId')
+  })
+
   test('works without a logger (e.g. legacy callers)', async () => {
     vi.doMock('#/services/audit-service.js', () => ({
       recordAuditEvent: vi.fn().mockResolvedValue(undefined)

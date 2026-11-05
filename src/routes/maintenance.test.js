@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 
 import { ObjectId } from 'mongodb'
 
+import { authFor, withTestUsers } from '#/common/test-helpers/portal-token.js'
+
 describe('#maintenance routes', () => {
   let server
 
@@ -13,6 +15,7 @@ describe('#maintenance routes', () => {
 
     server = await createServer()
     await server.initialize()
+    withTestUsers(server)
   })
 
   afterAll(async () => {
@@ -27,6 +30,16 @@ describe('#maintenance routes', () => {
     })
 
     expect(statusCode).toBe(401)
+  })
+
+  test('POST /maintenance/expire-credentials still needs its own token beside an Entra token', async () => {
+    const { statusCode } = await server.inject({
+      method: 'POST',
+      url: '/maintenance/expire-credentials',
+      headers: authFor('maintenance-bystander')
+    })
+
+    expect(statusCode).toBe(400)
   })
 
   test('POST /maintenance/expire-credentials expires past-due credentials', async () => {

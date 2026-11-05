@@ -6,11 +6,9 @@ import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
 import * as directoryRegistry from '#/adapters/directory-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { emailOf, isEligible } from '#/services/directory-eligibility.js'
-import { requireTeamAdmin, requireTeamId } from '#/services/team-service.js'
-import {
-  ensurePersonFromDirectory,
-  requireUserTenant
-} from '#/services/user-service.js'
+import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
+import { requireTeamId } from '#/services/team-service.js'
+import { ensurePersonFromDirectory } from '#/services/user-service.js'
 
 // The most people one search returns; the Admin narrows the search for more.
 const MAX_PEOPLE_RESULTS = 20
@@ -48,18 +46,21 @@ async function findUserById(db, userId) {
  * current directory from the registry, which the directoryPlugin updates
  * after MongoDB is ready to include real user records from the database.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, search: string, userAssertion?: string}} params - `teamId` is the team's id or slug
+ * @param {{teamId: string, actor: {userId: string}, search: string, userAssertion?: string}} params - `teamId` is the team's id or slug; `actor` is the token's credentials
  * @param {{directory?: import('#/adapters/directory.js').Directory, allowedDomains?: string[]}} [deps]
  * @returns {Promise<{items: {oid: string, displayName: string, email: string}[]}>}
  */
 export async function searchTeamPeople(
   db,
-  { teamId: teamRef, actorUserId, search, userAssertion },
+  { teamId: teamRef, actor, search, userAssertion },
   { directory, allowedDomains = config.get('directory.allowedDomains') } = {}
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamAdmin(db, { teamId, actorUserId, action: 'add members' })
+  await requireTeamRole(db, actor, teamId, {
+    role: TEAM_ADMIN,
+    action: 'add members'
+  })
 
   // Use the passed directory for testing, or the current directory from the registry in production
   // (which the directoryPlugin updates after MongoDB is ready to include real user records)
@@ -193,7 +194,9 @@ async function insertMembership(db, member, request) {
     // someone else must not be told that person was added.
     const winnerUser = await findUserById(db, winner.userId)
 
-    return { replay: replayOf(winner, winnerUser, request) }
+    return {
+      replay: { member: winner, added: replayOf(winner, winnerUser, request) }
+    }
   }
 }
 
@@ -211,20 +214,62 @@ async function findReplay(db, teamId, idempotencyKey, request) {
     .findOne({ teamId, idempotencyKey })
 
   return member
-    ? replayOf(member, await findUserById(db, member.userId), request)
+    ? {
+        member,
+        added: replayOf(member, await findUserById(db, member.userId), request)
+      }
     : null
 }
 
-function recordMemberAdded(db, { actorUserId, teamId, role, oid }) {
-  return recordAuditEvent(db, {
-    actorUserId,
-    action: 'team.addMember',
-    resource: 'team',
-    resourceId: teamId,
-    outcome: 'success',
-    code: role,
-    subjectOid: oid
+// The claims an add's audit event records for its actor, kept with the
+// membership so a replay by another admin audits the admin who made the add.
+function originOf({ userId, oid, tid, azp, uti }) {
+  return { userId, oid, tid, azp, uti }
+}
+
+/**
+ * Audits an add, once per Idempotency-Key. The membership is written before
+ * its audit, so an audit write that failed leaves a member with no event; the
+ * event's id comes from the key, so a retry (a replay) records it again and a
+ * key that already has its event is left alone (a duplicate id is the event
+ * already there, not a failure).
+ */
+async function recordMemberAdded(
+  db,
+  { actor, teamId, role, oid, idempotencyKey }
+) {
+  try {
+    await recordAuditEvent(db, {
+      eventId: `team.addMember:${teamId}:${idempotencyKey}`,
+      actor,
+      role: TEAM_ADMIN,
+      action: 'team.addMember',
+      resource: 'team',
+      resourceId: teamId,
+      outcome: 'success',
+      code: role,
+      subjectOid: oid
+    })
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) {
+      throw error
+    }
+  }
+}
+
+/**
+ * A replay of an add, once its audit event is known to exist: the first
+ * request may have written the membership and failed before auditing it. The
+ * event names the admin who made the add (`addedBy`), not the one replaying
+ * it; a membership with none recorded names the replaying admin.
+ */
+async function auditedReplay(db, { member, added }, audit) {
+  await recordMemberAdded(db, {
+    ...audit,
+    actor: member.addedBy ?? audit.actor
   })
+
+  return added
 }
 
 /**
@@ -236,15 +281,16 @@ function recordMemberAdded(db, { actorUserId, teamId, role, oid }) {
  * not disclosed); their `users` record is made if they have never signed in,
  * and is the one their first sign-in then finds. A repeat of the same
  * Idempotency-Key for the same person and role returns the same membership,
- * even after the member's role has since been changed; for another person or
+ * even after the member's role has since been changed, and records the add's
+ * audit event if the first request failed before writing it; for another person or
  * role it is `409 idempotency-key-reused`.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, oid: string, role: 'admin'|'user', idempotencyKey: string, userAssertion?: string}} params - `teamId` is the team's id or slug
+ * @param {{teamId: string, actor: {userId: string, tid: string}, oid: string, role: 'admin'|'user', idempotencyKey: string, userAssertion?: string}} params - `teamId` is the team's id or slug; `actor` is the token's credentials, and the person is added to the actor's own tenant
  * @param {{directory?: import('#/adapters/directory.js').Directory, allowedDomains?: string[]}} [deps]
  */
 export async function addMember(
   db,
-  { teamId: teamRef, actorUserId, oid, role, idempotencyKey, userAssertion },
+  { teamId: teamRef, actor, oid, role, idempotencyKey, userAssertion },
   {
     directory = directoryRegistry.directory,
     allowedDomains = config.get('directory.allowedDomains')
@@ -252,15 +298,23 @@ export async function addMember(
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamAdmin(db, { teamId, actorUserId, action: 'add members' })
+  await requireTeamRole(db, actor, teamId, {
+    role: TEAM_ADMIN,
+    action: 'add members'
+  })
 
   const replay = await findReplay(db, teamId, idempotencyKey, { oid, role })
 
   if (replay) {
-    return replay
+    return auditedReplay(db, replay, {
+      actor,
+      teamId,
+      role,
+      oid,
+      idempotencyKey
+    })
   }
 
-  const tid = await requireUserTenant(db, actorUserId)
   const person = await requireEligiblePerson(
     directory,
     { userAssertion, oid },
@@ -268,12 +322,13 @@ export async function addMember(
   )
   const user = await ensurePersonFromDirectory(db, {
     oid: person.oid,
-    tid,
+    tid: actor.tid,
     email: emailOf(person),
     displayName: person.displayName
   })
   const userId = user._id.toString()
   const request = { oid: person.oid, role }
+  const audit = { actor, teamId, role, oid: person.oid, idempotencyKey }
 
   const existingMember = await db
     .collection('teamMembers')
@@ -282,7 +337,14 @@ export async function addMember(
   if (existingMember) {
     // The same request, arriving while its twin was still being written.
     if (existingMember.idempotencyKey === idempotencyKey) {
-      return replayOf(existingMember, user, request)
+      return auditedReplay(
+        db,
+        {
+          member: existingMember,
+          added: replayOf(existingMember, user, request)
+        },
+        audit
+      )
     }
 
     throw memberExists()
@@ -295,15 +357,16 @@ export async function addMember(
     requestedRole: role,
     status: 'active',
     idempotencyKey,
+    addedBy: originOf(actor),
     createdAt: new Date().toISOString()
   }
   const inserted = await insertMembership(db, member, request)
 
   if (inserted.replay) {
-    return inserted.replay
+    return auditedReplay(db, inserted.replay, audit)
   }
 
-  await recordMemberAdded(db, { actorUserId, teamId, role, oid: person.oid })
+  await recordMemberAdded(db, audit)
 
   return toAddedMember({ _id: inserted.insertedId, ...member }, user)
 }

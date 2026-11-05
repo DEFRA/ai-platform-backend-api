@@ -1,6 +1,9 @@
 import { randomUUID } from 'node:crypto'
 
-import { ObjectId } from 'mongodb'
+import {
+  signInAs as signInWithToken,
+  withTestUsers
+} from '#/common/test-helpers/portal-token.js'
 
 const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 
@@ -28,6 +31,7 @@ describe('#teams routes', () => {
 
     server = await createServer()
     await server.initialize()
+    withTestUsers(server)
   })
 
   afterAll(async () => {
@@ -41,15 +45,11 @@ describe('#teams routes', () => {
   // A person who has signed in, as sign-in makes them; returns their
   // x-user-id, which is their `users` id.
   async function signInAs(label) {
-    const { result } = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: `${label}@defra.gov.uk`,
-        displayName: `Admin ${label}`
-      }
+    const { result } = await signInWithToken(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email: `${label}@defra.gov.uk`,
+      displayName: `Admin ${label}`
     })
 
     return result.user._id.toString()
@@ -504,15 +504,11 @@ describe('#teams routes', () => {
     expect(made.lastSignInAt).toBeUndefined()
     expect(made._id.toString()).toBe(member.userId)
 
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: SEEDED.daniel,
-        tid: ENTRA_TENANT_ID,
-        email: 'daniel.okafor@defra.gov.uk',
-        displayName: 'Daniel Okafor'
-      }
+    const signIn = await signInWithToken(server, {
+      oid: SEEDED.daniel,
+      tid: ENTRA_TENANT_ID,
+      email: 'daniel.okafor@defra.gov.uk',
+      displayName: 'Daniel Okafor'
     })
     const teams = await server.inject({
       method: 'GET',
@@ -534,15 +530,11 @@ describe('#teams routes', () => {
     const team = await teamWithAdmin('team-user-10c')
     const member = await addSeeded(team, 'farid')
 
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: SEEDED.farid,
-        tid: ENTRA_TENANT_ID,
-        email: 'Farid.Haidari@defra.onmicrosoft.com',
-        displayName: 'Farid Haidari'
-      }
+    const signIn = await signInWithToken(server, {
+      oid: SEEDED.farid,
+      tid: ENTRA_TENANT_ID,
+      email: 'Farid.Haidari@defra.onmicrosoft.com',
+      displayName: 'Farid Haidari'
     })
 
     expect(signIn.statusCode).toBe(200)
@@ -557,15 +549,11 @@ describe('#teams routes', () => {
 
   test('POST /v1/teams/{id}/members leaves the record of a person who has already signed in as it is', async () => {
     const team = await teamWithAdmin('team-user-10b')
-    const signedIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: SEEDED.eleanor,
-        tid: ENTRA_TENANT_ID,
-        email: 'eleanor.own.address@defra.gov.uk',
-        displayName: 'Eleanor Own Name'
-      }
+    const signedIn = await signInWithToken(server, {
+      oid: SEEDED.eleanor,
+      tid: ENTRA_TENANT_ID,
+      email: 'eleanor.own.address@defra.gov.uk',
+      displayName: 'Eleanor Own Name'
     })
 
     const member = await addSeeded(team, 'eleanor')
@@ -791,21 +779,7 @@ describe('#teams routes', () => {
     expect(result.member.displayName).toBe('Cerys Owen')
   })
 
-  test('POST /v1/teams/{id}/members asks the person to sign in again when the actor has no tenant', async () => {
-    const team = await teamWithAdmin('team-no-tenant')
-
-    await server.db
-      .collection('users')
-      .updateOne({ _id: new ObjectId(team.adminId) }, { $unset: { tid: '' } })
-    const { result, statusCode } = await addPerson(team, team.adminId, {
-      oid: SEEDED.amelia
-    })
-
-    expect(statusCode).toBe(403)
-    expect(result.code).toBe('entra-identity-required')
-  })
-
-  test('POST /v1/teams/{id}/members audits who added whom by object ID, never a name or email', async () => {
+  test('POST /v1/teams/{id}/members audits who added whom by object ID, with the token fields and the role used, never a name or email', async () => {
     const team = await teamWithAdmin('team-audit')
 
     await addSeeded(team, 'journey', 'admin')
@@ -817,11 +791,15 @@ describe('#teams routes', () => {
 
     expect(event).toMatchObject({
       actorUserId: team.adminId,
+      tid: ENTRA_TENANT_ID,
+      role: 'admin',
       outcome: 'success',
       code: 'admin',
       subjectOid: SEEDED.journey
     })
-    expect(JSON.stringify(event)).not.toMatch(/Journey|@defra/)
+    expect(event.oid).toEqual(expect.any(String))
+    expect(event.oid).not.toBe(SEEDED.journey)
+    expect(JSON.stringify(event)).not.toMatch(/Journey|@defra|Bearer|eyJ/)
   })
 
   test('POST /v1/teams/{id}/members gives 503 directory-unavailable when the directory fails, and adds nobody', async () => {
@@ -880,15 +858,11 @@ describe('#teams routes', () => {
     const team = await teamWithAdmin('team-user-11')
     const member = await addSeeded(team, 'eleanor')
 
-    await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: SEEDED.eleanor,
-        tid: ENTRA_TENANT_ID,
-        email: 'Eleanor.Signed.In@defra.gov.uk',
-        displayName: 'Eleanor Signed In'
-      }
+    await signInWithToken(server, {
+      oid: SEEDED.eleanor,
+      tid: ENTRA_TENANT_ID,
+      email: 'Eleanor.Signed.In@defra.gov.uk',
+      displayName: 'Eleanor Signed In'
     })
 
     const { result } = await server.inject({
@@ -1932,7 +1906,7 @@ describe('#teams routes', () => {
       expect(long.statusCode).toBe(200)
     })
 
-    test('refuses a request with no x-user-id', async () => {
+    test('refuses a request with no token', async () => {
       const team = await teamWithAdmin('search-9')
 
       const { statusCode } = await server.inject({
@@ -1941,19 +1915,33 @@ describe('#teams routes', () => {
         payload: { search: 'amelia' }
       })
 
-      expect(statusCode).toBe(400)
+      expect(statusCode).toBe(401)
     })
 
-    test('refuses a member who is not an admin', async () => {
+    test('refuses a member who is not an admin, and audits the refusal without the search text', async () => {
       const team = await teamWithAdmin('search-10')
       const member = await addSeeded(team, 'bashir')
 
       const { result, statusCode } = await search(team, member.userId, {
         search: 'amelia'
       })
+      const [event] = await server.db
+        .collection('auditEvents')
+        .find({
+          actorUserId: member.userId,
+          action: 'access.denied',
+          resourceId: team.teamId
+        })
+        .toArray()
 
       expect(statusCode).toBe(403)
       expect(result.code).toBe('admin-required')
+      expect(event).toMatchObject({
+        outcome: 'failure',
+        code: 'admin-required',
+        role: 'user'
+      })
+      expect(JSON.stringify(event)).not.toContain('amelia')
     })
 
     test('is not found for someone outside the team, and for an unknown team', async () => {
@@ -1967,9 +1955,16 @@ describe('#teams routes', () => {
         { search: 'amelia' },
         'slug'
       )
+      const refusal = await server.db
+        .collection('auditEvents')
+        .findOne({ actorUserId: outsider, action: 'access.denied' })
 
       expect(stranger.statusCode).toBe(404)
       expect(unknown.statusCode).toBe(404)
+      expect(refusal).toMatchObject({
+        resourceId: team.teamId,
+        code: 'not-a-member'
+      })
     })
 
     test('gives 503 directory-unavailable when the directory fails', async () => {
