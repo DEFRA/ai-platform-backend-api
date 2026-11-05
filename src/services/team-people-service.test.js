@@ -428,6 +428,68 @@ describe('team-people-service: adding people from the directory', () => {
     expect(await activeMemberships(team)).toBe(1)
   })
 
+  test('addMember repairs a missing audit event when the same key is retried after the audit write failed, and audits once (PR 71 round 3)', async () => {
+    const team = await teamWithAdmin('svc-audit-fails')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+    const auditEvents = () =>
+      db
+        .collection('auditEvents')
+        .countDocuments({ resourceId: team.teamId, action: 'team.addMember' })
+    // The membership is written first, so a lost audit write leaves the person
+    // a member: the retry, not the first request, must make the audit exist.
+    const failing = dbFailingOn(
+      db,
+      'auditEvents',
+      'insertOne',
+      new Error('connection lost')
+    )
+
+    await expect(
+      peopleService.addMember(
+        failing,
+        {
+          teamId: team.teamId,
+          actor: team.actor,
+          oid: person.oid,
+          role: 'user',
+          idempotencyKey,
+          userAssertion: 'user-token'
+        },
+        { directory, allowedDomains: DOMAINS }
+      )
+    ).rejects.toThrow('connection lost')
+    expect(await activeMemberships(team)).toBe(2)
+    expect(await auditEvents()).toBe(0)
+
+    const retried = await add(team, person, directory, { idempotencyKey })
+
+    expect(retried.userId).toBeDefined()
+    expect(await auditEvents()).toBe(1)
+
+    await add(team, person, directory, { idempotencyKey })
+
+    expect(await auditEvents()).toBe(1)
+    expect(await activeMemberships(team)).toBe(2)
+  })
+
+  test('addMember audits a first add once, and a replay of it does not audit again', async () => {
+    const team = await teamWithAdmin('svc-audit-once')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+
+    await add(team, person, directory, { idempotencyKey })
+    await add(team, person, directory, { idempotencyKey })
+
+    expect(
+      await db
+        .collection('auditEvents')
+        .countDocuments({ resourceId: team.teamId, action: 'team.addMember' })
+    ).toBe(1)
+  })
+
   test('searchTeamPeople shows the user principal name for a person whose mail is blank (thread 3)', async () => {
     const team = await teamWithAdmin('svc-search-blank')
     const person = ada({

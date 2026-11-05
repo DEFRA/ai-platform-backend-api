@@ -211,17 +211,44 @@ async function findReplay(db, teamId, idempotencyKey, request) {
     : null
 }
 
-function recordMemberAdded(db, { actor, teamId, role, oid }) {
-  return recordAuditEvent(db, {
-    actor,
-    role: TEAM_ADMIN,
-    action: 'team.addMember',
-    resource: 'team',
-    resourceId: teamId,
-    outcome: 'success',
-    code: role,
-    subjectOid: oid
-  })
+/**
+ * Audits an add, once per Idempotency-Key. The membership is written before
+ * its audit, so an audit write that failed leaves a member with no event; the
+ * event's id comes from the key, so a retry (a replay) records it again and a
+ * key that already has its event is left alone (a duplicate id is the event
+ * already there, not a failure).
+ */
+async function recordMemberAdded(
+  db,
+  { actor, teamId, role, oid, idempotencyKey }
+) {
+  try {
+    await recordAuditEvent(db, {
+      eventId: `team.addMember:${teamId}:${idempotencyKey}`,
+      actor,
+      role: TEAM_ADMIN,
+      action: 'team.addMember',
+      resource: 'team',
+      resourceId: teamId,
+      outcome: 'success',
+      code: role,
+      subjectOid: oid
+    })
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) {
+      throw error
+    }
+  }
+}
+
+/**
+ * A replay of an add, once its audit event is known to exist: the first
+ * request may have written the membership and failed before auditing it.
+ */
+async function auditedReplay(db, replay, audit) {
+  await recordMemberAdded(db, audit)
+
+  return replay
 }
 
 /**
@@ -233,7 +260,8 @@ function recordMemberAdded(db, { actor, teamId, role, oid }) {
  * not disclosed); their `users` record is made if they have never signed in,
  * and is the one their first sign-in then finds. A repeat of the same
  * Idempotency-Key for the same person and role returns the same membership,
- * even after the member's role has since been changed; for another person or
+ * even after the member's role has since been changed, and records the add's
+ * audit event if the first request failed before writing it; for another person or
  * role it is `409 idempotency-key-reused`.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, actor: {userId: string, tid: string}, oid: string, role: 'admin'|'user', idempotencyKey: string, userAssertion?: string}} params - `teamId` is the team's id or slug; `actor` is the token's credentials, and the person is added to the actor's own tenant
@@ -257,7 +285,13 @@ export async function addMember(
   const replay = await findReplay(db, teamId, idempotencyKey, { oid, role })
 
   if (replay) {
-    return replay
+    return auditedReplay(db, replay, {
+      actor,
+      teamId,
+      role,
+      oid,
+      idempotencyKey
+    })
   }
 
   const person = await requireEligiblePerson(
@@ -273,6 +307,7 @@ export async function addMember(
   })
   const userId = user._id.toString()
   const request = { oid: person.oid, role }
+  const audit = { actor, teamId, role, oid: person.oid, idempotencyKey }
 
   const existingMember = await db
     .collection('teamMembers')
@@ -281,7 +316,7 @@ export async function addMember(
   if (existingMember) {
     // The same request, arriving while its twin was still being written.
     if (existingMember.idempotencyKey === idempotencyKey) {
-      return replayOf(existingMember, user, request)
+      return auditedReplay(db, replayOf(existingMember, user, request), audit)
     }
 
     throw memberExists()
@@ -299,10 +334,10 @@ export async function addMember(
   const inserted = await insertMembership(db, member, request)
 
   if (inserted.replay) {
-    return inserted.replay
+    return auditedReplay(db, inserted.replay, audit)
   }
 
-  await recordMemberAdded(db, { actor, teamId, role, oid: person.oid })
+  await recordMemberAdded(db, audit)
 
   return toAddedMember({ _id: inserted.insertedId, ...member }, user)
 }
