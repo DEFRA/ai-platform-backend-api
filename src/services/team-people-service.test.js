@@ -1,8 +1,10 @@
 import { randomUUID } from 'node:crypto'
 
 import nock from 'nock'
+import { ObjectId } from 'mongodb'
 
 import { dbFailingOn } from '#/common/test-helpers/failing-db.js'
+import { actorFor } from '#/common/test-helpers/portal-token.js'
 
 // The graph directory adapter imports #/config.js, which snapshots MONGO_URI
 // on first import, so it is loaded in beforeAll (after the in-memory Mongo
@@ -70,26 +72,30 @@ describe('team-people-service: adding people from the directory', () => {
     }
   }
 
-  // A team and its Admin, who has signed in, made through the service.
+  // A team and its Admin, who has signed in, made through the service. The
+  // admin is the actor the token would give.
   async function teamWithAdmin(label) {
+    const tokenActor = actorFor('placeholder', { tid: TENANT_ID })
     const { user } = await userService.upsertUser(db, {
       oid: randomUUID(),
       tid: TENANT_ID,
       email: `${label}@defra.gov.uk`,
-      displayName: `Admin ${label}`
+      displayName: `Admin ${label}`,
+      actor: tokenActor
     })
     const adminId = user._id.toString()
+    const actor = actorFor(adminId, { oid: user.oid })
     const { team } = await service.createTeam(db, {
       // The unique part comes after the label alone, so a slug cut to its
       // length limit still holds it: the test database outlives a run, and a
       // label shared across runs would use up the numbered suffixes.
       name: `${label} ${randomUUID().slice(0, 6)}`,
       serviceCode: 'ABC',
-      createdBy: adminId,
+      actor,
       idempotencyKey: randomUUID()
     })
 
-    return { adminId, teamId: team._id.toString() }
+    return { adminId, actor, teamId: team._id.toString() }
   }
 
   function add(team, person, directory, overrides = {}) {
@@ -97,7 +103,7 @@ describe('team-people-service: adding people from the directory', () => {
       db,
       {
         teamId: team.teamId,
-        actorUserId: team.adminId,
+        actor: team.actor,
         oid: person.oid,
         role: 'user',
         idempotencyKey: randomUUID(),
@@ -296,6 +302,73 @@ describe('team-people-service: adding people from the directory', () => {
     })
   })
 
+  test('addMember makes the person’s record in the tenant the token names, and audits the actor with the role used', async () => {
+    const team = await teamWithAdmin('svc-tenant')
+    const person = ada()
+    const otherTenant = randomUUID()
+    const actor = { ...team.actor, tid: otherTenant }
+
+    await add({ ...team, actor }, person, directoryOf(person))
+
+    const made = await db
+      .collection('users')
+      .findOne({ oid: person.oid, tid: otherTenant })
+    const event = await db
+      .collection('auditEvents')
+      .findOne({ resourceId: team.teamId, action: 'team.addMember' })
+
+    expect(made).not.toBeNull()
+    expect(event).toMatchObject({
+      actorUserId: team.adminId,
+      oid: actor.oid,
+      tid: otherTenant,
+      azp: actor.azp,
+      role: 'admin',
+      subjectOid: person.oid
+    })
+  })
+
+  test.each([
+    ['a member who is not an admin', 'user', 403, 'admin-required'],
+    ['someone outside the team', null, 404, undefined]
+  ])(
+    'addMember and searchTeamPeople refuse %s before they reach the directory',
+    async (_, role, statusCode, code) => {
+      const team = await teamWithAdmin(`svc-refuse-${statusCode}`)
+      const person = ada()
+      const directory = directoryOf(person)
+      const userId = new ObjectId().toString()
+      const actor = actorFor(userId)
+
+      if (role) {
+        await db.collection('teamMembers').insertOne({
+          teamId: team.teamId,
+          userId,
+          role,
+          status: 'active'
+        })
+      }
+
+      const refusal = {
+        output: { statusCode },
+        ...(code && { data: { code } })
+      }
+
+      await expect(
+        add({ ...team, actor }, person, directory)
+      ).rejects.toMatchObject(refusal)
+      await expect(
+        peopleService.searchTeamPeople(
+          db,
+          { teamId: team.teamId, actor, search: 'ada' },
+          { directory, allowedDomains: DOMAINS }
+        )
+      ).rejects.toMatchObject(refusal)
+      expect(directory.getPerson).not.toHaveBeenCalled()
+      expect(directory.searchPeople).not.toHaveBeenCalled()
+    }
+  )
+
   test('addMember replays the same membership for twin requests that arrive together', async () => {
     const team = await teamWithAdmin('svc-twins')
     const person = ada()
@@ -343,7 +416,7 @@ describe('team-people-service: adding people from the directory', () => {
         failing,
         {
           teamId: team.teamId,
-          actorUserId: team.adminId,
+          actor: team.actor,
           oid: person.oid,
           role: 'user',
           idempotencyKey: randomUUID(),
@@ -353,6 +426,145 @@ describe('team-people-service: adding people from the directory', () => {
       )
     ).rejects.toThrow('connection lost')
     expect(await activeMemberships(team)).toBe(1)
+  })
+
+  test('addMember repairs a missing audit event when the same key is retried after the audit write failed, and audits once (PR 71 round 3)', async () => {
+    const team = await teamWithAdmin('svc-audit-fails')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+    const auditEvents = () =>
+      db
+        .collection('auditEvents')
+        .countDocuments({ resourceId: team.teamId, action: 'team.addMember' })
+    // The membership is written first, so a lost audit write leaves the person
+    // a member: the retry, not the first request, must make the audit exist.
+    const failing = dbFailingOn(
+      db,
+      'auditEvents',
+      'insertOne',
+      new Error('connection lost')
+    )
+
+    await expect(
+      peopleService.addMember(
+        failing,
+        {
+          teamId: team.teamId,
+          actor: team.actor,
+          oid: person.oid,
+          role: 'user',
+          idempotencyKey,
+          userAssertion: 'user-token'
+        },
+        { directory, allowedDomains: DOMAINS }
+      )
+    ).rejects.toThrow('connection lost')
+    expect(await activeMemberships(team)).toBe(2)
+    expect(await auditEvents()).toBe(0)
+
+    const retried = await add(team, person, directory, { idempotencyKey })
+
+    expect(retried.userId).toBeDefined()
+    expect(await auditEvents()).toBe(1)
+
+    await add(team, person, directory, { idempotencyKey })
+
+    expect(await auditEvents()).toBe(1)
+    expect(await activeMemberships(team)).toBe(2)
+  })
+
+  test('addMember audits the admin who made the add when another admin replays the key after the audit write failed', async () => {
+    const team = await teamWithAdmin('svc-audit-origin')
+    const second = ada()
+    const added = ada()
+    const directory = directoryOf(second, added)
+    const idempotencyKey = randomUUID()
+    const secondAdmin = await add(team, second, directory, { role: 'admin' })
+    const replayer = actorFor(secondAdmin.userId, {
+      oid: second.oid,
+      uti: 'uti-replaying-admin'
+    })
+    const lostAudit = dbFailingOn(
+      db,
+      'auditEvents',
+      'insertOne',
+      new Error('connection lost')
+    )
+    const request = {
+      teamId: team.teamId,
+      oid: added.oid,
+      role: 'user',
+      idempotencyKey,
+      userAssertion: 'user-token'
+    }
+    const deps = { directory, allowedDomains: DOMAINS }
+
+    await expect(
+      peopleService.addMember(
+        lostAudit,
+        { ...request, actor: { ...team.actor, uti: 'uti-original-admin' } },
+        deps
+      )
+    ).rejects.toThrow('connection lost')
+
+    await peopleService.addMember(db, { ...request, actor: replayer }, deps)
+
+    const event = await db.collection('auditEvents').findOne({
+      resourceId: team.teamId,
+      action: 'team.addMember',
+      subjectOid: added.oid
+    })
+
+    expect(event).toMatchObject({
+      actorUserId: team.adminId,
+      oid: team.actor.oid,
+      uti: 'uti-original-admin'
+    })
+  })
+
+  test('addMember audits the replaying admin for a membership that holds no record of who added it', async () => {
+    const team = await teamWithAdmin('svc-audit-no-origin')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+
+    await add(team, person, directory, { idempotencyKey })
+    await db
+      .collection('teamMembers')
+      .updateOne(
+        { teamId: team.teamId, idempotencyKey },
+        { $unset: { addedBy: '' } }
+      )
+    await db.collection('auditEvents').deleteMany({
+      resourceId: team.teamId,
+      action: 'team.addMember'
+    })
+
+    await add(team, person, directory, { idempotencyKey })
+
+    expect(
+      await db.collection('auditEvents').findOne({
+        resourceId: team.teamId,
+        action: 'team.addMember'
+      })
+    ).toMatchObject({ actorUserId: team.adminId })
+  })
+
+  test('addMember audits a first add once, and a replay of it does not audit again', async () => {
+    const team = await teamWithAdmin('svc-audit-once')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+
+    await add(team, person, directory, { idempotencyKey })
+    await add(team, person, directory, { idempotencyKey })
+
+    expect(
+      await db
+        .collection('auditEvents')
+        .countDocuments({ resourceId: team.teamId, action: 'team.addMember' })
+    ).toBe(1)
   })
 
   test('searchTeamPeople shows the user principal name for a person whose mail is blank (thread 3)', async () => {
@@ -366,7 +578,7 @@ describe('team-people-service: adding people from the directory', () => {
       db,
       {
         teamId: team.teamId,
-        actorUserId: team.adminId,
+        actor: team.actor,
         search: 'blank',
         userAssertion: 'user-token'
       },
@@ -399,7 +611,7 @@ describe('team-people-service: adding people from the directory', () => {
       db,
       {
         teamId: team.teamId,
-        actorUserId: team.adminId,
+        actor: team.actor,
         search: 'zed',
         userAssertion: 'user-token'
       },
@@ -464,7 +676,7 @@ describe('team-people-service: adding people from the directory', () => {
         db,
         {
           teamId: team.teamId,
-          actorUserId: team.adminId,
+          actor: team.actor,
           search: 'page',
           userAssertion: 'user-token'
         },

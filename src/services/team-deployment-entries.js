@@ -1,4 +1,12 @@
 import { recordAuditEvent } from '#/services/audit-service.js'
+import {
+  SYSTEM_PRINCIPAL_ID,
+  systemActor
+} from '#/common/helpers/auth/system-actor.js'
+
+// SYSTEM_ACTOR is the principal the backend attributes its own operations (a
+// revert) and audits its own steps to, in place of a person.
+export { SYSTEM_PRINCIPAL_ID as SYSTEM_ACTOR } from '#/common/helpers/auth/system-actor.js'
 
 /**
  * A request waiting for the operation in flight on its team file (or for
@@ -35,12 +43,6 @@ export const REMOVED = 'removed'
 export const TERMINAL_FAILURE_STATUSES = new Set([CHECKS_FAILED, DEPLOY_FAILED])
 
 /**
- * The principal the backend attributes its own operations (a revert) and
- * audits its own steps to, in place of a person.
- */
-export const SYSTEM_ACTOR = 'app:ai-platform-backend'
-
-/**
  * Finds one entry of a `teamDeployments` document's `deployments[]` by id.
  * @param {{deployments?: object[]}|null} doc
  * @param {string} id
@@ -65,10 +67,11 @@ export function withStatusTime(statusTimes, status, at) {
 
 /**
  * Records an audit event against one deployment entry, as the backend
- * itself unless an actor is given.
+ * itself unless an actor is given. A request's change passes the `actor`
+ * (the token's credentials) and the `role` it used.
  * @param {import('mongodb').Db} db
  * @param {{id: string}} entry
- * @param {{action: string, outcome?: string, actorUserId?: string, code?: string, reason?: string, eventId?: string}} event
+ * @param {{action: string, outcome?: string, actor?: object, role?: string, actorUserId?: string, code?: string, reason?: string, eventId?: string}} event
  */
 export async function auditDeployment(
   db,
@@ -76,13 +79,20 @@ export async function auditDeployment(
   {
     action,
     outcome = 'success',
-    actorUserId = SYSTEM_ACTOR,
+    actor,
+    role,
+    actorUserId,
     code,
     reason,
     eventId
   }
 ) {
+  const isSystemStep =
+    !actor && (actorUserId === undefined || actorUserId === SYSTEM_PRINCIPAL_ID)
+
   await recordAuditEvent(db, {
+    actor: isSystemStep ? systemActor : actor,
+    role,
     actorUserId,
     action,
     resource: 'teamDeployment',

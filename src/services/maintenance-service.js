@@ -1,4 +1,5 @@
 import { recordAuditEvent } from '#/services/audit-service.js'
+import { systemActor } from '#/common/helpers/auth/system-actor.js'
 import { config } from '#/config.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
@@ -55,7 +56,7 @@ export async function expireCredentials(
       expired += 1
 
       await recordAuditEvent(db, {
-        actorUserId: credential.userId,
+        actor: systemActor,
         action: 'credential.expire',
         resource: 'credential',
         resourceId: credential._id.toString(),

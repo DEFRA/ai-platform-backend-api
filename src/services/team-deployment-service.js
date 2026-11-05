@@ -5,10 +5,12 @@ import { config } from '#/config.js'
 import { findModelBySlug } from '#/services/models-service.js'
 import { isTeamEligible } from '#/services/catalogue-service.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
+import { principalOf } from '#/services/user-service.js'
 import {
+  PLATFORM_ADMIN_ROLE,
   requirePlatformAdmin,
-  requireUserPrincipal
-} from '#/services/user-service.js'
+  requireTeamRole
+} from '#/common/helpers/auth/access.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import { findOperation } from '#/operations/operation-repository.js'
 import { projectOperation } from '#/operations/operation-projection.js'
@@ -79,11 +81,10 @@ async function viewOf(db, doc, entry) {
  * the team already has, refuses the whole request before anything is
  * created - and idempotent by key: replaying a key (a merged request's too)
  * returns its entries. A request that cannot be accepted queues nothing. The
- * change is submitted as the requester's `entra:{oid}`; a user with no Entra
- * object ID is refused with `403 entra-identity-required`.
+ * change is submitted as the requester's `entra:{oid}`, from the token.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, modelSlugs: string[], environment: string, requestedBy: string, idempotencyKey: string, purpose?: string, traceParent?: string, cdpRequestId?: string}} params - `teamId` is the team's id or slug; `purpose` only matters to the mock orchestrator
+ * @param {{teamId: string, modelSlugs: string[], environment: string, actor: {userId: string, oid: string}, idempotencyKey: string, purpose?: string, traceParent?: string, cdpRequestId?: string}} params - `teamId` is the team's id or slug; `purpose` only matters to the mock orchestrator
  * @param {{operations: ReturnType<typeof import('#/operations/operations-service.js').createOperationsService>, registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry}} deps
  * @returns {Promise<object[]>} One view per model, in the order asked.
  */
@@ -94,7 +95,7 @@ export async function requestDeployments(
     teamId: teamRef,
     modelSlugs,
     environment,
-    requestedBy,
+    actor,
     idempotencyKey,
     purpose,
     traceParent,
@@ -105,15 +106,12 @@ export async function requestDeployments(
   requireTeamEnvironment(environment)
 
   const teamId = await resolveTeamId(db, teamRef)
-  const membership = teamId
-    ? await db
-        .collection('teamMembers')
-        .findOne({ teamId, userId: requestedBy, status: 'active' })
-    : null
 
-  if (!membership) {
+  if (!teamId) {
     throw Boom.notFound()
   }
+
+  const role = await requireTeamRole(db, actor, teamId)
 
   const slugs = [...new Set(modelSlugs)]
 
@@ -121,7 +119,7 @@ export async function requestDeployments(
 
   // The GitOps change is attributed to the person's Entra object ID; the
   // portal's own user ID stays the key for authorisation.
-  const principal = await requireUserPrincipal(db, requestedBy)
+  const principal = principalOf(actor)
 
   // Several models can be requested for the same team+environment
   // document, so a plain unique index can no longer detect a duplicate model
@@ -139,7 +137,9 @@ export async function requestDeployments(
         teamId,
         modelSlugs: slugs,
         environment,
-        requestedBy,
+        requestedBy: actor.userId,
+        actor,
+        role,
         principal,
         idempotencyKey,
         mockOutcome: registry.mockOutcomeOf(purpose),
@@ -231,7 +231,8 @@ async function addDeployments(db, params, operations) {
   for (const entry of fresh) {
     await auditDeployment(db, entry, {
       action: REQUEST_ACTION,
-      actorUserId: params.requestedBy,
+      actor: params.actor,
+      role: params.role,
       ...(operation.state === QUEUED ? { code: QUEUED } : {})
     })
   }
@@ -296,7 +297,7 @@ async function submitOperation(
   params,
   { operations, target, entries, fresh }
 ) {
-  const { teamId, environment, requestedBy, principal } = params
+  const { teamId, environment, requestedBy, principal, actor, role } = params
 
   try {
     const { operation, replay } = await operations.request({
@@ -343,7 +344,8 @@ async function submitOperation(
       fresh.map((entry) =>
         auditDeployment(db, entry, {
           action: REQUEST_ACTION,
-          actorUserId: requestedBy,
+          actor,
+          role,
           outcome: 'failure',
           code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
         })
@@ -354,30 +356,31 @@ async function submitOperation(
   }
 }
 
-async function requireMember(db, teamRef, userId) {
+async function requireMember(db, teamRef, actor) {
   const teamId = await resolveTeamId(db, teamRef)
-  const membership = teamId
-    ? await db
-        .collection('teamMembers')
-        .findOne({ teamId, userId, status: 'active' })
-    : null
-
-  return membership ? teamId : null
-}
-
-/**
- * Finds one deployment entry by id for the "being set up" poll. Returns null
- * (not a 403) for a non-member so existence isn't disclosed.
- * @param {import('mongodb').Db} db
- * @param {{id: string, teamId: string, userId: string}} params - `teamId` is the team's id or slug
- */
-export async function getDeployment(db, { id, teamId: teamRef, userId }) {
-  const teamId = await requireMember(db, teamRef, userId)
 
   if (!teamId) {
     return null
   }
 
+  return { teamId, role: await requireTeamRole(db, actor, teamId) }
+}
+
+/**
+ * Finds one deployment entry by id for the "being set up" poll. Returns null
+ * for a team or deployment that does not exist; a team the actor is not a
+ * member of is a refused 404, audited, so existence isn't disclosed.
+ * @param {import('mongodb').Db} db
+ * @param {{id: string, teamId: string, actor: {userId: string}}} params - `teamId` is the team's id or slug
+ */
+export async function getDeployment(db, { id, teamId: teamRef, actor }) {
+  const member = await requireMember(db, teamRef, actor)
+
+  if (!member) {
+    return null
+  }
+
+  const { teamId } = member
   const doc = await db
     .collection('teamDeployments')
     .findOne({ teamId, 'deployments.id': id })
@@ -392,15 +395,16 @@ export async function getDeployment(db, { id, teamId: teamRef, userId }) {
  * reachable even after the requester navigates away or signs back in later.
  * Throws 404 for a non-member so existence isn't disclosed.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, userId: string}} params - `teamId` is the team's id or slug
+ * @param {{teamId: string, actor: {userId: string}}} params - `teamId` is the team's id or slug
  */
-export async function listDeploymentsForTeam(db, { teamId: teamRef, userId }) {
-  const teamId = await requireMember(db, teamRef, userId)
+export async function listDeploymentsForTeam(db, { teamId: teamRef, actor }) {
+  const member = await requireMember(db, teamRef, actor)
 
-  if (!teamId) {
+  if (!member) {
     throw Boom.notFound()
   }
 
+  const { teamId } = member
   const docs = await db.collection('teamDeployments').find({ teamId }).toArray()
 
   return Promise.all(
@@ -419,15 +423,14 @@ export async function listDeploymentsForTeam(db, { teamId: teamRef, userId }) {
  * for any. Both publish a command and return at once: the deployment's
  * states show the progress.
  * @param {import('mongodb').Db} db
- * @param {{id: string, actorUserId: string, kind: 'retry'|'reconcile'}} params
+ * @param {{id: string, actor: {isPlatformAdmin?: boolean, userId: string}, kind: 'retry'|'reconcile'}} params
  * @param {{operations: ReturnType<typeof import('#/operations/operations-service.js').createOperationsService>}} deps
  */
-export async function redispatchApply(
-  db,
-  { id, actorUserId, kind },
-  { operations }
-) {
-  await requirePlatformAdmin(db, actorUserId)
+export async function redispatchApply(db, { id, actor, kind }, { operations }) {
+  await requirePlatformAdmin(db, actor, {
+    resource: 'teamDeployment',
+    resourceId: id
+  })
 
   const located = await db
     .collection('teamDeployments')
@@ -454,7 +457,8 @@ export async function redispatchApply(
 
     await auditDeployment(db, entry, {
       action: `teamDeployment.${kind}`,
-      actorUserId,
+      actor,
+      role: PLATFORM_ADMIN_ROLE,
       outcome: 'failure',
       code: UPSTREAM_UNAVAILABLE
     })
@@ -468,7 +472,8 @@ export async function redispatchApply(
 
   await auditDeployment(db, entry, {
     action: `teamDeployment.${kind}`,
-    actorUserId,
+    actor,
+    role: PLATFORM_ADMIN_ROLE,
     reason:
       written && written.state !== operation.state
         ? `${operation.state} -> ${written.state}`

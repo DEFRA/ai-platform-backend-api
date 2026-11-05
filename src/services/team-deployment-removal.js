@@ -1,6 +1,7 @@
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { uuidv7 } from '#/common/helpers/uuid-v7.js'
-import { requireUserPrincipal } from '#/services/user-service.js'
+import { principalOf } from '#/services/user-service.js'
+import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import {
   findSlotHolder,
@@ -35,34 +36,26 @@ const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
  * (`409 team-file-busy`), so no two operations race on one file.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, id: string, requestedBy: string, traceParent?: string, cdpRequestId?: string}} params - `teamId` is the team's id or slug
+ * @param {{teamId: string, id: string, actor: {userId: string, oid: string}, traceParent?: string, cdpRequestId?: string}} params - `teamId` is the team's id or slug
  * @param {{operations: ReturnType<typeof import('#/operations/operations-service.js').createOperationsService>}} deps
- * @returns {Promise<object|null>} The deployment view, or null for a non-member or unknown entry.
+ * @returns {Promise<object|null>} The deployment view, or null for an unknown team or entry; a team the actor is not a member of is a refused 404, audited.
  */
 export async function removeDeployment(
   db,
   locker,
-  { teamId: teamRef, id, requestedBy, traceParent, cdpRequestId },
+  { teamId: teamRef, id, actor, traceParent, cdpRequestId },
   { operations }
 ) {
   const teamId = await resolveTeamId(db, teamRef)
-  const membership = teamId
-    ? await db
-        .collection('teamMembers')
-        .findOne({ teamId, userId: requestedBy, status: 'active' })
-    : null
 
-  if (!membership) {
+  if (!teamId) {
     return null
   }
 
-  if (membership.role !== 'admin') {
-    throw boomWithCode(
-      Boom.forbidden,
-      'Only a team admin can remove a model',
-      'admin-required'
-    )
-  }
+  const role = await requireTeamRole(db, actor, teamId, {
+    role: TEAM_ADMIN,
+    action: 'remove a model'
+  })
 
   const located = await db
     .collection('teamDeployments')
@@ -72,7 +65,7 @@ export async function removeDeployment(
     return null
   }
 
-  const principal = await requireUserPrincipal(db, requestedBy)
+  const principal = principalOf(actor)
   const lock = await acquireLockWithRetry(
     locker,
     `team-deployment:${teamId}:${located.environment}`
@@ -87,7 +80,13 @@ export async function removeDeployment(
       db,
       doc,
       findEntry(doc, id),
-      { requestedBy, principal, ...traceOf({ traceParent, cdpRequestId }) },
+      {
+        actor,
+        role,
+        requestedBy: actor.userId,
+        principal,
+        ...traceOf({ traceParent, cdpRequestId })
+      },
       operations
     )
   } finally {
@@ -111,8 +110,8 @@ function fileBusy() {
   )
 }
 
-// The locked part of `removeDeployment`.
-async function removeEntry(db, doc, entry, actor, operations) {
+// The locked part of `removeDeployment`. `context` is who asks and how to trace it.
+async function removeEntry(db, doc, entry, context, operations) {
   if (entry.status === REMOVING || entry.status === REMOVED) {
     return toDeploymentView(doc, entry)
   }
@@ -130,14 +129,14 @@ async function removeEntry(db, doc, entry, actor, operations) {
     throw fileBusy()
   }
 
-  return submitRemoval(db, doc, entry, actor, operations)
+  return submitRemoval(db, doc, entry, context, operations)
 }
 
 // Asks for an operation whose document is the team file without the model; a
 // refusal is audited and reported, with nothing to unwind: the entry stays as
 // it was.
-async function requestRemoval(db, doc, entry, actor, operations) {
-  const { requestedBy, principal, traceparent, cdpRequestId } = actor
+async function requestRemoval(db, doc, entry, context, operations) {
+  const { requestedBy, principal, traceparent, cdpRequestId } = context
 
   try {
     const target = await resolveTeamTarget(db, {
@@ -168,7 +167,8 @@ async function requestRemoval(db, doc, entry, actor, operations) {
 
     await auditDeployment(db, entry, {
       action: REMOVE_ACTION,
-      actorUserId: requestedBy,
+      actor: context.actor,
+      role: context.role,
       outcome: 'failure',
       code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
     })
@@ -180,13 +180,14 @@ async function requestRemoval(db, doc, entry, actor, operations) {
 // Builds the team file without the model and submits it as the requester,
 // as an operation of its own. The entry is `removing` once the operation is
 // recorded; a request that fails leaves it active with nothing to unwind.
-async function submitRemoval(db, doc, entry, actor, operations) {
-  const operation = await requestRemoval(db, doc, entry, actor, operations)
+async function submitRemoval(db, doc, entry, context, operations) {
+  const operation = await requestRemoval(db, doc, entry, context, operations)
 
   await projectOperation(db, operation)
   await auditDeployment(db, entry, {
     action: REMOVE_ACTION,
-    actorUserId: actor.requestedBy,
+    actor: context.actor,
+    role: context.role,
     reason: `remove operation ${operation._id}`
   })
 
