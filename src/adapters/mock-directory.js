@@ -76,7 +76,15 @@ export function createMockDirectory({ people = seededPeople, db } = {}) {
           .collection('users')
           .find({
             $or: [
-              { displayName: { $regex: query, $options: 'i' } },
+              {
+                displayName: {
+                  $regex: (words(query)[0] ?? '').replace(
+                    /[.*+?^${}()|[\]\\]/g,
+                    '\\$&'
+                  ),
+                  $options: 'i'
+                }
+              },
               { mail: { $regex: `^${query}`, $options: 'i' } },
               { userPrincipalName: { $regex: query, $options: 'i' } },
               { email: { $regex: `^${query}`, $options: 'i' } }
