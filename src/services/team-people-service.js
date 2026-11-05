@@ -189,7 +189,9 @@ async function insertMembership(db, member, request) {
     // someone else must not be told that person was added.
     const winnerUser = await findUserById(db, winner.userId)
 
-    return { replay: replayOf(winner, winnerUser, request) }
+    return {
+      replay: { member: winner, added: replayOf(winner, winnerUser, request) }
+    }
   }
 }
 
@@ -207,8 +209,17 @@ async function findReplay(db, teamId, idempotencyKey, request) {
     .findOne({ teamId, idempotencyKey })
 
   return member
-    ? replayOf(member, await findUserById(db, member.userId), request)
+    ? {
+        member,
+        added: replayOf(member, await findUserById(db, member.userId), request)
+      }
     : null
+}
+
+// The claims an add's audit event records for its actor, kept with the
+// membership so a replay by another admin audits the admin who made the add.
+function originOf({ userId, oid, tid, azp, uti }) {
+  return { userId, oid, tid, azp, uti }
 }
 
 /**
@@ -243,12 +254,17 @@ async function recordMemberAdded(
 
 /**
  * A replay of an add, once its audit event is known to exist: the first
- * request may have written the membership and failed before auditing it.
+ * request may have written the membership and failed before auditing it. The
+ * event names the admin who made the add (`addedBy`), not the one replaying
+ * it; a membership with none recorded names the replaying admin.
  */
-async function auditedReplay(db, replay, audit) {
-  await recordMemberAdded(db, audit)
+async function auditedReplay(db, { member, added }, audit) {
+  await recordMemberAdded(db, {
+    ...audit,
+    actor: member.addedBy ?? audit.actor
+  })
 
-  return replay
+  return added
 }
 
 /**
@@ -316,7 +332,14 @@ export async function addMember(
   if (existingMember) {
     // The same request, arriving while its twin was still being written.
     if (existingMember.idempotencyKey === idempotencyKey) {
-      return auditedReplay(db, replayOf(existingMember, user, request), audit)
+      return auditedReplay(
+        db,
+        {
+          member: existingMember,
+          added: replayOf(existingMember, user, request)
+        },
+        audit
+      )
     }
 
     throw memberExists()
@@ -329,6 +352,7 @@ export async function addMember(
     requestedRole: role,
     status: 'active',
     idempotencyKey,
+    addedBy: originOf(actor),
     createdAt: new Date().toISOString()
   }
   const inserted = await insertMembership(db, member, request)

@@ -474,6 +474,83 @@ describe('team-people-service: adding people from the directory', () => {
     expect(await activeMemberships(team)).toBe(2)
   })
 
+  test('addMember audits the admin who made the add when another admin replays the key after the audit write failed', async () => {
+    const team = await teamWithAdmin('svc-audit-origin')
+    const second = ada()
+    const added = ada()
+    const directory = directoryOf(second, added)
+    const idempotencyKey = randomUUID()
+    const secondAdmin = await add(team, second, directory, { role: 'admin' })
+    const replayer = actorFor(secondAdmin.userId, {
+      oid: second.oid,
+      uti: 'uti-replaying-admin'
+    })
+    const lostAudit = dbFailingOn(
+      db,
+      'auditEvents',
+      'insertOne',
+      new Error('connection lost')
+    )
+    const request = {
+      teamId: team.teamId,
+      oid: added.oid,
+      role: 'user',
+      idempotencyKey,
+      userAssertion: 'user-token'
+    }
+    const deps = { directory, allowedDomains: DOMAINS }
+
+    await expect(
+      peopleService.addMember(
+        lostAudit,
+        { ...request, actor: { ...team.actor, uti: 'uti-original-admin' } },
+        deps
+      )
+    ).rejects.toThrow('connection lost')
+
+    await peopleService.addMember(db, { ...request, actor: replayer }, deps)
+
+    const event = await db.collection('auditEvents').findOne({
+      resourceId: team.teamId,
+      action: 'team.addMember',
+      subjectOid: added.oid
+    })
+
+    expect(event).toMatchObject({
+      actorUserId: team.adminId,
+      oid: team.actor.oid,
+      uti: 'uti-original-admin'
+    })
+  })
+
+  test('addMember audits the replaying admin for a membership that holds no record of who added it', async () => {
+    const team = await teamWithAdmin('svc-audit-no-origin')
+    const person = ada()
+    const directory = directoryOf(person)
+    const idempotencyKey = randomUUID()
+
+    await add(team, person, directory, { idempotencyKey })
+    await db
+      .collection('teamMembers')
+      .updateOne(
+        { teamId: team.teamId, idempotencyKey },
+        { $unset: { addedBy: '' } }
+      )
+    await db.collection('auditEvents').deleteMany({
+      resourceId: team.teamId,
+      action: 'team.addMember'
+    })
+
+    await add(team, person, directory, { idempotencyKey })
+
+    expect(
+      await db.collection('auditEvents').findOne({
+        resourceId: team.teamId,
+        action: 'team.addMember'
+      })
+    ).toMatchObject({ actorUserId: team.adminId })
+  })
+
   test('addMember audits a first add once, and a replay of it does not audit again', async () => {
     const team = await teamWithAdmin('svc-audit-once')
     const person = ada()
