@@ -31,18 +31,24 @@ jobs:
       - name: Install dependencies
         run: npm ci
 
-      # The test setup downloads a MongoDB binary from fastdl.mongodb.org, which
-      # sometimes resets the connection on GitHub runners and fails every test
-      # file. Fetch it once here, with retries, so the tests find it on disk.
+      # The tests start MongoDB from a binary that mongodb-memory-server
+      # downloads from fastdl.mongodb.org. That download is often reset on
+      # GitHub runners and, with no retry or resume, fails every test file.
+      # Fetch it here with curl, which retries and resumes, and point the tests
+      # at it so nothing is downloaded during the run.
       - name: Download the MongoDB test binary
+        env:
+          MONGO_VERSION: 7.0.24
         run: |
-          for attempt in 1 2 3 4 5 6; do
-            npx vitest run src/common/helpers/uuid-v7.test.js && exit 0
-            echo "MongoDB binary download attempt $attempt failed"
-            sleep $((attempt * 15))
-          done
-          exit 1
-
+          archive="mongodb-linux-x86_64-ubuntu2204-${MONGO_VERSION}"
+          curl --fail --silent --show-error --location \
+            --retry 10 --retry-all-errors --retry-delay 5 --continue-at - \
+            --output "${RUNNER_TEMP}/mongodb.tgz" \
+            "https://fastdl.mongodb.org/linux/${archive}.tgz"
+          tar -xzf "${RUNNER_TEMP}/mongodb.tgz" -C "${RUNNER_TEMP}" "${archive}/bin/mongod"
+          echo "MONGOMS_SYSTEM_BINARY=${RUNNER_TEMP}/${archive}/bin/mongod" >> "$GITHUB_ENV"
+          echo "MONGOMS_VERSION=${MONGO_VERSION}" >> "$GITHUB_ENV"
+          "${RUNNER_TEMP}/${archive}/bin/mongod" --version | head -1
       - run: |
           npm run format:check
           npm run lint
