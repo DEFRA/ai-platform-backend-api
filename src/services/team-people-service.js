@@ -3,7 +3,7 @@ import { ObjectId } from 'mongodb'
 import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
-import { directory as defaultDirectory } from '#/adapters/directory-registry.js'
+import * as directoryRegistry from '#/adapters/directory-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { emailOf, isEligible } from '#/services/directory-eligibility.js'
 import { requireTeamAdmin, requireTeamId } from '#/services/team-service.js'
@@ -44,7 +44,9 @@ async function findUserById(db, userId) {
  * Defra people who are not already active members, by name, sorted by name
  * and capped at {@link MAX_PEOPLE_RESULTS}. Only an active admin of the team
  * may search, and a non-member is told only that there is nothing there. The
- * search text and the user assertion are never logged or stored.
+ * search text and the user assertion are never logged or stored. Uses the
+ * current directory from the registry, which the directoryPlugin updates
+ * after MongoDB is ready to include real user records from the database.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, actorUserId: string, search: string, userAssertion?: string}} params - `teamId` is the team's id or slug
  * @param {{directory?: import('#/adapters/directory.js').Directory, allowedDomains?: string[]}} [deps]
@@ -53,16 +55,19 @@ async function findUserById(db, userId) {
 export async function searchTeamPeople(
   db,
   { teamId: teamRef, actorUserId, search, userAssertion },
-  {
-    directory = defaultDirectory,
-    allowedDomains = config.get('directory.allowedDomains')
-  } = {}
+  { directory, allowedDomains = config.get('directory.allowedDomains') } = {}
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
   await requireTeamAdmin(db, { teamId, actorUserId, action: 'add members' })
 
-  const found = await directory.searchPeople({ userAssertion, query: search })
+  // Use the passed directory for testing, or the current directory from the registry in production
+  // (which the directoryPlugin updates after MongoDB is ready to include real user records)
+  const dir = directory || directoryRegistry.directory
+  const found = await dir.searchPeople({
+    userAssertion,
+    query: search
+  })
   const memberOids = await activeMemberOids(db, teamId)
 
   const items = found
@@ -241,7 +246,7 @@ export async function addMember(
   db,
   { teamId: teamRef, actorUserId, oid, role, idempotencyKey, userAssertion },
   {
-    directory = defaultDirectory,
+    directory = directoryRegistry.directory,
     allowedDomains = config.get('directory.allowedDomains')
   } = {}
 ) {
