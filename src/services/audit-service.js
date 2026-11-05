@@ -15,7 +15,7 @@ import {
  * no person, tenant or token. `actorUserId` alone names a person a step acts for.
  * Only named claims are copied, so no token can reach a record.
  * @param {import('mongodb').Db} db
- * @param {{actor?: {userId?: string|null, oid?: string, tid?: string, azp?: string, uti?: string|null}, actorUserId?: string, role?: string|null, action: string, resource: string, resourceId: string, outcome: 'success'|'failure', code?: string, reason?: string, eventId?: string}} params - `eventId` makes the insert idempotent: a second insert of the same event fails with a duplicate key error
+ * @param {{actor?: {userId?: string|null, oid?: string, tid?: string, azp?: string, uti?: string|null}, actorUserId?: string, role?: string|null, action: string, resource: string, resourceId: string, outcome: 'success'|'failure', code?: string, reason?: string, eventId?: string, subjectOid?: string}} params - `eventId` makes the insert idempotent: a second insert of the same event fails with a duplicate key error; `subjectOid` is the Entra object ID of the person the action was done to (distinct from the actor's `oid`), never a name or email
  */
 export async function recordAuditEvent(
   db,
@@ -29,7 +29,8 @@ export async function recordAuditEvent(
     outcome,
     code,
     reason,
-    eventId
+    eventId,
+    subjectOid
   }
 ) {
   await db.collection('auditEvents').insertOne({
@@ -48,6 +49,7 @@ export async function recordAuditEvent(
     outcome,
     code: code ?? null,
     reason: reason ?? null,
+    ...(subjectOid && { subjectOid }),
     requestId: getTraceId() ?? null
   })
 }

@@ -170,9 +170,47 @@ through `nock`.
 > takes from the validated token's claims (it reads no body) at every sign-in and answers `200 { user, team }`
 > (`POST /v1/users` is removed); a unique index on both holds that key. **Email is not unique**: it is
 > display only and mutable (Microsoft advises never to key data on it), so two `users` records can
-> share an email, for example a leaver who returns with a new object ID. A record with no `oid` (an
-> invited member) binds to the first sign-in with its email. Every GitOps change names its requester as
+> share an email, for example a leaver who returns with a new object ID. Sign-in binds nothing by
+> email: no record and no membership is ever matched on it. Every GitOps change names its requester as
 > `entra:{oid}`, so look people up by `oid`, never by email (direction 14 October 2026).
+
+> [!IMPORTANT]
+> Team membership is by person, from the directory (design F `#membership`); there are no invitations,
+> and `teamMembers` carries no email. `POST /v1/teams/{id}/people/search` (body `{ search }`, 2 to 100
+> characters, admins only) returns up to 20 eligible people, sorted by name, leaving out active members.
+> `POST /v1/teams/{id}/members` takes `{ oid, role }` (both required; a key reused for another person or role is
+> `409 idempotency-key-reused`, judged against the role the add asked for, stored on the membership as `requestedRole`,
+> so a retry still replays after the member's role is changed): it reads the person again from the directory,
+> refuses anyone not eligible (a UPN and mail on `DIRECTORY_ALLOWED_DOMAINS`, default `defra.gov.uk` and
+> `defra.onmicrosoft.com`, no guests; a blank mail counts as none, and the email shown and stored is then the UPN) with `422 person-not-eligible` - also for an unknown `oid` - and
+> makes the person's `users` record on `{ oid, tid }` (the Admin's own `tid`) if they have never signed
+> in, which their first sign-in then finds. A unique index allows one active membership per person and
+> team, and `GET /v1/teams/{id}` lists active members only. Both calls go through the `Directory` port (`src/adapters/directory.js`), chosen by
+> `DIRECTORY_MODE`: `mock` (the default) searches the fictional people in
+> `src/adapters/fixtures/directory-people.json`, whose `oid`s all start `5eed0000-0000-4000-8000-`, one
+> being the journey person "Journey Test Member" (`journey.test.member@defra.gov.uk`); `graph` is the
+> Microsoft Graph adapter, called on behalf of the signed-in Admin, which is built and tested but
+> refused at start-up until B27 supplies the person's token. Prod refuses `mock`. A failed directory
+> call is `503 directory-unavailable`. The backfill `2026-11-03-team-members-directory-only` removes
+> invitations, keeps one active membership per person and team, unsets `email`, sets `requestedRole` from `role` on
+> memberships that carry an `idempotencyKey` and deletes people with
+> no `oid`; its counts, including teams left with no active Admin, are in the start-up log. A request that fails
+> validation is logged by rule type only, never a path, key or value.
+
+> [!IMPORTANT]
+> Adding a person uses one address rule, `isEligible` (`src/services/directory-eligibility.js`): the address is
+> trimmed and lower-cased, has exactly one `@`, no `#EXT#` anywhere, and a domain that is an exact match for one in the
+> list, so a subdomain or look-alike is refused. It applies to the directory's user principal name and, when there is
+> one, its mail. The backend has no email-domain rule at sign-in: `PUT /v1/users/me` is reached only with a validated
+> delegated token, and the token's tenant (`tid`), audience, `azp` and account type (`acct`, which refuses a guest) decide
+> who may sign in, so `ALLOWED_EMAIL_DOMAINS` and `403 domain-not-allowed` are removed (merge of main into PR 71, 5
+> November 2026). A person an Admin added by their `defra.onmicrosoft.com` user principal name can sign in, and their
+> first sign-in finds the record the add made. A directory search reads up to
+> `DIRECTORY_SEARCH_MAX_PAGES` pages of 50 (default 5, following Graph's `@odata.nextLink`, which is only
+> followed when it is the Graph users endpoint) within `DIRECTORY_SEARCH_TIMEOUT_MS` (default 10000, for the whole
+> search; each call is also bound by `DIRECTORY_TIMEOUT_MS`), then leaves out members and ineligible people, so
+> an addable person behind a first page of them is found; a search needing more pages answers with what it read,
+> and the Admin narrows the search.
 
 > [!IMPORTANT]
 > A team carries an immutable `slug`, derived from its name on `POST /v1/teams` and made unique with a
@@ -187,7 +225,7 @@ through `nock`.
 > A team also carries a three-character `serviceCode` (`^[A-Z0-9]{3}$`, stored upper case), required
 > on `POST /v1/teams` and changeable by an admin with `PATCH /v1/teams/{id}`, which also takes a
 > `description` (trimmed, at most 500 characters, may be empty). Adding a member takes a `role`
-> (`admin` or `user`, default `user`), admins only. The service code attributes the
+> (`admin` or `user`, required), admins only. The service code attributes the
 > team's AI use to its service for chargeback and reaches Azure as a resource tag. Every change goes
 > through the `ServiceCodeVerifier` port, whose only adapter today is the mock
 > (`SERVICE_CODE_KNOWN_CODES`, empty by default), so `verified` stays `false` until an authoritative

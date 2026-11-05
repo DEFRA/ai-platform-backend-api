@@ -21,6 +21,7 @@ const ROUTES = [
   ['GET /v1/teams', ACCESS.user],
   ['GET /v1/teams/{id}', ACCESS.teamMember],
   ['PATCH /v1/teams/{id}', ACCESS.teamAdmin],
+  ['POST /v1/teams/{id}/people/search', ACCESS.teamAdmin],
   ['POST /v1/teams/{id}/members', ACCESS.teamAdmin],
   ['PATCH /v1/teams/{id}/members/{memberId}', ACCESS.teamAdmin],
   ['DELETE /v1/teams/{id}/members/{memberId}', ACCESS.teamAdmin],

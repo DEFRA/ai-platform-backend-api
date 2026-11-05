@@ -65,7 +65,7 @@ export async function resolveTeamId(db, idOrSlug) {
  * @param {string} idOrSlug
  * @returns {Promise<string>}
  */
-async function requireTeamId(db, idOrSlug) {
+export async function requireTeamId(db, idOrSlug) {
   const teamId = await resolveTeamId(db, idOrSlug)
 
   if (!teamId) {
@@ -190,7 +190,6 @@ export async function createTeam(
     await db.collection('teamMembers').insertOne({
       teamId: insertedId.toString(),
       userId: createdBy,
-      email: null,
       role: 'admin',
       status: 'active',
       createdAt: now
@@ -321,7 +320,7 @@ export async function updateTeam(
 }
 
 /**
- * Finds a team and its members, only for a requester who is an active member.
+ * Finds a team and its active members, only for a requester who is an active member.
  * Returns null for a team that does not exist; a team the requester is not a
  * member of is a refused 404, audited, so existence isn't disclosed.
  * `id` is the team's id or slug. `environments` lists each environment the
@@ -353,7 +352,7 @@ export async function findTeamById(
 
   const members = await db
     .collection('teamMembers')
-    .find({ teamId: id })
+    .find({ teamId: id, status: 'active' })
     .toArray()
   const files = await readTeamFiles(registry, team.slug)
 
@@ -390,10 +389,10 @@ async function readTeamFiles(registry, slug) {
 }
 
 /**
- * A member has no display name until they've signed in at least once (their
- * `users` record is what carries it) - joined in here rather than stored
- * redundantly on `teamMembers`, so a later name change in `users` is always
- * reflected without a backfill.
+ * A member's display name and email come from their `users` record - joined
+ * in here rather than stored redundantly on `teamMembers`, so a later change
+ * in `users` is always reflected without a backfill. Both are for display
+ * only; neither is ever a lookup key.
  * @param {import('mongodb').Db} db
  * @param {object[]} members
  */
@@ -403,7 +402,11 @@ async function withMemberDisplayNames(db, members) {
     .map((member) => new ObjectId(member.userId))
 
   if (userIds.length === 0) {
-    return members.map((member) => ({ ...member, displayName: null }))
+    return members.map((member) => ({
+      ...member,
+      displayName: null,
+      email: null
+    }))
   }
 
   const users = await db
@@ -411,20 +414,21 @@ async function withMemberDisplayNames(db, members) {
     .find({ _id: { $in: userIds } })
     .toArray()
 
-  const displayNameByUserId = new Map(
-    users.map((user) => [user._id.toString(), user.displayName])
-  )
+  const userById = new Map(users.map((user) => [user._id.toString(), user]))
 
-  return members.map((member) => ({
-    ...member,
-    displayName: member.userId
-      ? (displayNameByUserId.get(member.userId) ?? null)
-      : null
-  }))
+  return members.map((member) => {
+    const user = member.userId ? userById.get(member.userId) : null
+
+    return {
+      ...member,
+      displayName: user?.displayName ?? null,
+      email: user?.email ?? null
+    }
+  })
 }
 
 /**
- * A member of this team an admin may act on: active or still invited.
+ * A member of this team an admin may act on: an active one.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, memberId: string}} params
  */
@@ -435,9 +439,9 @@ async function findManageableMember(db, { teamId, memberId }) {
 
   const member = await db
     .collection('teamMembers')
-    .findOne({ _id: new ObjectId(memberId), teamId })
+    .findOne({ _id: new ObjectId(memberId), teamId, status: 'active' })
 
-  if (!member || !['active', 'invited'].includes(member.status)) {
+  if (!member) {
     throw Boom.notFound()
   }
 
@@ -462,97 +466,6 @@ async function refuseIfLastAdmin(db, teamId) {
       'last-admin'
     )
   }
-}
-
-/**
- * Invites a member by email with the given role (`user` unless an admin asks
- * for `admin`). Only an active admin of the team may do this, so only an
- * admin can make another admin.
- * @param {import('mongodb').Db} db
- * @param {{teamId: string, actor: {userId: string}, email: string, role?: 'admin'|'user', idempotencyKey: string}} params - `teamId` is the team's id or slug
- */
-export async function addMember(
-  db,
-  { teamId: teamRef, actor, email, role = 'user', idempotencyKey }
-) {
-  const teamId = await requireTeamId(db, teamRef)
-
-  await requireTeamRole(db, actor, teamId, {
-    role: TEAM_ADMIN,
-    action: 'add members'
-  })
-
-  const lowerEmail = email.toLowerCase()
-
-  const replay = await db
-    .collection('teamMembers')
-    .findOne({ teamId, idempotencyKey })
-
-  if (replay) {
-    return replay
-  }
-
-  const existingMember = await db
-    .collection('teamMembers')
-    .findOne({ teamId, email: lowerEmail })
-
-  if (existingMember) {
-    throw boomWithCode(
-      Boom.conflict,
-      'This person is already a member of the team',
-      'member-exists'
-    )
-  }
-
-  const now = new Date().toISOString()
-  const member = {
-    teamId,
-    userId: null,
-    email: lowerEmail,
-    role,
-    status: 'invited',
-    idempotencyKey,
-    createdAt: now
-  }
-
-  let insertedId
-
-  try {
-    ;({ insertedId } = await db.collection('teamMembers').insertOne(member))
-  } catch (error) {
-    if (isDuplicateKeyError(error)) {
-      // Lost a race: either the same key (replay it) or the same email
-      // (a genuine duplicate invite). The unique indexes decide, not the
-      // earlier reads, so concurrent invites cannot both succeed.
-      const winner = await db
-        .collection('teamMembers')
-        .findOne({ teamId, idempotencyKey })
-
-      if (winner) {
-        return winner
-      }
-
-      throw boomWithCode(
-        Boom.conflict,
-        'This person is already a member of the team',
-        'member-exists'
-      )
-    }
-
-    throw error
-  }
-
-  await recordAuditEvent(db, {
-    actor,
-    role: TEAM_ADMIN,
-    action: 'team.addMember',
-    resource: 'team',
-    resourceId: teamId,
-    outcome: 'success',
-    code: role
-  })
-
-  return { _id: insertedId, ...member }
 }
 
 /**

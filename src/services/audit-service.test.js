@@ -129,6 +129,33 @@ describe('#recordAuditEvent', () => {
     expect((await lastEvent('audit-system-role')).role).toBe('owner')
   })
 
+  test('records the person an action was done to as subjectOid, apart from the actor’s own oid, and none when there is none', async () => {
+    const subject = '5eed0000-0000-4000-8000-000000000001'
+
+    await recordAuditEvent(db, {
+      actor,
+      role: 'admin',
+      action: 'team.addMember',
+      resource: 'team',
+      resourceId: 'audit-subject',
+      outcome: 'success',
+      subjectOid: subject
+    })
+    await recordAuditEvent(db, {
+      actor,
+      action: 'team.create',
+      resource: 'team',
+      resourceId: 'audit-no-subject',
+      outcome: 'success'
+    })
+
+    expect(await lastEvent('audit-subject')).toMatchObject({
+      oid: 'oid-1',
+      subjectOid: subject
+    })
+    expect(await lastEvent('audit-no-subject')).not.toHaveProperty('subjectOid')
+  })
+
   test('an explicit actorUserId wins over the actor', async () => {
     await recordAuditEvent(db, {
       actor,
