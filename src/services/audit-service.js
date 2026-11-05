@@ -5,6 +5,19 @@ import {
   TOKEN_SYSTEM
 } from '#/common/helpers/auth/system-actor.js'
 
+function actorClaims(actor) {
+  return {
+    oid: actor?.oid ?? null,
+    tid: actor?.tid ?? null,
+    azp: actor?.azp ?? null,
+    uti: actor?.uti ?? null
+  }
+}
+
+function roleOf(role, actor) {
+  return role ?? (actor?.kind === TOKEN_SYSTEM ? SYSTEM_ROLE : null)
+}
+
 /**
  * Writes an immutable audit event. Never persist secrets, tokens or payloads here.
  *
@@ -38,11 +51,8 @@ export async function recordAuditEvent(
     // stored as a Date (not ISO string) so the auditEvents TTL index can expire it
     at: new Date(),
     actorUserId,
-    oid: actor?.oid ?? null,
-    tid: actor?.tid ?? null,
-    azp: actor?.azp ?? null,
-    uti: actor?.uti ?? null,
-    role: role ?? (actor?.kind === TOKEN_SYSTEM ? SYSTEM_ROLE : null),
+    ...actorClaims(actor),
+    role: roleOf(role, actor),
     action,
     resource,
     resourceId,

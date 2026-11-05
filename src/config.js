@@ -6,6 +6,7 @@ import { convictValidateAipEnvironments } from '#/common/helpers/convict/validat
 import { AZURE_APIM, DEFAULT_GATEWAY } from '#/adapters/gateway-keys.js'
 import { gitopsConfigSchema } from '#/config-gitops.js'
 import { githubConfigSchema } from '#/config-github.js'
+import { portalAuthConfigSchema } from '#/config-portal-auth.js'
 
 convict.addFormat(convictValidateMongoUri)
 convict.addFormat(convictValidateAipEnvironments)
@@ -16,15 +17,6 @@ const isTest = process.env.NODE_ENV === 'test'
 
 // Local-only fallback for armAuth.authMethod - no AWS STS to federate from outside CDP.
 const ARM_AUTH_METHOD_CLIENT_SECRET = 'client-secret'
-
-const GUID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/
-
-// Entra IDs are lowercase GUIDs; a token's claim is compared with them exactly.
-function guidOrNull(value) {
-  if (value !== null && !GUID.test(value)) {
-    throw new Error('must be a GUID')
-  }
-}
 
 export const config = convict({
   serviceVersion: {
@@ -144,39 +136,7 @@ export const config = convict({
       env: 'TRACING_HEADER'
     }
   },
-  // The Entra access tokens the backend accepts (design E #portal). Nothing
-  // turns validation off: the mock issuer is a different key source, checked
-  // the same way.
-  portalAuth: {
-    tenantId: {
-      doc: 'The Defra Entra tenant: the only tenant whose v2 tokens are accepted',
-      format: guidOrNull,
-      nullable: true,
-      default: null,
-      env: 'PORTAL_AUTH_TENANT_ID'
-    },
-    audience: {
-      doc: "The client ID of this instance's api-aip-portal registration, the `aud` every token must carry",
-      format: guidOrNull,
-      nullable: true,
-      default: null,
-      env: 'PORTAL_AUTH_AUDIENCE'
-    },
-    clientId: {
-      doc: "The client ID of this instance's frontend registration, the `azp` every token must carry",
-      format: guidOrNull,
-      nullable: true,
-      default: null,
-      env: 'PORTAL_AUTH_CLIENT_ID'
-    },
-    mockIssuerUrl: {
-      doc: "Local development only: the frontend's mock OpenID provider, which becomes the token issuer and serves the signing keys at /jwks. Refused in production",
-      format: String,
-      nullable: true,
-      default: null,
-      env: 'PORTAL_AUTH_MOCK_ISSUER_URL'
-    }
-  },
+  portalAuth: portalAuthConfigSchema,
   research: {
     environment: {
       doc: 'The AIP_ENVIRONMENTS entry research keys are issued into (subscription, API Management instance and tenants vault). Each credential records the environment it was issued in, so changing this never strands an existing key',

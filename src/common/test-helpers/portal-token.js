@@ -8,6 +8,8 @@ import {
 import nock from 'nock'
 import { ObjectId } from 'mongodb'
 
+import { statusCodes } from '#/common/constants/status-codes.js'
+
 // Test-only: mints Entra-shaped access tokens with a throwaway RSA key and
 // serves that key's JWKS through nock at the real Entra address, so the
 // backend's validation runs unchanged (design E #portal).
@@ -19,6 +21,8 @@ export const FRONTEND_CLIENT_ID = '22222222-2222-4222-8222-222222222222'
 export const ISSUER = `${ENTRA_HOST}/${TENANT_ID}/v2.0`
 export const JWKS_PATH = `/${TENANT_ID}/discovery/v2.0/keys`
 export const KID = 'test-signing-key'
+
+const TOKEN_LIFETIME_SECONDS = 3600
 
 const { privateKey, publicKey } = generateKeyPairSync('rsa', {
   modulusLength: 2048
@@ -48,7 +52,7 @@ export function serveJwks() {
   return nock(ENTRA_HOST)
     .persist()
     .get(JWKS_PATH)
-    .reply(200, () => publicJwks())
+    .reply(statusCodes.ok, () => publicJwks())
 }
 
 const base64url = (value) =>
@@ -74,14 +78,14 @@ export function mintToken(
   }
 
   if (alg === 'HS256') {
-    const signature = createHmac(
+    const hmacSignature = createHmac(
       'sha256',
       publicKey.export({ type: 'spki', format: 'pem' })
     )
       .update(signingInput)
       .digest('base64url')
 
-    return `${signingInput}.${signature}`
+    return `${signingInput}.${hmacSignature}`
   }
 
   const signature = createSign('RSA-SHA256')
@@ -119,7 +123,7 @@ export function delegatedClaims(overrides = {}) {
       name: 'Default Person',
       iat,
       nbf: iat,
-      exp: iat + 3600
+      exp: iat + TOKEN_LIFETIME_SECONDS
     },
     overrides
   )
@@ -147,7 +151,7 @@ export function appClaims(overrides = {}) {
       uti: 'uti-app',
       iat,
       nbf: iat,
-      exp: iat + 3600
+      exp: iat + TOKEN_LIFETIME_SECONDS
     },
     overrides
   )
@@ -161,16 +165,17 @@ function withOverrides(claims, overrides) {
   )
 }
 
-const hashOf = (label) => createHash('sha1').update(label).digest('hex')
+const hashOf = (label) => createHash('sha256').update(label).digest('hex')
+
+// A version 4, variant 8 UUID shape built from the label's hash.
+const UUID_FROM_HASH = /^(.{8})(.{4}).(.{3}).(.{3})(.{12}).*$/
 
 /**
  * A stable Entra object ID for a test person.
  * @param {string} label
  */
 export function oidFor(label) {
-  const hex = hashOf(label)
-
-  return `${hex.slice(0, 8)}-${hex.slice(8, 12)}-4${hex.slice(13, 16)}-8${hex.slice(17, 20)}-${hex.slice(20, 32)}`
+  return hashOf(label).replace(UUID_FROM_HASH, '$1-$2-4$3-8$4-$5')
 }
 
 /**
@@ -268,9 +273,11 @@ async function ensurePerson(db, label, roles = ['research-user']) {
  * @param {import('mongodb').Db} db
  */
 export async function provisionUsers(db) {
-  for (const [label, { roles }] of pendingLabels) {
-    await ensurePerson(db, label, roles)
-  }
+  await Promise.all(
+    [...pendingLabels].map(([label, { roles }]) =>
+      ensurePerson(db, label, roles)
+    )
+  )
 
   pendingLabels.clear()
 }

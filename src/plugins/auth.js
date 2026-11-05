@@ -1,6 +1,7 @@
 import Jwt from '@hapi/jwt'
 
 import { config } from '#/config.js'
+import { statusCodes } from '#/common/constants/status-codes.js'
 import { createIdentityValidator } from '#/common/helpers/auth/identity.js'
 import { fetchSigningKeys, keyFor } from '#/common/helpers/auth/jwks.js'
 
@@ -10,6 +11,8 @@ export const INVALID_TOKEN = 'invalid-token'
 const ENTRA_AUTHORITY = 'https://login.microsoftonline.com'
 const REALM = 'aip-portal'
 const CLOCK_SKEW_SECONDS = 60
+const STALE_AFTER_MINUTES = 5
+const GENERATE_TIMEOUT_SECONDS = 30
 
 // Entra publishes a new signing key ahead of using it. A key set older than
 // the stale time is fetched again on the next request, so an unknown key ID
@@ -19,10 +22,20 @@ const CLOCK_SKEW_SECONDS = 60
 // succeeds.
 const KEY_CACHE = {
   expiresIn: 24 * 60 * 60 * 1000,
-  staleIn: 5 * 60 * 1000,
+  staleIn: STALE_AFTER_MINUTES * 60 * 1000,
   staleTimeout: 1000,
-  generateTimeout: 30 * 1000,
+  generateTimeout: GENERATE_TIMEOUT_SECONDS * 1000,
   dropOnError: false
+}
+
+function withoutTrailingSlashes(url) {
+  let end = url.length
+
+  while (end > 0 && url[end - 1] === '/') {
+    end--
+  }
+
+  return url.slice(0, end)
 }
 
 /**
@@ -32,7 +45,7 @@ const KEY_CACHE = {
  */
 export function tokenSource({ tenantId, mockIssuerUrl }) {
   if (mockIssuerUrl) {
-    const issuer = mockIssuerUrl.replace(/\/+$/, '')
+    const issuer = withoutTrailingSlashes(mockIssuerUrl)
 
     return { issuer, jwksUri: `${issuer}/jwks` }
   }
@@ -56,7 +69,7 @@ function describeUnauthorised(request, h) {
 
   if (
     response.isBoom &&
-    response.output.statusCode === 401 &&
+    response.output.statusCode === statusCodes.unauthorised &&
     request.auth.mode === 'required'
   ) {
     response.data = { code: INVALID_TOKEN }

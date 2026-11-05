@@ -2,6 +2,8 @@ import { createPublicKey } from 'node:crypto'
 import http from 'node:http'
 import https from 'node:https'
 
+import { statusCodes } from '#/common/constants/status-codes.js'
+
 // The tenant's signing keys (design E #portal), fetched by this module and
 // not by `@hapi/jwt`: the library reads them with `@hapi/wreck`, whose own
 // `https.Agent` ignores the proxy that CDP gives every service
@@ -39,7 +41,7 @@ function getJson(uri, { agent, timeoutMs }) {
       uri,
       { agent, timeout: timeoutMs, headers: { accept: 'application/json' } },
       (response) => {
-        if (response.statusCode !== 200) {
+        if (response.statusCode !== statusCodes.ok) {
           fail(new Error(`The key endpoint answered ${response.statusCode}`))
           return
         }
@@ -87,14 +89,15 @@ function isReadableKey(jwk) {
   }
 }
 
-const isSigningKey = (key) =>
+const hasSigningFields = (key) =>
   key?.use === 'sig' &&
   key.kty === 'RSA' &&
   typeof key.kid === 'string' &&
   key.kid !== '' &&
   Boolean(key.n) &&
-  Boolean(key.e) &&
-  isReadableKey(key)
+  Boolean(key.e)
+
+const isSigningKey = (key) => hasSigningFields(key) && isReadableKey(key)
 
 /**
  * Fetches a key set and keeps only the RSA signing keys that can be read, as

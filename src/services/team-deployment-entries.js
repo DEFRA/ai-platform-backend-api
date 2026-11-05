@@ -4,6 +4,10 @@ import {
   systemActor
 } from '#/common/helpers/auth/system-actor.js'
 
+// SYSTEM_ACTOR is the principal the backend attributes its own operations (a
+// revert) and audits its own steps to, in place of a person.
+export { SYSTEM_PRINCIPAL_ID as SYSTEM_ACTOR } from '#/common/helpers/auth/system-actor.js'
+
 /**
  * A request waiting for the operation in flight on its team file (or for
  * its paused environment): submit allows one open operation per file, so it
@@ -37,12 +41,6 @@ export const REMOVED = 'removed'
  * GitOps states that end an operation as failed.
  */
 export const TERMINAL_FAILURE_STATUSES = new Set([CHECKS_FAILED, DEPLOY_FAILED])
-
-/**
- * The principal the backend attributes its own operations (a revert) and
- * audits its own steps to, in place of a person.
- */
-export const SYSTEM_ACTOR = SYSTEM_PRINCIPAL_ID
 
 /**
  * Finds one entry of a `teamDeployments` document's `deployments[]` by id.
