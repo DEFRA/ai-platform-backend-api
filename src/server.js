@@ -12,6 +12,7 @@ import { pulse } from '#/plugins/pulse.js'
 import { requestTracing } from '#/plugins/request-tracing.js'
 import { credentialExpiryScheduler } from '#/plugins/credential-expiry-scheduler.js'
 import { operations } from '#/plugins/operations.js'
+import { directoryPlugin } from '#/plugins/directory.js'
 import { metrics } from '@defra/cdp-metrics'
 
 export async function createServer() {
@@ -47,6 +48,7 @@ export async function createServer() {
   // secureContext              - loads CA certificates from environment config
   // pulse                      - provides shutdown handlers
   // mongoDb                    - sets up mongo connection pool and attaches to `server` and `request` objects
+  // directoryPlugin            - enhances mock directory with database lookups
   // auth                       - validates an Entra access token before any handler runs, denying by default
   // operations                 - the GitOps operations runtime: relay, sweeper and events consumer
   // router                     - routes used in the app
@@ -61,6 +63,7 @@ export async function createServer() {
       plugin: mongoDb,
       options: config.get('mongo')
     },
+    directoryPlugin,
     auth,
     operations,
     router,

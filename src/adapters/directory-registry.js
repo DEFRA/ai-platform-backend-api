@@ -1,5 +1,8 @@
 import { config } from '#/config.js'
-import { mockDirectory } from '#/adapters/mock-directory.js'
+import {
+  mockDirectory as defaultMockDirectory,
+  createMockDirectory
+} from '#/adapters/mock-directory.js'
 
 /**
  * Picks the `Directory` for a directory mode, the same switch the tenant
@@ -31,11 +34,44 @@ export function selectDirectory(directoriesByMode, mode, cdpEnvironment) {
 }
 
 /**
- * The directory, chosen from `DIRECTORY_MODE` at startup.
- * @type {import('#/adapters/directory.js').Directory}
+ * Mutable registry holding the directory singleton. Starts with seeded people
+ * only; the directoryPlugin upgrades to a database-aware version after MongoDB
+ * is ready. Use `getDirectory()` to read; use `setDirectory()` to write.
+ * @type {{current: import('#/adapters/directory.js').Directory}}
  */
-export const directory = selectDirectory(
-  { mock: mockDirectory },
-  config.get('directory.mode'),
-  config.get('cdpEnvironment')
-)
+const directoryRegistry = {
+  current: selectDirectory(
+    { mock: defaultMockDirectory },
+    config.get('directory.mode'),
+    config.get('cdpEnvironment')
+  )
+}
+
+/**
+ * Reads the current directory (seeded by default, database-aware after plugin init).
+ * @returns {import('#/adapters/directory.js').Directory}
+ */
+export function getDirectory() {
+  return directoryRegistry.current
+}
+
+/**
+ * Called by the directoryPlugin to set the enhanced directory after MongoDB
+ * is available. This allows services to use the database-aware directory
+ * while keeping tests compatible (they can mock the singleton).
+ * @param {import('#/adapters/directory.js').Directory} newDirectory
+ */
+export function setDirectory(newDirectory) {
+  directoryRegistry.current = newDirectory
+}
+
+/**
+ * Creates a mock directory that searches both seeded people and the database.
+ * Use this in the Hapi server setup after MongoDB is available (e.g., in a
+ * server decorator or plugin).
+ * @param {import('mongodb').Db} db - the MongoDB database instance
+ * @returns {import('#/adapters/directory.js').Directory}
+ */
+export function createMockDirectoryWithDb(db) {
+  return createMockDirectory({ db })
+}

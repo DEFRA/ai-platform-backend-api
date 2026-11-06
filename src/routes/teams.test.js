@@ -804,11 +804,11 @@ describe('#teams routes', () => {
 
   test('POST /v1/teams/{id}/members gives 503 directory-unavailable when the directory fails, and adds nobody', async () => {
     const team = await teamWithAdmin('team-directory-down')
-    const { mockDirectory } = await import('#/adapters/mock-directory.js')
+    const { getDirectory } = await import('#/adapters/directory-registry.js')
     const { boomWithCode, Boom } =
       await import('#/common/helpers/boom-with-code.js')
 
-    vi.spyOn(mockDirectory, 'getPerson').mockRejectedValue(
+    vi.spyOn(getDirectory(), 'getPerson').mockRejectedValue(
       boomWithCode(
         Boom.serverUnavailable,
         'The directory is unavailable',
@@ -1813,7 +1813,7 @@ describe('#teams routes', () => {
 
     test('sorts by name and returns at most 20', async () => {
       const team = await teamWithAdmin('search-6')
-      const { mockDirectory } = await import('#/adapters/mock-directory.js')
+      const { getDirectory } = await import('#/adapters/directory-registry.js')
       const crowd = Array.from({ length: 30 }, (_, index) => ({
         oid: randomUUID(),
         displayName: `Zed Person ${String(30 - index).padStart(2, '0')}`,
@@ -1821,7 +1821,7 @@ describe('#teams routes', () => {
         userPrincipalName: `zed.person.${index}@defra.gov.uk`
       }))
 
-      vi.spyOn(mockDirectory, 'searchPeople').mockResolvedValue(crowd)
+      vi.spyOn(getDirectory(), 'searchPeople').mockResolvedValue(crowd)
       const { result } = await search(team, team.adminId, { search: 'zed' })
 
       vi.restoreAllMocks()
@@ -1969,11 +1969,11 @@ describe('#teams routes', () => {
 
     test('gives 503 directory-unavailable when the directory fails', async () => {
       const team = await teamWithAdmin('search-12')
-      const { mockDirectory } = await import('#/adapters/mock-directory.js')
+      const { getDirectory } = await import('#/adapters/directory-registry.js')
       const { boomWithCode, Boom } =
         await import('#/common/helpers/boom-with-code.js')
 
-      vi.spyOn(mockDirectory, 'searchPeople').mockRejectedValue(
+      vi.spyOn(getDirectory(), 'searchPeople').mockRejectedValue(
         boomWithCode(
           Boom.serverUnavailable,
           'The directory is unavailable',
@@ -1993,8 +1993,8 @@ describe('#teams routes', () => {
     test('does not call the directory for someone who may not search', async () => {
       const team = await teamWithAdmin('search-13')
       const member = await addSeeded(team, 'eleanor')
-      const { mockDirectory } = await import('#/adapters/mock-directory.js')
-      const searchPeople = vi.spyOn(mockDirectory, 'searchPeople')
+      const { getDirectory } = await import('#/adapters/directory-registry.js')
+      const searchPeople = vi.spyOn(getDirectory(), 'searchPeople')
 
       await search(team, member.userId, { search: 'amelia' })
 
