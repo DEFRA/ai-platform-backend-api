@@ -288,9 +288,16 @@ function upsertModels(modelsCollection, models, fields) {
   )
 }
 
+// `$schema` is editor metadata and a `$`-prefixed key Mongo rejects in `$set`.
+function withoutEditorMetadata(provider) {
+  const copy = { ...provider }
+  delete copy.$schema
+
+  return copy
+}
+
 function upsertProviders(db, providers, stamp) {
-  return forEachSequentially(providers, ({ $schema, ...provider }) =>
-    // `$schema` is editor metadata and a `$`-prefixed key Mongo rejects in `$set`.
+  return forEachSequentially(providers.map(withoutEditorMetadata), (provider) =>
     db
       .collection('providers')
       .updateOne(

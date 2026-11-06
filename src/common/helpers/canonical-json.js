@@ -11,8 +11,9 @@ export function compareCodeUnits(a, b) {
     return 0
   }
 
-  // Relational comparison of JS strings is by UTF-16 code unit.
-  return a < b ? -1 : 1
+  // Relational comparison of JS strings is by UTF-16 code unit, which is the
+  // order required here, so S3003's advice to convert to numbers is wrong.
+  return a < b ? -1 : 1 // NOSONAR
 }
 
 /**

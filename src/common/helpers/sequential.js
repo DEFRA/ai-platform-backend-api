@@ -1,4 +1,23 @@
 /**
+ * Yields each step's result in order, starting a step only once the previous
+ * one has settled. A rejection ends the iteration, so no later step runs.
+ * `yield` waits for a promise in an async generator, so no chain is built up
+ * front and memory does not grow with the batch beyond the results.
+ * @template T, R
+ * @param {Iterable<T>} items
+ * @param {(item: T, index: number) => Promise<R>|R} step
+ * @returns {AsyncGenerator<R>}
+ */
+async function* stepsInOrder(items, step) {
+  let index = 0
+
+  for (const item of items) {
+    yield step(item, index)
+    index += 1
+  }
+}
+
+/**
  * Runs an async function over each item strictly one after another, in
  * order, and resolves with the results in the same order. Use it where each
  * step must finish before the next starts (ordered writes, rate limits); use
@@ -8,20 +27,14 @@
  * @param {(item: T, index: number) => Promise<R>|R} step
  * @returns {Promise<R[]>}
  */
-export function mapSequentially(items, step) {
+export async function mapSequentially(items, step) {
   const results = []
 
-  return [...items]
-    .reduce(
-      (previous, item, index) =>
-        previous
-          .then(() => step(item, index))
-          .then((result) => {
-            results.push(result)
-          }),
-      Promise.resolve()
-    )
-    .then(() => results)
+  for await (const result of stepsInOrder(items, step)) {
+    results.push(result)
+  }
+
+  return results
 }
 
 /**
