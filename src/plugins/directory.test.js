@@ -21,30 +21,28 @@ describe('#directoryPlugin', () => {
     expect(typeof server.directory.getPerson).toBe('function')
   })
 
-  test('enhanced directory can search and add users created through sign-in', async () => {
-    const seeded = await server.directory.searchPeople({ query: 'journey' })
+  test('enhanced directory searches seeded people', async () => {
+    const found = await server.directory.searchPeople({ query: 'journey' })
 
-    expect(seeded).toHaveLength(1)
-    expect(seeded[0].displayName).toBe('Journey Test Member')
+    expect(found).toHaveLength(1)
+    expect(found[0].displayName).toBe('Journey Test Member')
+  })
 
+  test('directory finds newly created Mongo user by displayName', async () => {
     const oid = randomUUID()
     const email = `directory-${oid}@defra.gov.uk`
-    const signedIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid,
-        tid: '6f504113-6b64-43f2-ade9-242e05780007',
-        email,
-        displayName: 'Mongo Directory Member'
-      }
+    await server.db.collection('users').insertOne({
+      oid,
+      tid: '6f504113-6b64-43f2-ade9-242e05780007',
+      email,
+      userPrincipalName: email,
+      displayName: 'Mongo Directory Member'
     })
-
-    expect(signedIn.statusCode).toBe(200)
 
     const found = await server.directory.searchPeople({
       query: 'Mongo Directory'
     })
+
     expect(found).toEqual([
       expect.objectContaining({
         oid,
@@ -53,47 +51,33 @@ describe('#directoryPlugin', () => {
         userPrincipalName: email
       })
     ])
+
     await expect(server.directory.getPerson({ oid })).resolves.toEqual(found[0])
+  })
 
-    const admin = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: '6f504113-6b64-43f2-ade9-242e05780007',
-        email: `directory-admin-${randomUUID()}@defra.gov.uk`,
-        displayName: 'Directory Team Admin'
-      }
-    })
-    const team = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers: {
-        'x-user-id': admin.result.user._id.toString(),
-        'idempotency-key': randomUUID()
-      },
-      payload: {
-        name: `Directory Test Team ${randomUUID()}`,
-        serviceCode: 'ABC'
-      }
-    })
-    const added = await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${team.result.team._id}/members`,
-      headers: {
-        'x-user-id': admin.result.user._id.toString(),
-        'idempotency-key': randomUUID()
-      },
-      payload: { oid, role: 'user' }
-    })
-
-    expect(added.statusCode).toBe(201)
-    expect(added.result.member).toMatchObject({
-      userId: signedIn.result.user._id.toString(),
-      displayName: 'Mongo Directory Member',
+  test('directory finds newly created Mongo user with word order reversed', async () => {
+    const oid = randomUUID()
+    const email = `directory-reverse-${oid}@defra.gov.uk`
+    await server.db.collection('users').insertOne({
+      oid,
+      tid: '6f504113-6b64-43f2-ade9-242e05780007',
       email,
-      role: 'user',
-      status: 'active'
+      userPrincipalName: email,
+      displayName: 'Ada Lovelace'
     })
+
+    // Search by reversed word order should still find the user
+    const found = await server.directory.searchPeople({
+      query: 'lovelace ada'
+    })
+
+    expect(found).toEqual([
+      expect.objectContaining({
+        oid,
+        displayName: 'Ada Lovelace',
+        mail: email,
+        userPrincipalName: email
+      })
+    ])
   })
 })

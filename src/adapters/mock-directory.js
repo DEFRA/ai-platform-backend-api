@@ -23,12 +23,22 @@ function userDocToDirectoryPerson(userDoc) {
     oid: userDoc.oid,
     displayName: userDoc.displayName,
     mail: userDoc.mail ?? userDoc.email ?? null,
-    userPrincipalName: userDoc.userPrincipalName ?? userDoc.email
+    userPrincipalName:
+      userDoc.userPrincipalName ?? userDoc.email ?? userDoc.mail ?? null
   }
 }
 
 function words(text) {
   return text.toLowerCase().split(/\s+/).filter(Boolean)
+}
+
+/**
+ * Escape special regex characters in a string for use in MongoDB regex.
+ * @param {string} str
+ * @returns {string}
+ */
+function escapeRegex(str) {
+  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
 }
 
 /**
@@ -72,22 +82,18 @@ export function createMockDirectory({ people = seededPeople, db } = {}) {
       )
 
       if (db) {
+        const escapedQuery = escapeRegex(query.trim())
+        const queryWords = words(query)
+        const firstWord = escapeRegex(queryWords[0] ?? '')
+
         const users = await db
           .collection('users')
           .find({
             $or: [
-              {
-                displayName: {
-                  $regex: (words(query)[0] ?? '').replace(
-                    /[.*+?^${}()|[\]\\]/g,
-                    '\\$&'
-                  ),
-                  $options: 'i'
-                }
-              },
-              { mail: { $regex: `^${query}`, $options: 'i' } },
-              { userPrincipalName: { $regex: query, $options: 'i' } },
-              { email: { $regex: `^${query}`, $options: 'i' } }
+              { displayName: { $regex: firstWord, $options: 'i' } },
+              { mail: { $regex: `^${escapedQuery}`, $options: 'i' } },
+              { userPrincipalName: { $regex: firstWord, $options: 'i' } },
+              { email: { $regex: `^${escapedQuery}`, $options: 'i' } }
             ]
           })
           .toArray()
