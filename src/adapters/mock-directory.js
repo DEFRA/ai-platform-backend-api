@@ -1,4 +1,19 @@
 import { readFileSync } from 'node:fs'
+import Boom from '@hapi/boom'
+
+import { boomWithCode } from '#/common/helpers/boom-with-code.js'
+
+/**
+ * Translate a database failure into the directory-unavailable 503.
+ * @returns {Error}
+ */
+function directoryUnavailable() {
+  return boomWithCode(
+    Boom.serverUnavailable,
+    'The directory is unavailable',
+    'directory-unavailable'
+  )
+}
 
 /**
  * Every seeded person's `oid` starts with this, so a seeded person is never
@@ -38,7 +53,7 @@ function words(text) {
  * @returns {string}
  */
 function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
+  return str.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
 }
 
 /**
@@ -87,17 +102,23 @@ export function createMockDirectory({ people = seededPeople, db } = {}) {
         const escapedQuery = escapeRegex(query.trim())
         const firstWord = escapeRegex(queryWords[0] ?? '')
 
-        const users = await db
-          .collection('users')
-          .find({
-            $or: [
-              { displayName: { $regex: firstWord, $options: 'i' } },
-              { mail: { $regex: `^${escapedQuery}`, $options: 'i' } },
-              { userPrincipalName: { $regex: firstWord, $options: 'i' } },
-              { email: { $regex: `^${escapedQuery}`, $options: 'i' } }
-            ]
-          })
-          .toArray()
+        let users
+
+        try {
+          users = await db
+            .collection('users')
+            .find({
+              $or: [
+                { displayName: { $regex: firstWord, $options: 'i' } },
+                { mail: { $regex: `^${escapedQuery}`, $options: 'i' } },
+                { userPrincipalName: { $regex: firstWord, $options: 'i' } },
+                { email: { $regex: `^${escapedQuery}`, $options: 'i' } }
+              ]
+            })
+            .toArray()
+        } catch {
+          throw directoryUnavailable()
+        }
 
         const dbPeople = users.map(userDocToDirectoryPerson)
         const filtered = dbPeople.filter((person) => matches(person, query))
@@ -123,7 +144,13 @@ export function createMockDirectory({ people = seededPeople, db } = {}) {
       }
 
       if (db) {
-        const user = await db.collection('users').findOne({ oid })
+        let user
+
+        try {
+          user = await db.collection('users').findOne({ oid })
+        } catch {
+          throw directoryUnavailable()
+        }
 
         if (user) {
           return userDocToDirectoryPerson(user)
