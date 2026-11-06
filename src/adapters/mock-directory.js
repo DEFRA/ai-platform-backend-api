@@ -77,13 +77,14 @@ function matches(person, query) {
 export function createMockDirectory({ people = seededPeople, db } = {}) {
   return {
     async searchPeople({ query }) {
+      const queryWords = words(query)
+
       const results = structuredClone(
         people.filter((person) => matches(person, query))
       )
 
       if (db) {
         const escapedQuery = escapeRegex(query.trim())
-        const queryWords = words(query)
         const firstWord = escapeRegex(queryWords[0] ?? '')
 
         const users = await db
