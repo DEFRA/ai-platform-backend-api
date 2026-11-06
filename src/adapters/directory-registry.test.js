@@ -1,4 +1,4 @@
-import { directory, selectDirectory } from '#/adapters/directory-registry.js'
+import { getDirectory, selectDirectory } from '#/adapters/directory-registry.js'
 import { mockDirectory } from '#/adapters/mock-directory.js'
 
 describe('#selectDirectory', () => {
@@ -61,7 +61,7 @@ describe('#directory at start-up', () => {
   })
 
   test('is the mock directory by default', () => {
-    expect(directory).toBe(mockDirectory)
+    expect(getDirectory()).toBe(mockDirectory)
   })
 
   test.each([

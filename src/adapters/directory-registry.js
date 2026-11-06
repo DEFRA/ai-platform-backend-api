@@ -34,16 +34,26 @@ export function selectDirectory(directoriesByMode, mode, cdpEnvironment) {
 }
 
 /**
- * The directory, chosen from `DIRECTORY_MODE` at startup. Defaults to seeded
- * people only; the directoryPlugin will override this with a database-aware
- * version after MongoDB is ready.
- * @type {import('#/adapters/directory.js').Directory}
+ * Mutable registry holding the directory singleton. Starts with seeded people
+ * only; the directoryPlugin upgrades to a database-aware version after MongoDB
+ * is ready. Use `getDirectory()` to read; use `setDirectory()` to write.
+ * @type {{current: import('#/adapters/directory.js').Directory}}
  */
-export let directory = selectDirectory(
-  { mock: defaultMockDirectory },
-  config.get('directory.mode'),
-  config.get('cdpEnvironment')
-)
+const directoryRegistry = {
+  current: selectDirectory(
+    { mock: defaultMockDirectory },
+    config.get('directory.mode'),
+    config.get('cdpEnvironment')
+  )
+}
+
+/**
+ * Reads the current directory (seeded by default, database-aware after plugin init).
+ * @returns {import('#/adapters/directory.js').Directory}
+ */
+export function getDirectory() {
+  return directoryRegistry.current
+}
 
 /**
  * Called by the directoryPlugin to set the enhanced directory after MongoDB
@@ -52,7 +62,7 @@ export let directory = selectDirectory(
  * @param {import('#/adapters/directory.js').Directory} newDirectory
  */
 export function setDirectory(newDirectory) {
-  directory = newDirectory
+  directoryRegistry.current = newDirectory
 }
 
 /**

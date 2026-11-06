@@ -3,7 +3,7 @@ import { ObjectId } from 'mongodb'
 import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
-import * as directoryRegistry from '#/adapters/directory-registry.js'
+import { getDirectory } from '#/adapters/directory-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { emailOf, isEligible } from '#/services/directory-eligibility.js'
 import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
@@ -64,7 +64,7 @@ export async function searchTeamPeople(
 
   // Use the passed directory for testing, or the current directory from the registry in production
   // (which the directoryPlugin updates after MongoDB is ready to include real user records)
-  const dir = directory || directoryRegistry.directory
+  const dir = directory || getDirectory()
   const found = await dir.searchPeople({
     userAssertion,
     query: search
@@ -292,7 +292,7 @@ export async function addMember(
   db,
   { teamId: teamRef, actor, oid, role, idempotencyKey, userAssertion },
   {
-    directory = directoryRegistry.directory,
+    directory = getDirectory(),
     allowedDomains = config.get('directory.allowedDomains')
   } = {}
 ) {
