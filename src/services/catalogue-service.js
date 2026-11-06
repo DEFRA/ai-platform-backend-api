@@ -1,4 +1,5 @@
 import { invalidateModelsCache, listModels } from '#/services/models-service.js'
+import { forEachSequentially } from '#/common/helpers/sequential.js'
 
 // Loaded on first use, not at import: research-deployments reads the config,
 // and a test file that imports this module must be able to import the server
@@ -214,15 +215,17 @@ function indexOfferings(providers) {
   const index = new Map()
   const problems = []
 
-  for (const provider of providers) {
-    for (const offering of provider.offerings ?? []) {
-      const key = `${provider.id}/${offering.id}`
+  const entries = providers.flatMap((provider) =>
+    (provider.offerings ?? []).map((offering) => ({
+      key: `${provider.id}/${offering.id}`,
+      offering
+    }))
+  )
 
-      if (!offering.hosting?.platform || !offering.gateway) {
-        problems.push(`${key} (needs hosting.platform and gateway)`)
-        continue
-      }
-
+  for (const { key, offering } of entries) {
+    if (!offering.hosting?.platform || !offering.gateway) {
+      problems.push(`${key} (needs hosting.platform and gateway)`)
+    } else {
       if (index.has(key)) {
         problems.push(`${key} (duplicate)`)
       }
@@ -255,6 +258,63 @@ function normalizeModel(model, offering) {
       model.apiVersion ??
       DEFAULT_API_VERSION
   }
+}
+
+// The offering supplies hosting and gateway, so a model must name one the
+// catalogue defines - otherwise it is skipped and the last good copy kept.
+function resolveSyncableModels(models, offerings, logger) {
+  return models.flatMap((rawModel) => {
+    const offering = offerings.get(`${rawModel.provider}/${rawModel.offering}`)
+
+    if (!offering) {
+      logger.warn(
+        `Skipping catalogue model ${rawModel.slug}: unknown offering ${rawModel.provider}/${rawModel.offering}`
+      )
+      return []
+    }
+
+    return [normalizeModel(rawModel, offering)]
+  })
+}
+
+// One after another, as before: a sync writes in catalogue order.
+function upsertModels(modelsCollection, models, fields) {
+  return forEachSequentially(models, (model) =>
+    modelsCollection.updateOne(
+      { slug: model.slug },
+      { $set: { ...model, ...fields } },
+      { upsert: true }
+    )
+  )
+}
+
+function upsertProviders(db, providers, stamp) {
+  return forEachSequentially(providers, ({ $schema, ...provider }) =>
+    // `$schema` is editor metadata and a `$`-prefixed key Mongo rejects in `$set`.
+    db
+      .collection('providers')
+      .updateOne(
+        { id: provider.id },
+        { $set: { ...provider, ...stamp } },
+        { upsert: true }
+      )
+  )
+}
+
+async function retireMissingModels(modelsCollection, models, now) {
+  const seenSlugs = models.map((model) => model.slug)
+  const { modifiedCount } = await modelsCollection.updateMany(
+    { slug: { $nin: seenSlugs }, 'lifecycle.status': { $ne: 'retired' } },
+    {
+      $set: {
+        eligible: false,
+        'lifecycle.status': 'retired',
+        updatedAt: now
+      }
+    }
+  )
+
+  return modifiedCount
 }
 
 /**
@@ -305,62 +365,15 @@ export async function syncCatalogue(db, source, locker, logger) {
 
     const now = new Date().toISOString()
     const modelsCollection = db.collection('models')
-    let synced = 0
+    const stamp = { catalogueSha, release, syncedAt: now }
 
-    for (const rawModel of models) {
-      const offering = offerings.get(
-        `${rawModel.provider}/${rawModel.offering}`
-      )
+    const syncable = resolveSyncableModels(models, offerings, logger)
+    const synced = syncable.length
 
-      // The offering supplies hosting and gateway, so a model must name one
-      // the catalogue defines - keep the last good copy instead.
-      if (!offering) {
-        logger.warn(
-          `Skipping catalogue model ${rawModel.slug}: unknown offering ${rawModel.provider}/${rawModel.offering}`
-        )
-        continue
-      }
+    await upsertModels(modelsCollection, syncable, { ...stamp, updatedAt: now })
+    await upsertProviders(db, providers, stamp)
 
-      const model = normalizeModel(rawModel, offering)
-
-      synced++
-      await modelsCollection.updateOne(
-        { slug: model.slug },
-        {
-          $set: {
-            ...model,
-            catalogueSha,
-            release,
-            syncedAt: now,
-            updatedAt: now
-          }
-        },
-        { upsert: true }
-      )
-    }
-
-    for (const { $schema, ...provider } of providers) {
-      // `$schema` is editor metadata and a `$`-prefixed key Mongo rejects in `$set`.
-      await db
-        .collection('providers')
-        .updateOne(
-          { id: provider.id },
-          { $set: { ...provider, catalogueSha, release, syncedAt: now } },
-          { upsert: true }
-        )
-    }
-
-    const seenSlugs = models.map((model) => model.slug)
-    const { modifiedCount: retired } = await modelsCollection.updateMany(
-      { slug: { $nin: seenSlugs }, 'lifecycle.status': { $ne: 'retired' } },
-      {
-        $set: {
-          eligible: false,
-          'lifecycle.status': 'retired',
-          updatedAt: now
-        }
-      }
-    )
+    const retired = await retireMissingModels(modelsCollection, models, now)
 
     invalidateModelsCache()
 

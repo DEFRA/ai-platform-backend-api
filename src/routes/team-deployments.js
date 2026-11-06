@@ -76,7 +76,7 @@ export const teamDeployments = [
       return h
         .response({ deployments })
         .header('Location', `/v1/teams/${teamId}/deployments`)
-        .code(201)
+        .code(statusCodes.created)
     }
   },
   {

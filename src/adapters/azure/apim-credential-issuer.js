@@ -1,5 +1,6 @@
 import { config } from '#/config.js'
 import { createArmClient } from '#/adapters/azure/arm-client.js'
+import { keyHintFor } from '#/adapters/key-hint.js'
 import { resolveAipEnvironment } from '#/common/helpers/aip-environment.js'
 
 const API_VERSION = '2024-05-01'
@@ -116,7 +117,7 @@ async function issueSubscription(armClient, base, { userId, modelSlug }) {
   return {
     externalId: sid,
     secret: secrets.primaryKey,
-    keyHint: secrets.primaryKey.slice(-4),
+    keyHint: keyHintFor(secrets.primaryKey),
     expiresAt
   }
 }
@@ -194,7 +195,7 @@ export function createApimCredentialIssuer({
       return {
         externalId,
         secret: secrets.primaryKey,
-        keyHint: secrets.primaryKey.slice(-4)
+        keyHint: keyHintFor(secrets.primaryKey)
       }
     },
 

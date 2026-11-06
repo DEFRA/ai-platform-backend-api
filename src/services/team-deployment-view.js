@@ -1,4 +1,5 @@
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
+import { compareCodeUnits } from '#/common/helpers/canonical-json.js'
 import {
   REMOVED,
   REMOVING,
@@ -64,7 +65,8 @@ function stepBoundaries(entry) {
   for (const step of [...PROGRESS_STEPS].reverse()) {
     const next = boundaries[0]
     const starts = step.statuses.map((status) => times[status]).filter(Boolean)
-    const start = starts.sort()[0] ?? next
+    const [earliest] = starts.toSorted(compareCodeUnits)
+    const start = earliest ?? next
 
     boundaries.unshift(next && next < start ? next : start)
   }

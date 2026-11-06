@@ -78,7 +78,6 @@ describe('#credentialExpiryScheduler', () => {
     expect(expireCredentials).toHaveBeenCalledWith(
       server.db,
       server.locker,
-      undefined,
       server.logger
     )
     expect(reconcilePendingCredentials).toHaveBeenCalledWith(

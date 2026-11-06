@@ -1,6 +1,7 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
+import { statusCodes } from '#/common/constants/status-codes.js'
 import { ACCESS } from '#/common/helpers/auth/access.js'
 import { entraIdField } from '#/common/helpers/entra-id.js'
 import {
@@ -26,6 +27,9 @@ const descriptionField = Joi.string()
   .trim()
   .max(MAX_DESCRIPTION_LENGTH)
   .allow('')
+
+const MIN_NAME_LENGTH = 3
+const MAX_NAME_LENGTH = 60
 
 // What an Admin types to find a person in the directory.
 const MIN_SEARCH_LENGTH = 2
@@ -53,7 +57,11 @@ export const teams = [
       validate: {
         headers: idempotentHeaders,
         payload: Joi.object({
-          name: Joi.string().trim().min(3).max(60).required(),
+          name: Joi.string()
+            .trim()
+            .min(MIN_NAME_LENGTH)
+            .max(MAX_NAME_LENGTH)
+            .required(),
           serviceCode: serviceCodeField.required(),
           description: descriptionField.optional()
         }).unknown(false)
@@ -77,7 +85,7 @@ export const teams = [
         response.header('Location', `/v1/teams/${team._id}`)
       }
 
-      return response.code(replay ? 200 : 201)
+      return response.code(replay ? statusCodes.ok : statusCodes.created)
     }
   },
   {
@@ -188,7 +196,7 @@ export const teams = [
       return h
         .response({ member })
         .header('Location', `/v1/teams/${request.params.id}/members`)
-        .code(201)
+        .code(statusCodes.created)
     }
   },
   {
@@ -228,7 +236,7 @@ export const teams = [
         memberId: request.params.memberId
       })
 
-      return h.response().code(204)
+      return h.response().code(statusCodes.noContent)
     }
   }
 ]

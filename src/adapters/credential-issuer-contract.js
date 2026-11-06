@@ -1,5 +1,9 @@
 const MS_PER_DAY = 24 * 60 * 60 * 1000
 
+// The contract says a hint is the last four characters of the secret, stated
+// here independently so an adapter cannot pass by agreeing with itself.
+const KEY_HINT_LENGTH = 4
+
 /**
  * Shared `CredentialIssuer` contract suite, run against every adapter (mock
  * and the nocked Azure APIM adapter) so a new provider's Liskov substitution
@@ -32,7 +36,7 @@ export function describeCredentialIssuerContract(
 
       expect(issued.externalId).toEqual(expect.any(String))
       expect(issued.secret).toEqual(expect.any(String))
-      expect(issued.keyHint).toBe(issued.secret.slice(-4))
+      expect(issued.keyHint).toBe(issued.secret.slice(-KEY_HINT_LENGTH))
       expect(issued.expiresAt).toEqual(expect.any(String))
     })
 
@@ -45,7 +49,7 @@ export function describeCredentialIssuerContract(
       })
 
       expect(rotated.externalId).toBe(issued.externalId)
-      expect(rotated.keyHint).toBe(rotated.secret.slice(-4))
+      expect(rotated.keyHint).toBe(rotated.secret.slice(-KEY_HINT_LENGTH))
     })
 
     test('renew and suspend echo the externalId they were given', async () => {

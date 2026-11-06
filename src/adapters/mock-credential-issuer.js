@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import { config } from '#/config.js'
+import { keyHintFor } from '#/adapters/key-hint.js'
 
 // Deterministic failure hook for tests: any user ID with this prefix makes
 // the mock issuer throw, exercising the 502 upstream-unavailable path against
@@ -8,12 +9,17 @@ import { config } from '#/config.js'
 // production catalogue seed.
 const FORCED_FAILURE_USER_PREFIX = 'test-fail-'
 
-function mockOauthSecret() {
-  return `mock-oauth-${randomUUID().replace(/-/g, '')}`
+function randomToken() {
+  return randomUUID().replaceAll('-', '')
 }
 
-// A secret's hint is its last characters.
-const KEY_HINT_LENGTH = 4
+function mockOauthSecret() {
+  return `mock-oauth-${randomToken()}`
+}
+
+function mockApiKey() {
+  return `mock_${randomToken()}`
+}
 
 // Shared across the whole team+environment, not per model or per member -
 // one credential covers every model in the team's allow-list. The team
@@ -24,7 +30,7 @@ function teamCredential({ teamId, environment }, expiresAt) {
   return {
     externalId: `team-${teamId}-${environment}`,
     secret,
-    keyHint: secret.slice(-KEY_HINT_LENGTH),
+    keyHint: keyHintFor(secret),
     expiresAt
   }
 }
@@ -50,12 +56,12 @@ export const mockCredentialIssuer = {
       return teamCredential({ teamId, environment }, expiresAt)
     }
 
-    const secret = `mock_${randomUUID().replace(/-/g, '')}`
+    const secret = mockApiKey()
 
     return {
       externalId: `research-${userId}-${modelSlug}`,
       secret,
-      keyHint: secret.slice(-4),
+      keyHint: keyHintFor(secret),
       expiresAt
     }
   },
@@ -67,9 +73,9 @@ export const mockCredentialIssuer = {
   async rotate({ externalId }) {
     const secret = externalId.startsWith('team-')
       ? mockOauthSecret()
-      : `mock_${randomUUID().replace(/-/g, '')}`
+      : mockApiKey()
 
-    return { externalId, secret, keyHint: secret.slice(-4) }
+    return { externalId, secret, keyHint: keyHintFor(secret) }
   },
 
   async revoke({ externalId }) {

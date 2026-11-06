@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb'
 
+import { forEachSequentially } from '#/common/helpers/sequential.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { config } from '#/config.js'
 import { findModelBySlug } from '#/services/models-service.js'
@@ -228,14 +229,14 @@ async function addDeployments(db, params, operations) {
 
   await projectOperation(db, operation)
 
-  for (const entry of fresh) {
-    await auditDeployment(db, entry, {
+  await forEachSequentially(fresh, (entry) =>
+    auditDeployment(db, entry, {
       action: REQUEST_ACTION,
       actor: params.actor,
       role: params.role,
       ...(operation.state === QUEUED ? { code: QUEUED } : {})
     })
-  }
+  )
 
   const current = await db
     .collection('teamDeployments')

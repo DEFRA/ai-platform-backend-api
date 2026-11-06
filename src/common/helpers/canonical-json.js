@@ -7,17 +7,12 @@
  * @returns {number} Negative, zero or positive, as `sort()` expects.
  */
 export function compareCodeUnits(a, b) {
-  const sharedLength = Math.min(a.length, b.length)
-
-  for (let index = 0; index < sharedLength; index += 1) {
-    const difference = a.charCodeAt(index) - b.charCodeAt(index)
-
-    if (difference !== 0) {
-      return difference
-    }
+  if (a === b) {
+    return 0
   }
 
-  return a.length - b.length
+  // Relational comparison of JS strings is by UTF-16 code unit.
+  return a < b ? -1 : 1
 }
 
 /**

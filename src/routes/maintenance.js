@@ -33,7 +33,6 @@ export const maintenance = {
     const { expired, suspended } = await expireCredentials(
       request.db,
       request.locker,
-      undefined,
       request.logger
     )
     const { reconciled, vaultReconciled } = await reconcilePendingCredentials(
