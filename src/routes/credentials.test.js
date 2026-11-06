@@ -2,6 +2,8 @@ import { randomUUID } from 'node:crypto'
 
 import { ObjectId } from 'mongodb'
 
+import { signInAs, withTestUsers } from '#/common/test-helpers/portal-token.js'
+
 const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 
 // The research models these tests issue keys for; the mock research file
@@ -33,6 +35,7 @@ describe('#credentials routes', () => {
 
     server = await createServer()
     await server.initialize()
+    withTestUsers(server)
     deployInResearch(DEPLOYED_FOR_RESEARCH)
   })
 
@@ -141,6 +144,40 @@ describe('#credentials routes', () => {
 
     expect(statusCode).toBe(409)
     expect(result.code).toBe('active-credential-exists')
+  })
+
+  test('GET /v1/credentials/{id} expires an overdue key as the system, not as its owner', async () => {
+    const userId = `user-lazy-${randomUUID()}`
+    const { insertedId } = await server.db.collection('credentials').insertOne({
+      userId,
+      modelSlug: 'gpt-5-mini',
+      tier: 'research',
+      type: 'apim-subscription',
+      status: 'active',
+      renewalCount: 0,
+      createdAt: new Date().toISOString(),
+      expiresAt: new Date(Date.now() - 60 * 1000).toISOString()
+    })
+
+    const { statusCode, result } = await server.inject({
+      method: 'GET',
+      url: `/v1/credentials/${insertedId}`,
+      headers: { 'x-user-id': userId }
+    })
+
+    expect(statusCode).toBe(200)
+    expect(result.status).toBe('expired')
+    expect(
+      await server.db.collection('auditEvents').findOne({
+        action: 'credential.expire',
+        resourceId: insertedId.toString()
+      })
+    ).toMatchObject({
+      actorUserId: 'app:ai-platform-backend',
+      role: 'system',
+      oid: null,
+      tid: null
+    })
   })
 
   test('POST /v1/credentials rejects re-issuing for a model with an expired credential, pointing to renew', async () => {
@@ -474,31 +511,17 @@ describe('#credentials routes', () => {
     const teamId = await createTeamWithActiveDeployment('team-cred-view-1')
     const credential = await teamCredentialOf(teamId)
 
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/members`,
-      headers: {
-        'x-user-id': 'team-cred-view-1',
-        'idempotency-key': randomUUID()
-      },
-      payload: { email: 'viewer-teammate@defra.gov.uk' }
-    })
-
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'viewer-teammate@defra.gov.uk',
-        displayName: 'Viewer Teammate'
-      }
-    })
+    const viewerId = await inviteAndSignIn(
+      teamId,
+      'team-cred-view-1',
+      'viewer-teammate@defra.gov.uk',
+      'Viewer Teammate'
+    )
 
     const { statusCode, result } = await server.inject({
       method: 'GET',
       url: `/v1/credentials/${credential._id}`,
-      headers: { 'x-user-id': signIn.result.user._id.toString() }
+      headers: { 'x-user-id': viewerId }
     })
 
     expect(statusCode).toBe(200)
@@ -521,28 +544,12 @@ describe('#credentials routes', () => {
       payload: { modelSlug: 'gpt-5-nano' }
     })
 
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/members`,
-      headers: {
-        'x-user-id': 'team-cred-leak-1',
-        'idempotency-key': randomUUID()
-      },
-      payload: { email: 'leak-teammate@defra.gov.uk' }
-    })
-
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'leak-teammate@defra.gov.uk',
-        displayName: 'Leak Teammate'
-      }
-    })
-
-    const teammateId = signIn.result.user._id.toString()
+    const teammateId = await inviteAndSignIn(
+      teamId,
+      'team-cred-leak-1',
+      'leak-teammate@defra.gov.uk',
+      'Leak Teammate'
+    )
 
     const viewed = await server.inject({
       method: 'GET',
@@ -1081,31 +1088,17 @@ describe('#credentials routes', () => {
   test('GET /v1/credentials lists a shared team credential for another active team member', async () => {
     const teamId = await createTeamWithActiveDeployment('team-cred-user-5')
 
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/members`,
-      headers: {
-        'x-user-id': 'team-cred-user-5',
-        'idempotency-key': randomUUID()
-      },
-      payload: { email: 'teammate@defra.gov.uk' }
-    })
-
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: randomUUID(),
-        tid: ENTRA_TENANT_ID,
-        email: 'teammate@defra.gov.uk',
-        displayName: 'Teammate'
-      }
-    })
+    const teammateId = await inviteAndSignIn(
+      teamId,
+      'team-cred-user-5',
+      'teammate@defra.gov.uk',
+      'Teammate'
+    )
 
     const { result, statusCode } = await server.inject({
       method: 'GET',
       url: '/v1/credentials',
-      headers: { 'x-user-id': signIn.result.user._id.toString() }
+      headers: { 'x-user-id': teammateId }
     })
 
     expect(statusCode).toBe(200)
@@ -1114,21 +1107,29 @@ describe('#credentials routes', () => {
     expect(result.items[0].secret).toBeUndefined()
   })
 
-  async function inviteAndSignIn(teamId, adminUserId, email, displayName) {
-    await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${teamId}/members`,
-      headers: { 'x-user-id': adminUserId, 'idempotency-key': randomUUID() },
-      payload: { email }
+  // A signed-in person who is an active member of the team, as an Admin's add
+  // from the directory leaves them: their own `users` record, and a
+  // membership written straight to the database so the team's creator (a
+  // made-up id in these tests) need not be a real person. The name is from
+  // when this invited by email.
+  async function inviteAndSignIn(teamId, _adminUserId, email, displayName) {
+    const signIn = await signInAs(server, {
+      oid: randomUUID(),
+      tid: ENTRA_TENANT_ID,
+      email,
+      displayName
+    })
+    const userId = signIn.result.user._id.toString()
+
+    await server.db.collection('teamMembers').insertOne({
+      teamId,
+      userId,
+      role: 'user',
+      status: 'active',
+      createdAt: new Date().toISOString()
     })
 
-    const signIn = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: { oid: randomUUID(), tid: ENTRA_TENANT_ID, email, displayName }
-    })
-
-    return signIn.result.user._id.toString()
+    return userId
   }
 
   test('POST /v1/credentials/{id}/rotate lets a team admin rotate the shared credential', async () => {

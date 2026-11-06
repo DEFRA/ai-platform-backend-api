@@ -121,7 +121,10 @@ export async function runBackfills(
     try {
       const result = await backfill.run(db)
       await store.completeClaim(backfill.id, result)
-      logger.info(`Applied backfill "${backfill.id}": ${backfill.description}`)
+      logger.info(
+        { result: result ?? null },
+        `Applied backfill "${backfill.id}": ${backfill.description}`
+      )
     } catch (error) {
       await store.releaseClaim(backfill.id)
       throw error

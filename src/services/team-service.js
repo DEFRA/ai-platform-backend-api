@@ -12,6 +12,7 @@ import { serviceCodeVerifier } from '#/adapters/service-code-verifier-registry.j
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { readTeamEnvironments } from '#/services/team-desired-state.js'
+import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
 
 // Two names that differ only in punctuation ("Data Team" and "Data Team!")
 // pass the name check but derive one slug, so a clash needs a numbered retry.
@@ -64,7 +65,7 @@ export async function resolveTeamId(db, idOrSlug) {
  * @param {string} idOrSlug
  * @returns {Promise<string>}
  */
-async function requireTeamId(db, idOrSlug) {
+export async function requireTeamId(db, idOrSlug) {
   const teamId = await resolveTeamId(db, idOrSlug)
 
   if (!teamId) {
@@ -143,14 +144,15 @@ async function insertTeamWithUniqueSlug(db, fields, replayKey) {
  * Creates a team and makes the creator its first admin, or replays a prior
  * call with the same Idempotency-Key.
  * @param {import('mongodb').Db} db
- * @param {{name: string, serviceCode: string, description?: string, createdBy: string, idempotencyKey: string}} params
+ * @param {{name: string, serviceCode: string, description?: string, actor: {userId: string}, idempotencyKey: string}} params - `actor` is the token's credentials
  * @param {{verifier?: import('#/adapters/service-code-verifier.js').ServiceCodeVerifier}} [deps]
  */
 export async function createTeam(
   db,
-  { name, serviceCode, description, createdBy, idempotencyKey },
+  { name, serviceCode, description, actor, idempotencyKey },
   { verifier = serviceCodeVerifier } = {}
 ) {
+  const createdBy = actor.userId
   const existing = await db
     .collection('teams')
     .findOne({ createdBy, idempotencyKey })
@@ -188,7 +190,6 @@ export async function createTeam(
     await db.collection('teamMembers').insertOne({
       teamId: insertedId.toString(),
       userId: createdBy,
-      email: null,
       role: 'admin',
       status: 'active',
       createdAt: now
@@ -201,7 +202,8 @@ export async function createTeam(
   }
 
   await recordAuditEvent(db, {
-    actorUserId: createdBy,
+    actor,
+    role: TEAM_ADMIN,
     action: 'team.create',
     resource: 'team',
     resourceId: insertedId.toString(),
@@ -216,9 +218,9 @@ export async function createTeam(
  * `role` in that team - lets `/manage` role-gate rotate/revoke without a
  * second call per team.
  * @param {import('mongodb').Db} db
- * @param {string} userId
+ * @param {{userId: string}} actor
  */
-export async function listTeamsForUser(db, userId) {
+export async function listTeamsForUser(db, { userId }) {
   const memberships = await db
     .collection('teamMembers')
     .find({ userId, status: 'active' })
@@ -253,19 +255,18 @@ export async function listTeamsForUser(db, userId) {
  * it attributes the team's AI spend and the team file carries it to Azure as
  * a tag. An empty description clears it, as on creation.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, serviceCode?: string, description?: string}} params - `teamId` is the team's id or slug
+ * @param {{teamId: string, actor: {userId: string}, serviceCode?: string, description?: string}} params - `teamId` is the team's id or slug
  * @param {{verifier?: import('#/adapters/service-code-verifier.js').ServiceCodeVerifier}} [deps]
  */
 export async function updateTeam(
   db,
-  { teamId: teamRef, actorUserId, serviceCode, description },
+  { teamId: teamRef, actor, serviceCode, description },
   { verifier = serviceCodeVerifier } = {}
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamAdmin(db, {
-    teamId,
-    actorUserId,
+  await requireTeamRole(db, actor, teamId, {
+    role: TEAM_ADMIN,
     action: "change the team's details"
   })
 
@@ -294,7 +295,8 @@ export async function updateTeam(
 
   if (serviceCode !== undefined) {
     await recordAuditEvent(db, {
-      actorUserId,
+      actor,
+      role: TEAM_ADMIN,
       action: 'team.setServiceCode',
       resource: 'team',
       resourceId: teamId,
@@ -305,7 +307,8 @@ export async function updateTeam(
 
   if (description !== undefined) {
     await recordAuditEvent(db, {
-      actorUserId,
+      actor,
+      role: TEAM_ADMIN,
       action: 'team.setDescription',
       resource: 'team',
       resourceId: teamId,
@@ -317,34 +320,20 @@ export async function updateTeam(
 }
 
 /**
- * Returns the caller's role (`'admin'|'user'`) in a team, or null if they
- * are not an active member - used to gate rotate/revoke on a shared team
- * credential to admins only.
- * @param {import('mongodb').Db} db
- * @param {{teamId: string, userId: string}} params
- */
-export async function getMemberRole(db, { teamId, userId }) {
-  const membership = await db
-    .collection('teamMembers')
-    .findOne({ teamId, userId, status: 'active' })
-
-  return membership?.role ?? null
-}
-
-/**
- * Finds a team and its members, only for a requester who is an active member.
- * Returns null (not a 403) for a non-member so existence isn't disclosed.
+ * Finds a team and its active members, only for a requester who is an active member.
+ * Returns null for a team that does not exist; a team the requester is not a
+ * member of is a refused 404, audited, so existence isn't disclosed.
  * `id` is the team's id or slug. `environments` lists each environment the
  * team has a tenant file in, with the gateway limits that file holds (what
  * the desired-state builder wrote: the configured defaults until a team's
  * limits are agreed otherwise), in the order of `TEAM_ENVIRONMENTS`.
  * @param {import('mongodb').Db} db
- * @param {{id: string, userId: string}} params
+ * @param {{id: string, actor: {userId: string}}} params
  * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry}} [deps]
  */
 export async function findTeamById(
   db,
-  { id: idOrSlug, userId },
+  { id: idOrSlug, actor },
   { registry = tenantOrchestratorRegistry } = {}
 ) {
   const id = await resolveTeamId(db, idOrSlug)
@@ -353,13 +342,7 @@ export async function findTeamById(
     return null
   }
 
-  const membership = await db
-    .collection('teamMembers')
-    .findOne({ teamId: id, userId, status: 'active' })
-
-  if (!membership) {
-    return null
-  }
+  await requireTeamRole(db, actor, id)
 
   const team = await db.collection('teams').findOne({ _id: new ObjectId(id) })
 
@@ -369,7 +352,7 @@ export async function findTeamById(
 
   const members = await db
     .collection('teamMembers')
-    .find({ teamId: id })
+    .find({ teamId: id, status: 'active' })
     .toArray()
   const files = await readTeamFiles(registry, team.slug)
 
@@ -406,10 +389,10 @@ async function readTeamFiles(registry, slug) {
 }
 
 /**
- * A member has no display name until they've signed in at least once (their
- * `users` record is what carries it) - joined in here rather than stored
- * redundantly on `teamMembers`, so a later name change in `users` is always
- * reflected without a backfill.
+ * A member's display name and email come from their `users` record - joined
+ * in here rather than stored redundantly on `teamMembers`, so a later change
+ * in `users` is always reflected without a backfill. Both are for display
+ * only; neither is ever a lookup key.
  * @param {import('mongodb').Db} db
  * @param {object[]} members
  */
@@ -419,7 +402,11 @@ async function withMemberDisplayNames(db, members) {
     .map((member) => new ObjectId(member.userId))
 
   if (userIds.length === 0) {
-    return members.map((member) => ({ ...member, displayName: null }))
+    return members.map((member) => ({
+      ...member,
+      displayName: null,
+      email: null
+    }))
   }
 
   const users = await db
@@ -427,46 +414,21 @@ async function withMemberDisplayNames(db, members) {
     .find({ _id: { $in: userIds } })
     .toArray()
 
-  const displayNameByUserId = new Map(
-    users.map((user) => [user._id.toString(), user.displayName])
-  )
+  const userById = new Map(users.map((user) => [user._id.toString(), user]))
 
-  return members.map((member) => ({
-    ...member,
-    displayName: member.userId
-      ? (displayNameByUserId.get(member.userId) ?? null)
-      : null
-  }))
+  return members.map((member) => {
+    const user = member.userId ? userById.get(member.userId) : null
+
+    return {
+      ...member,
+      displayName: user?.displayName ?? null,
+      email: user?.email ?? null
+    }
+  })
 }
 
 /**
- * The actor must be an active admin of the team. A non-member is told only
- * that there is nothing there, so team membership is never disclosed.
- * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, action: string}} params
- */
-async function requireTeamAdmin(db, { teamId, actorUserId, action }) {
-  const actorMembership = await db
-    .collection('teamMembers')
-    .findOne({ teamId, userId: actorUserId, status: 'active' })
-
-  if (!actorMembership) {
-    throw Boom.notFound()
-  }
-
-  if (actorMembership.role !== 'admin') {
-    throw boomWithCode(
-      Boom.forbidden,
-      `Only a team admin can ${action}`,
-      'admin-required'
-    )
-  }
-
-  return actorMembership
-}
-
-/**
- * A member of this team an admin may act on: active or still invited.
+ * A member of this team an admin may act on: an active one.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, memberId: string}} params
  */
@@ -477,9 +439,9 @@ async function findManageableMember(db, { teamId, memberId }) {
 
   const member = await db
     .collection('teamMembers')
-    .findOne({ _id: new ObjectId(memberId), teamId })
+    .findOne({ _id: new ObjectId(memberId), teamId, status: 'active' })
 
-  if (!member || !['active', 'invited'].includes(member.status)) {
+  if (!member) {
     throw Boom.notFound()
   }
 
@@ -507,109 +469,25 @@ async function refuseIfLastAdmin(db, teamId) {
 }
 
 /**
- * Invites a member by email with the given role (`user` unless an admin asks
- * for `admin`). Only an active admin of the team may do this, so only an
- * admin can make another admin.
- * @param {import('mongodb').Db} db
- * @param {{teamId: string, actorUserId: string, email: string, role?: 'admin'|'user', idempotencyKey: string}} params - `teamId` is the team's id or slug
- */
-export async function addMember(
-  db,
-  { teamId: teamRef, actorUserId, email, role = 'user', idempotencyKey }
-) {
-  const teamId = await requireTeamId(db, teamRef)
-
-  await requireTeamAdmin(db, { teamId, actorUserId, action: 'add members' })
-
-  const lowerEmail = email.toLowerCase()
-
-  const replay = await db
-    .collection('teamMembers')
-    .findOne({ teamId, idempotencyKey })
-
-  if (replay) {
-    return replay
-  }
-
-  const existingMember = await db
-    .collection('teamMembers')
-    .findOne({ teamId, email: lowerEmail })
-
-  if (existingMember) {
-    throw boomWithCode(
-      Boom.conflict,
-      'This person is already a member of the team',
-      'member-exists'
-    )
-  }
-
-  const now = new Date().toISOString()
-  const member = {
-    teamId,
-    userId: null,
-    email: lowerEmail,
-    role,
-    status: 'invited',
-    idempotencyKey,
-    createdAt: now
-  }
-
-  let insertedId
-
-  try {
-    ;({ insertedId } = await db.collection('teamMembers').insertOne(member))
-  } catch (error) {
-    if (isDuplicateKeyError(error)) {
-      // Lost a race: either the same key (replay it) or the same email
-      // (a genuine duplicate invite). The unique indexes decide, not the
-      // earlier reads, so concurrent invites cannot both succeed.
-      const winner = await db
-        .collection('teamMembers')
-        .findOne({ teamId, idempotencyKey })
-
-      if (winner) {
-        return winner
-      }
-
-      throw boomWithCode(
-        Boom.conflict,
-        'This person is already a member of the team',
-        'member-exists'
-      )
-    }
-
-    throw error
-  }
-
-  await recordAuditEvent(db, {
-    actorUserId,
-    action: 'team.addMember',
-    resource: 'team',
-    resourceId: teamId,
-    outcome: 'success',
-    code: role
-  })
-
-  return { _id: insertedId, ...member }
-}
-
-/**
  * Removes a member from a team. Only an active admin may do this, and a
  * team must always keep at least one active admin - the removal is a status
  * change (`'removed'`), not a delete, so the audit trail and idempotency
  * history survive.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, actorUserId: string, memberId: string}} params
+ * @param {{teamId: string, actor: {userId: string}, memberId: string}} params
  */
 export async function removeMember(
   db,
   locker,
-  { teamId: teamRef, actorUserId, memberId }
+  { teamId: teamRef, actor, memberId }
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamAdmin(db, { teamId, actorUserId, action: 'remove members' })
+  await requireTeamRole(db, actor, teamId, {
+    role: TEAM_ADMIN,
+    action: 'remove members'
+  })
 
   // Counting the admins and then writing is not atomic, so two admins
   // removing or demoting each other at once could leave the team with none.
@@ -628,7 +506,7 @@ export async function removeMember(
         $set: {
           status: 'removed',
           removedAt: new Date().toISOString(),
-          removedBy: actorUserId
+          removedBy: actor.userId
         }
       }
     )
@@ -637,7 +515,8 @@ export async function removeMember(
   }
 
   await recordAuditEvent(db, {
-    actorUserId,
+    actor,
+    role: TEAM_ADMIN,
     action: 'team.removeMember',
     resource: 'team',
     resourceId: teamId,
@@ -651,18 +530,17 @@ export async function removeMember(
  * promote someone else first.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, actorUserId: string, memberId: string, role: 'admin'|'user'}} params
+ * @param {{teamId: string, actor: {userId: string}, memberId: string, role: 'admin'|'user'}} params
  */
 export async function setMemberRole(
   db,
   locker,
-  { teamId: teamRef, actorUserId, memberId, role }
+  { teamId: teamRef, actor, memberId, role }
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamAdmin(db, {
-    teamId,
-    actorUserId,
+  await requireTeamRole(db, actor, teamId, {
+    role: TEAM_ADMIN,
     action: "change a member's role"
   })
 
@@ -692,7 +570,8 @@ export async function setMemberRole(
   }
 
   await recordAuditEvent(db, {
-    actorUserId,
+    actor,
+    role: TEAM_ADMIN,
     action: 'team.setMemberRole',
     resource: 'team',
     resourceId: teamId,

@@ -2,6 +2,7 @@ import Joi from 'joi'
 import Boom from '@hapi/boom'
 
 import { statusCodes } from '#/common/constants/status-codes.js'
+import { ACCESS } from '#/common/helpers/auth/access.js'
 import { REMOVING } from '#/services/team-deployment-entries.js'
 import {
   MAX_MODELS_PER_REQUEST,
@@ -13,10 +14,6 @@ import { removeDeployment } from '#/services/team-deployment-removal.js'
 
 const MAX_PURPOSE_LENGTH = 500
 
-const userIdHeader = Joi.object({
-  'x-user-id': Joi.string().required()
-}).unknown(true)
-
 const idsParam = Joi.object({
   teamId: Joi.string().required(),
   id: Joi.string().required()
@@ -27,9 +24,9 @@ export const teamDeployments = [
     method: 'POST',
     path: '/v1/teams/{teamId}/deployments',
     options: {
+      app: { access: ACCESS.teamMember },
       validate: {
         headers: Joi.object({
-          'x-user-id': Joi.string().required(),
           'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
         }).unknown(true),
         params: Joi.object({ teamId: Joi.string().required() }).unknown(false),
@@ -56,7 +53,6 @@ export const teamDeployments = [
       }
     },
     handler: async (request, h) => {
-      const requestedBy = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
       const { teamId } = request.params
       const { modelSlugs, environment, purpose } = request.payload
@@ -69,7 +65,7 @@ export const teamDeployments = [
           modelSlugs,
           environment,
           purpose,
-          requestedBy,
+          actor: request.auth.credentials,
           idempotencyKey,
           traceParent: request.headers.traceparent,
           cdpRequestId: request.headers['x-cdp-request-id']
@@ -87,15 +83,15 @@ export const teamDeployments = [
     method: 'GET',
     path: '/v1/teams/{teamId}/deployments',
     options: {
+      app: { access: ACCESS.teamMember },
       validate: {
-        headers: userIdHeader,
         params: Joi.object({ teamId: Joi.string().required() }).unknown(false)
       }
     },
     handler: async (request, h) => {
       const items = await listDeploymentsForTeam(request.db, {
         teamId: request.params.teamId,
-        userId: request.headers['x-user-id']
+        actor: request.auth.credentials
       })
 
       return h.response({ items })
@@ -105,13 +101,14 @@ export const teamDeployments = [
     method: 'GET',
     path: '/v1/teams/{teamId}/deployments/{id}',
     options: {
-      validate: { headers: userIdHeader, params: idsParam }
+      app: { access: ACCESS.teamMember },
+      validate: { params: idsParam }
     },
     handler: async (request, h) => {
       const deployment = await getDeployment(request.db, {
         id: request.params.id,
         teamId: request.params.teamId,
-        userId: request.headers['x-user-id']
+        actor: request.auth.credentials
       })
 
       if (!deployment) {
@@ -125,9 +122,10 @@ export const teamDeployments = [
     method: 'DELETE',
     path: '/v1/teams/{teamId}/deployments/{id}',
     options: {
+      app: { access: ACCESS.teamAdmin },
       description:
         'Removes a model deployment (team admin): the team file is submitted without it and the next apply destroys it. 202 while the removal is in progress, 200 once removed.',
-      validate: { headers: userIdHeader, params: idsParam }
+      validate: { params: idsParam }
     },
     handler: async (request, h) => {
       const deployment = await removeDeployment(
@@ -136,7 +134,7 @@ export const teamDeployments = [
         {
           teamId: request.params.teamId,
           id: request.params.id,
-          requestedBy: request.headers['x-user-id'],
+          actor: request.auth.credentials,
           traceParent: request.headers.traceparent,
           cdpRequestId: request.headers['x-cdp-request-id']
         },

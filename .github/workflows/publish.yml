@@ -33,6 +33,7 @@ jobs:
         with:
           node-version-file: .nvmrc
           cache: npm
+      - uses: ./.github/actions/mongodb-test-binary
       - run: |
           npm ci
           npm test

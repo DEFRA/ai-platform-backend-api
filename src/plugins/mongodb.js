@@ -100,17 +100,14 @@ async function dropIndexIfExists(collection, name) {
 async function createIndexes(db) {
   await db.collection('mongo-locks').createIndex({ id: 1 })
 
-  // Example of how to create a mongodb index. Remove as required
-  await db.collection('example-data').createIndex({ id: 1 })
-
   await db.collection('models').createIndex({ slug: 1 }, { unique: true })
   // Backs the provider filter on GET /v1/models and provider -> offering lookups.
   await db.collection('models').createIndex({ provider: 1, offering: 1 })
   // `syncCatalogue` upserts providers by `id`.
   await db.collection('providers').createIndex({ id: 1 }, { unique: true })
   // People are keyed on their Entra object and tenant IDs (design F).
-  // Partial: records from before that keying have no `oid` until their next
-  // sign-in binds one.
+  // Partial: a record with no `oid` (from before that keying; nothing binds
+  // one now, and the 2026-11-03 backfill deletes them) stays out of the index.
   await db
     .collection('users')
     .createIndex(
@@ -140,13 +137,17 @@ async function createIndexes(db) {
     }
   )
   await db.collection('teamMembers').createIndex({ teamId: 1, userId: 1 })
-  await db.collection('teamMembers').createIndex({ email: 1 })
-  // Partial: the team creator's own admin membership carries a null email and
-  // no idempotencyKey, so only invited members participate in these indexes.
+  // Membership is by person, not email: these indexes served the invitations
+  // (`2026-11-03-team-members-directory-only` removed them and the field).
+  await dropIndexIfExists(db.collection('teamMembers'), 'email_1')
+  await dropIndexIfExists(db.collection('teamMembers'), 'teamId_1_email_1')
+  // A person is an active member of a team once: the index decides a race
+  // between two adds. Keyed `{ userId, teamId }` so it never clashes with
+  // `{ teamId, userId }` above, and a rollback still starts cleanly.
   await ensureIndex(
     db.collection('teamMembers'),
-    { teamId: 1, email: 1 },
-    { unique: true, partialFilterExpression: { email: { $type: 'string' } } }
+    { userId: 1, teamId: 1 },
+    { unique: true, partialFilterExpression: { status: 'active' } }
   )
   await ensureIndex(
     db.collection('teamMembers'),

@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 
 import { config } from '#/config.js'
 
-// Deterministic failure hook for tests: any x-user-id with this prefix makes
+// Deterministic failure hook for tests: any user ID with this prefix makes
 // the mock issuer throw, exercising the 502 upstream-unavailable path against
 // a real, eligible model without needing a reserved test-only model in the
 // production catalogue seed.

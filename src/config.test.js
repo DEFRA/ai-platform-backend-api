@@ -106,6 +106,80 @@ describe('#config provisioning', () => {
   })
 })
 
+describe('#config directory', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  test('defaults to the mock directory with the Defra domains, Graph base URL and a 5 second timeout', async () => {
+    const { config } = await loadConfig({})
+
+    expect(config.get('directory')).toEqual({
+      mode: 'mock',
+      allowedDomains: ['defra.gov.uk', 'defra.onmicrosoft.com'],
+      graphBaseUrl: 'https://graph.microsoft.com',
+      timeoutMs: 5000,
+      searchMaxPages: 5,
+      searchTimeoutMs: 10000
+    })
+  })
+
+  test('reads the allowed domains as a comma-separated list', async () => {
+    const { config } = await loadConfig({
+      DIRECTORY_ALLOWED_DOMAINS: 'defra.gov.uk,example.gov.uk'
+    })
+
+    expect(config.get('directory.allowedDomains')).toEqual([
+      'defra.gov.uk',
+      'example.gov.uk'
+    ])
+  })
+
+  test('refuses a mode that is neither mock nor graph', async () => {
+    await expect(loadConfig({ DIRECTORY_MODE: 'ldap' })).rejects.toThrow(
+      /directory\.mode/
+    )
+  })
+
+  test('reads the mode, base URL and timeout from the environment', async () => {
+    const { config } = await loadConfig({
+      DIRECTORY_MODE: 'graph',
+      DIRECTORY_GRAPH_BASE_URL: 'https://graph.microsoft.us',
+      DIRECTORY_TIMEOUT_MS: '2500'
+    })
+
+    expect(config.get('directory')).toMatchObject({
+      mode: 'graph',
+      graphBaseUrl: 'https://graph.microsoft.us',
+      timeoutMs: 2500
+    })
+  })
+
+  test('reads the search bounds from the environment', async () => {
+    const { config } = await loadConfig({
+      DIRECTORY_SEARCH_MAX_PAGES: '3',
+      DIRECTORY_SEARCH_TIMEOUT_MS: '8000'
+    })
+
+    expect(config.get('directory')).toMatchObject({
+      searchMaxPages: 3,
+      searchTimeoutMs: 8000
+    })
+  })
+
+  test('refuses a search that may read no page', async () => {
+    await expect(
+      loadConfig({ DIRECTORY_SEARCH_MAX_PAGES: '0' })
+    ).rejects.toThrow(/searchMaxPages/)
+  })
+
+  test('refuses a Graph base URL that is not a URL', async () => {
+    await expect(
+      loadConfig({ DIRECTORY_GRAPH_BASE_URL: 'not a url' })
+    ).rejects.toThrow(/graphBaseUrl/)
+  })
+})
+
 describe('#config research environment', () => {
   afterEach(() => {
     vi.unstubAllEnvs()
@@ -321,5 +395,81 @@ describe('#config tenant orchestrator and GitOps', () => {
     const { config } = await loadConfig({ [name]: '1' })
 
     expect(config.get('gitops')).not.toHaveProperty(key)
+  })
+})
+
+describe('#config portalAuth', () => {
+  afterEach(() => {
+    vi.unstubAllEnvs()
+  })
+
+  const tenant = '6f504113-6b64-43f2-ade9-242e05780007'
+  const api = '11111111-1111-4111-8111-111111111111'
+  const frontend = '22222222-2222-4222-8222-222222222222'
+  const portalEnv = {
+    PORTAL_AUTH_TENANT_ID: tenant,
+    PORTAL_AUTH_AUDIENCE: api,
+    PORTAL_AUTH_CLIENT_ID: frontend
+  }
+
+  test('reads the tenant, the API audience and the frontend client ID', async () => {
+    const { config } = await loadConfig(portalEnv)
+
+    expect(config.get('portalAuth')).toEqual({
+      tenantId: tenant,
+      audience: api,
+      clientId: frontend,
+      mockIssuerUrl: null
+    })
+  })
+
+  test.each([
+    ['PORTAL_AUTH_TENANT_ID'],
+    ['PORTAL_AUTH_AUDIENCE'],
+    ['PORTAL_AUTH_CLIENT_ID']
+  ])('refuses to start without %s', async (name) => {
+    await expect(
+      loadConfig({ ...portalEnv, [name]: undefined })
+    ).rejects.toThrow(name)
+  })
+
+  test.each([
+    ['PORTAL_AUTH_TENANT_ID', 'portalAuth.tenantId'],
+    ['PORTAL_AUTH_AUDIENCE', 'portalAuth.audience'],
+    ['PORTAL_AUTH_CLIENT_ID', 'portalAuth.clientId']
+  ])('refuses %s that is not a GUID', async (name, key) => {
+    await expect(
+      loadConfig({ ...portalEnv, [name]: 'not-a-guid' })
+    ).rejects.toThrow(`${key}: must be a GUID`)
+  })
+
+  test('accepts a mock issuer outside production', async () => {
+    const { config } = await loadConfig({
+      ...portalEnv,
+      PORTAL_AUTH_MOCK_ISSUER_URL: 'http://localhost:3010'
+    })
+
+    expect(config.get('portalAuth.mockIssuerUrl')).toBe('http://localhost:3010')
+  })
+
+  test('refuses a mock issuer in production', async () => {
+    await expect(
+      loadConfig({
+        ...portalEnv,
+        NODE_ENV: 'production',
+        PORTAL_AUTH_MOCK_ISSUER_URL: 'http://localhost:3010'
+      })
+    ).rejects.toThrow(
+      'PORTAL_AUTH_MOCK_ISSUER_URL must not be set in production'
+    )
+  })
+
+  test('has no ALLOWED_EMAIL_DOMAINS setting any more', async () => {
+    const { config } = await loadConfig({
+      ...portalEnv,
+      ALLOWED_EMAIL_DOMAINS: 'example.com'
+    })
+
+    expect(() => config.get('allowedEmailDomains')).toThrow()
   })
 })

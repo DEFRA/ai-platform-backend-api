@@ -1,15 +1,17 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
+import { ACCESS } from '#/common/helpers/auth/access.js'
+import { entraIdField } from '#/common/helpers/entra-id.js'
 import {
   createTeam,
   listTeamsForUser,
   findTeamById,
   updateTeam,
-  addMember,
   removeMember,
   setMemberRole
 } from '#/services/team-service.js'
+import { searchTeamPeople, addMember } from '#/services/team-people-service.js'
 
 // Three characters, as the team file's schema requires; entered in any case
 // and stored upper.
@@ -20,17 +22,16 @@ const serviceCodeField = Joi.string()
 
 // Trimmed and optional; empty clears it.
 const MAX_DESCRIPTION_LENGTH = 500
-const MAX_EMAIL_LENGTH = 254
 const descriptionField = Joi.string()
   .trim()
   .max(MAX_DESCRIPTION_LENGTH)
   .allow('')
 
-const memberRoleField = Joi.string().valid('admin', 'user')
+// What an Admin types to find a person in the directory.
+const MIN_SEARCH_LENGTH = 2
+const MAX_SEARCH_LENGTH = 100
 
-const userIdHeader = Joi.object({
-  'x-user-id': Joi.string().required()
-}).unknown(true)
+const memberRoleField = Joi.string().valid('admin', 'user')
 
 const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
 
@@ -40,7 +41,6 @@ const memberIdParam = Joi.object({
 }).unknown(false)
 
 const idempotentHeaders = Joi.object({
-  'x-user-id': Joi.string().required(),
   'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
 }).unknown(true)
 
@@ -49,6 +49,7 @@ export const teams = [
     method: 'POST',
     path: '/v1/teams',
     options: {
+      app: { access: ACCESS.user },
       validate: {
         headers: idempotentHeaders,
         payload: Joi.object({
@@ -59,7 +60,6 @@ export const teams = [
       }
     },
     handler: async (request, h) => {
-      const createdBy = request.headers['x-user-id']
       const idempotencyKey = request.headers['idempotency-key']
       const { name, serviceCode, description } = request.payload
 
@@ -67,7 +67,7 @@ export const teams = [
         name,
         serviceCode,
         description,
-        createdBy,
+        actor: request.auth.credentials,
         idempotencyKey
       })
 
@@ -83,14 +83,9 @@ export const teams = [
   {
     method: 'GET',
     path: '/v1/teams',
-    options: {
-      validate: { headers: userIdHeader }
-    },
+    options: { app: { access: ACCESS.user } },
     handler: async (request, h) => {
-      const items = await listTeamsForUser(
-        request.db,
-        request.headers['x-user-id']
-      )
+      const items = await listTeamsForUser(request.db, request.auth.credentials)
 
       return h.response({ items })
     }
@@ -99,12 +94,13 @@ export const teams = [
     method: 'GET',
     path: '/v1/teams/{id}',
     options: {
-      validate: { headers: userIdHeader, params: idParam }
+      app: { access: ACCESS.teamMember },
+      validate: { params: idParam }
     },
     handler: async (request, h) => {
       const result = await findTeamById(request.db, {
         id: request.params.id,
-        userId: request.headers['x-user-id']
+        actor: request.auth.credentials
       })
 
       if (!result) {
@@ -118,8 +114,8 @@ export const teams = [
     method: 'PATCH',
     path: '/v1/teams/{id}',
     options: {
+      app: { access: ACCESS.teamAdmin },
       validate: {
-        headers: userIdHeader,
         params: idParam,
         payload: Joi.object({
           serviceCode: serviceCodeField,
@@ -132,7 +128,7 @@ export const teams = [
     handler: async (request, h) => {
       const { team } = await updateTeam(request.db, {
         teamId: request.params.id,
-        actorUserId: request.headers['x-user-id'],
+        actor: request.auth.credentials,
         serviceCode: request.payload.serviceCode,
         description: request.payload.description
       })
@@ -142,23 +138,50 @@ export const teams = [
   },
   {
     method: 'POST',
+    path: '/v1/teams/{id}/people/search',
+    options: {
+      app: { access: ACCESS.teamAdmin },
+      validate: {
+        params: idParam,
+        payload: Joi.object({
+          search: Joi.string()
+            .trim()
+            .min(MIN_SEARCH_LENGTH)
+            .max(MAX_SEARCH_LENGTH)
+            .required()
+        }).unknown(false)
+      }
+    },
+    handler: async (request, h) => {
+      const { items } = await searchTeamPeople(request.db, {
+        teamId: request.params.id,
+        actor: request.auth.credentials,
+        search: request.payload.search
+      })
+
+      return h.response({ items })
+    }
+  },
+  {
+    method: 'POST',
     path: '/v1/teams/{id}/members',
     options: {
+      app: { access: ACCESS.teamAdmin },
       validate: {
         headers: idempotentHeaders,
         params: idParam,
         payload: Joi.object({
-          email: Joi.string().email().max(MAX_EMAIL_LENGTH).required(),
-          role: memberRoleField.default('user')
+          oid: entraIdField.required(),
+          role: memberRoleField.required()
         }).unknown(false)
       }
     },
     handler: async (request, h) => {
       const member = await addMember(request.db, {
         teamId: request.params.id,
-        actorUserId: request.headers['x-user-id'],
+        actor: request.auth.credentials,
         idempotencyKey: request.headers['idempotency-key'],
-        email: request.payload.email,
+        oid: request.payload.oid,
         role: request.payload.role
       })
 
@@ -172,8 +195,8 @@ export const teams = [
     method: 'PATCH',
     path: '/v1/teams/{id}/members/{memberId}',
     options: {
+      app: { access: ACCESS.teamAdmin },
       validate: {
-        headers: userIdHeader,
         params: memberIdParam,
         payload: Joi.object({
           role: memberRoleField.required()
@@ -183,7 +206,7 @@ export const teams = [
     handler: async (request, h) => {
       const { member } = await setMemberRole(request.db, request.locker, {
         teamId: request.params.id,
-        actorUserId: request.headers['x-user-id'],
+        actor: request.auth.credentials,
         memberId: request.params.memberId,
         role: request.payload.role
       })
@@ -195,12 +218,13 @@ export const teams = [
     method: 'DELETE',
     path: '/v1/teams/{id}/members/{memberId}',
     options: {
-      validate: { headers: userIdHeader, params: memberIdParam }
+      app: { access: ACCESS.teamAdmin },
+      validate: { params: memberIdParam }
     },
     handler: async (request, h) => {
       await removeMember(request.db, request.locker, {
         teamId: request.params.id,
-        actorUserId: request.headers['x-user-id'],
+        actor: request.auth.credentials,
         memberId: request.params.memberId
       })
 

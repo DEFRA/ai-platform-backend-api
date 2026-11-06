@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { signInAs, withTestUsers } from '#/common/test-helpers/portal-token.js'
+
 const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 // The mock orchestrator's reserved requester ranges, by test name prefix.
 const FORCED_FAILURE_OID_RANGES = {
@@ -30,6 +32,7 @@ describe('#team-deployments routes', () => {
     ;({ invalidateModelsCache } = await import('#/services/models-service.js'))
     server = await createServer()
     await server.initialize()
+    withTestUsers(server)
     settleEvents = () => server.app.operations.transport.worker.idle()
   })
 
@@ -67,15 +70,11 @@ describe('#team-deployments routes', () => {
   }
 
   async function signIn(label) {
-    const { result } = await server.inject({
-      method: 'POST',
-      url: '/v1/users',
-      payload: {
-        oid: oidFor(label),
-        tid: ENTRA_TENANT_ID,
-        email: `${label}@defra.gov.uk`,
-        displayName: label
-      }
+    const { result } = await signInAs(server, {
+      oid: oidFor(label),
+      tid: ENTRA_TENANT_ID,
+      email: `${label}@defra.gov.uk`,
+      displayName: label
     })
 
     userIds.set(label, result.user._id.toString())
@@ -125,26 +124,6 @@ describe('#team-deployments routes', () => {
       result: { ...result, deployment: result.deployments?.[0] }
     }
   }
-
-  test('POST /v1/teams/{teamId}/deployments refuses a member with no Entra object ID to attribute it to', async () => {
-    const userId = 'deploy-user-unbound'
-    const { result: created } = await server.inject({
-      method: 'POST',
-      url: '/v1/teams',
-      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { name: `Team ${userId}`, serviceCode: 'ABC' }
-    })
-
-    const { result, statusCode } = await server.inject({
-      method: 'POST',
-      url: `/v1/teams/${created.team._id}/deployments`,
-      headers: { 'x-user-id': userId, 'idempotency-key': randomUUID() },
-      payload: { modelSlugs: ['gpt-4o'], environment: 'sandbox' }
-    })
-
-    expect(statusCode).toBe(403)
-    expect(result.code).toBe('entra-identity-required')
-  })
 
   test('POST /v1/teams/{teamId}/deployments requests a deployment for an active team member', async () => {
     const teamId = await createTeam('deploy-user-1')

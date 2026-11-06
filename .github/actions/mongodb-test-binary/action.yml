@@ -1,0 +1,28 @@
+name: MongoDB test binary
+description: >-
+  Fetches the MongoDB binary the tests start and points mongodb-memory-server at it.
+  The library's own download has no retry or resume, and fastdl.mongodb.org resets the
+  connection on GitHub runners often enough to fail every test file; curl retries and resumes.
+
+inputs:
+  version:
+    description: The MongoDB version; must match mongodb-memory-server's default version
+    default: 7.0.24
+
+runs:
+  using: composite
+  steps:
+    - name: Download the MongoDB test binary
+      shell: bash
+      env:
+        MONGO_VERSION: ${{ inputs.version }}
+      run: |
+        archive="mongodb-linux-x86_64-ubuntu2204-${MONGO_VERSION}"
+        curl --fail --silent --show-error --location \
+          --retry 10 --retry-all-errors --retry-delay 5 --continue-at - \
+          --output "${RUNNER_TEMP}/mongodb.tgz" \
+          "https://fastdl.mongodb.org/linux/${archive}.tgz"
+        tar -xzf "${RUNNER_TEMP}/mongodb.tgz" -C "${RUNNER_TEMP}" "${archive}/bin/mongod"
+        echo "MONGOMS_SYSTEM_BINARY=${RUNNER_TEMP}/${archive}/bin/mongod" >> "$GITHUB_ENV"
+        echo "MONGOMS_VERSION=${MONGO_VERSION}" >> "$GITHUB_ENV"
+        "${RUNNER_TEMP}/${archive}/bin/mongod" --version | head -1

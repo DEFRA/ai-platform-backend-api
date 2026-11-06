@@ -127,21 +127,90 @@ git config --global core.autocrlf false
 
 ## API endpoints
 
-| Endpoint             | Description                    |
-| :------------------- | :----------------------------- |
-| `GET: /health`       | Health                         |
-| `GET: /example    `  | Example API (remove as needed) |
-| `GET: /example/<id>` | Example API (remove as needed) |
+| Endpoint       | Description |
+| :------------- | :---------- |
+| `GET: /health` | Health      |
+
+### Authentication
+
+Every route except `GET /health` and `POST /maintenance/expire-credentials` (which keeps its own
+`x-maintenance-token`) needs `Authorization: Bearer {Entra access token}` and answers `401`
+`{ "code": "invalid-token" }` with a `WWW-Authenticate` header otherwise. An `x-user-id` header is
+ignored. The token is the one the portal's frontend obtained for the signed-in person (or, for the
+two catalogue reads `GET /v1/models` and `GET /v1/models/{slug}` only, for the frontend itself). It is
+validated before any handler runs (design E `#portal` in `ai-platform-discovery-docs`): an `RS256` signature from the tenant's published keys (fetched when the server starts, which
+refuses to start if it cannot), then issuer, `tid`, audience, `ver` 2.0, `azp` (the frontend's client ID),
+`azpacr` not 0, times with 60 seconds' skew and at most 2 hours between `iat` and `exp`, and the token
+type from `idtyp` with `scp` (`user` with `Portal.Access`, or `app` with no `scp`). A person's token also
+needs `acct` 0 (not a guest), an `oid` and a `users` record (created by `PUT /v1/users/me`).
+
+| Variable                      | Value                                                                                                                  |
+| :---------------------------- | :--------------------------------------------------------------------------------------------------------------------- |
+| `PORTAL_AUTH_TENANT_ID`       | The Defra Entra tenant ID (required)                                                                                   |
+| `PORTAL_AUTH_AUDIENCE`        | The client ID of this instance's `api-aip-portal-{instance}` registration, the `aud` of every token (required)         |
+| `PORTAL_AUTH_CLIENT_ID`       | The client ID of this instance's frontend registration, the `azp` of every token (required)                            |
+| `PORTAL_AUTH_MOCK_ISSUER_URL` | Local development only, refused in production: the frontend's mock OpenID provider, whose `/jwks` serves the keys used |
+
+Each route declares what it needs in `options.app.access` (`src/common/helpers/auth/access.js`); a route
+that declares none refuses every token, and `src/routes/route-access.test.js` lists every route with its
+access. Team and Platform Admin rights are checked only in `access.js`, which answers `404` to a non-member,
+`403 admin-required` or `403 platform-admin-required`, and audits each refusal. Audit records carry `oid`,
+`tid`, `azp`, `uti` and the role used, never a token. Background work with no request (the expiry sweep, a
+lazy expiry, an operation's own steps) acts as the system actor (`src/common/helpers/auth/system-actor.js`):
+`actorUserId` `app:ai-platform-backend`, role `system`, no `oid` or tenant, no team role and not a Platform
+Admin. Expiry audit records written before this change name the credential's owner as `actorUserId`; from
+this change they name `app:ai-platform-backend`, so query them by `resourceId`, not by actor (4 November 2026).
+In tests, `src/common/test-helpers/portal-token.js` signs tokens with a throwaway key and serves its JWKS
+through `nock`.
 
 ### People and identity
 
 > [!IMPORTANT]
-> A person is keyed on their Entra object ID and tenant ID (`oid`, `tid`), which `POST /v1/users`
-> receives at every sign-in; a unique index on both holds that key. **Email is not unique**: it is
+> A person is keyed on their Entra object ID and tenant ID (`oid`, `tid`), which `PUT /v1/users/me`
+> takes from the validated token's claims (it reads no body) at every sign-in and answers `200 { user, team }`
+> (`POST /v1/users` is removed); a unique index on both holds that key. **Email is not unique**: it is
 > display only and mutable (Microsoft advises never to key data on it), so two `users` records can
-> share an email, for example a leaver who returns with a new object ID. A record with no `oid` (an
-> invited member) binds to the first sign-in with its email. Every GitOps change names its requester as
+> share an email, for example a leaver who returns with a new object ID. Sign-in binds nothing by
+> email: no record and no membership is ever matched on it. Every GitOps change names its requester as
 > `entra:{oid}`, so look people up by `oid`, never by email (direction 14 October 2026).
+
+> [!IMPORTANT]
+> Team membership is by person, from the directory (design F `#membership`); there are no invitations,
+> and `teamMembers` carries no email. `POST /v1/teams/{id}/people/search` (body `{ search }`, 2 to 100
+> characters, admins only) returns up to 20 eligible people, sorted by name, leaving out active members.
+> `POST /v1/teams/{id}/members` takes `{ oid, role }` (both required; a key reused for another person or role is
+> `409 idempotency-key-reused`, judged against the role the add asked for, stored on the membership as `requestedRole`,
+> so a retry still replays after the member's role is changed): it reads the person again from the directory,
+> refuses anyone not eligible (a UPN and mail on `DIRECTORY_ALLOWED_DOMAINS`, default `defra.gov.uk` and
+> `defra.onmicrosoft.com`, no guests; a blank mail counts as none, and the email shown and stored is then the UPN) with `422 person-not-eligible` - also for an unknown `oid` - and
+> makes the person's `users` record on `{ oid, tid }` (the Admin's own `tid`) if they have never signed
+> in, which their first sign-in then finds. A unique index allows one active membership per person and
+> team, and `GET /v1/teams/{id}` lists active members only. Both calls go through the `Directory` port (`src/adapters/directory.js`), chosen by
+> `DIRECTORY_MODE`: `mock` (the default) searches the fictional people in
+> `src/adapters/fixtures/directory-people.json`, whose `oid`s all start `5eed0000-0000-4000-8000-`, one
+> being the journey person "Journey Test Member" (`journey.test.member@defra.gov.uk`); `graph` is the
+> Microsoft Graph adapter, called on behalf of the signed-in Admin, which is built and tested but
+> refused at start-up until B27 supplies the person's token. Prod refuses `mock`. A failed directory
+> call is `503 directory-unavailable`. The backfill `2026-11-03-team-members-directory-only` removes
+> invitations, keeps one active membership per person and team, unsets `email`, sets `requestedRole` from `role` on
+> memberships that carry an `idempotencyKey` and deletes people with
+> no `oid`; its counts, including teams left with no active Admin, are in the start-up log. A request that fails
+> validation is logged by rule type only, never a path, key or value.
+
+> [!IMPORTANT]
+> Adding a person uses one address rule, `isEligible` (`src/services/directory-eligibility.js`): the address is
+> trimmed and lower-cased, has exactly one `@`, no `#EXT#` anywhere, and a domain that is an exact match for one in the
+> list, so a subdomain or look-alike is refused. It applies to the directory's user principal name and, when there is
+> one, its mail. The backend has no email-domain rule at sign-in: `PUT /v1/users/me` is reached only with a validated
+> delegated token, and the token's tenant (`tid`), audience, `azp` and account type (`acct`, which refuses a guest) decide
+> who may sign in, so `ALLOWED_EMAIL_DOMAINS` and `403 domain-not-allowed` are removed (merge of main into PR 71, 5
+> November 2026). A person an Admin added by their `defra.onmicrosoft.com` user principal name can sign in, and their
+> first sign-in finds the record the add made. A directory search reads up to
+> `DIRECTORY_SEARCH_MAX_PAGES` pages of 50 (default 5, following Graph's `@odata.nextLink`, which is only
+> followed when it is the Graph users endpoint) within `DIRECTORY_SEARCH_TIMEOUT_MS` (default 10000, for the whole
+> search; each call is also bound by `DIRECTORY_TIMEOUT_MS`), then leaves out members and ineligible people, so
+> an addable person behind a first page of them is found; a search needing more pages answers with what it read,
+> and the Admin narrows the search.
 
 > [!IMPORTANT]
 > A team carries an immutable `slug`, derived from its name on `POST /v1/teams` and made unique with a
@@ -156,7 +225,7 @@ git config --global core.autocrlf false
 > A team also carries a three-character `serviceCode` (`^[A-Z0-9]{3}$`, stored upper case), required
 > on `POST /v1/teams` and changeable by an admin with `PATCH /v1/teams/{id}`, which also takes a
 > `description` (trimmed, at most 500 characters, may be empty). Adding a member takes a `role`
-> (`admin` or `user`, default `user`), admins only. The service code attributes the
+> (`admin` or `user`, required), admins only. The service code attributes the
 > team's AI use to its service for chargeback and reaches Azure as a resource tag. Every change goes
 > through the `ServiceCodeVerifier` port, whose only adapter today is the mock
 > (`SERVICE_CODE_KNOWN_CODES`, empty by default), so `verified` stays `false` until an authoritative
@@ -270,6 +339,12 @@ HTTPS_PROXY=...
 NO_PROXY=...
 
 No additional proxy configuration is required in the service.
+
+One exception: `@hapi/jwt` reads the tenant's signing keys with `@hapi/wreck`, whose own HTTPS agent
+ignores `NODE_USE_ENV_PROXY`. The backend therefore fetches the keys itself
+(`src/common/helpers/auth/jwks.js`) with `new https.Agent({ proxyEnv: process.env })`, which honours
+`HTTPS_PROXY` and `NO_PROXY` (Node 24.5 or later). Any new outbound call that does not use the global
+`fetch` or the global agents must do the same.
 
 ### Gateways
 
@@ -534,12 +609,14 @@ an ordinary machine too, so the full loop - issue a credential, call the model w
 Postman/curl, reveal it again later, rotate or revoke it - is testable from a normal dev machine.
 Below, `<gateway-host>` is the environment's API Management gateway hostname.
 
-A minimal smoke test once the env vars above are set and `npm run dev` is running:
+A minimal smoke test once the env vars above are set and `npm run dev` is running. Set `TOKEN` to an
+access token for the person, issued for this instance's API (for example by signing in to the portal
+locally against Entra, or from the frontend's mock provider with `PORTAL_AUTH_MOCK_ISSUER_URL`):
 
 ```bash
 # Issue a credential - creates a real APIM subscription and a real Key Vault secret
 curl -s -X POST http://localhost:3001/v1/credentials \
-  -H 'x-user-id: smoke-test-user' -H "idempotency-key: $(uuidgen)" \
+  -H "Authorization: Bearer $TOKEN" -H "idempotency-key: $(uuidgen)" \
   -H 'Content-Type: application/json' -d '{"modelSlug": "gpt-4o"}'
 ```
 
@@ -565,11 +642,11 @@ returns `403 model-not-granted`, and no key returns `401`.
 ```bash
 # Reveal it again later (replace {id} with the credential _id from the issue response above)
 curl -s -X POST http://localhost:3001/v1/credentials/{id}/reveal \
-  -H 'x-user-id: smoke-test-user' -H 'Content-Type: application/json' \
+  -H "Authorization: Bearer $TOKEN" -H 'Content-Type: application/json' \
   -d '{"reason": "Smoke testing the live sandbox"}'
 
 # Revoke it - deletes the APIM subscription and soft-deletes the Key Vault secret
-curl -s -X DELETE http://localhost:3001/v1/credentials/{id} -H 'x-user-id: smoke-test-user'
+curl -s -X DELETE http://localhost:3001/v1/credentials/{id} -H "Authorization: Bearer $TOKEN"
 ```
 
 Verify independently in the Azure portal (or `az rest`/`az keyvault secret list`) that the APIM

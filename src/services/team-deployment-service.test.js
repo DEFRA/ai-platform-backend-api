@@ -7,6 +7,7 @@ import { mockTeamFileReader } from '#/adapters/mock-team-file-reader.js'
 import { validateCommand } from '#/contracts/message-validators.js'
 import { Boom, boomWithCode } from '#/common/helpers/boom-with-code.js'
 import { exampleEvent } from '#/common/test-helpers/gitops-messages.js'
+import { actorFor } from '#/common/test-helpers/portal-token.js'
 
 const SANDBOX = 'sandbox'
 const VALID_TRACEPARENT =
@@ -180,11 +181,20 @@ describe('team-deployment-service (operations)', () => {
 
     teamOfRun = slug
 
-    return { userId, teamId, slug, principal: `entra:${oid}` }
+    return {
+      userId,
+      teamId,
+      slug,
+      principal: `entra:${oid}`,
+      actor: actorFor(userId, {
+        oid,
+        isPlatformAdmin: (fields.roles ?? []).includes('platform-admin')
+      })
+    }
   }
 
   function requestModels(
-    { teamId, userId, ...params },
+    { teamId, actor, ...params },
     modelSlugs = ['gpt-4o'],
     extra = deps
   ) {
@@ -195,7 +205,7 @@ describe('team-deployment-service (operations)', () => {
         teamId,
         modelSlugs,
         environment: SANDBOX,
-        requestedBy: userId,
+        actor,
         idempotencyKey: randomUUID(),
         ...params
       },
@@ -237,7 +247,7 @@ describe('team-deployment-service (operations)', () => {
     return service.getDeployment(db, {
       id,
       teamId: member.teamId,
-      userId: member.userId
+      actor: member.actor
     })
   }
 
@@ -581,27 +591,12 @@ describe('team-deployment-service (operations)', () => {
       expect(operation.items).toHaveLength(1)
     })
 
-    test('refuses a member with no Entra object ID, before recording or submitting anything', async () => {
-      const member = await signedInMember({ oid: undefined })
-
-      await expect(requestOne(member)).rejects.toMatchObject({
-        output: { statusCode: 403 },
-        data: { code: 'entra-identity-required' }
-      })
-      expect(
-        await db
-          .collection('teamDeployments')
-          .findOne({ teamId: member.teamId })
-      ).toBeNull()
-      expect(await operationsOf(member.teamId)).toEqual([])
-    })
-
     test('refuses a non-member and a team that does not exist as not found', async () => {
       const member = await signedInMember()
       const stranger = await signedInMember()
 
       await expect(
-        requestOne({ ...member, userId: stranger.userId })
+        requestOne({ ...member, actor: stranger.actor })
       ).rejects.toMatchObject({ output: { statusCode: 404 } })
       await expect(
         requestOne({ ...member, teamId: new ObjectId().toString() })
@@ -1122,14 +1117,14 @@ describe('team-deployment-service (operations)', () => {
       const deployment = await requestOne(member)
 
       expect(await view(member, new ObjectId().toString())).toBeNull()
-      expect(
-        await view({ ...member, userId: stranger.userId }, deployment._id)
-      ).toBeNull()
+      await expect(
+        view({ ...member, actor: stranger.actor }, deployment._id)
+      ).rejects.toMatchObject({ output: { statusCode: 404 } })
       expect(
         await service.getDeployment(db, {
           id: deployment._id,
           teamId: 'no-such-team',
-          userId: member.userId
+          actor: member.actor
         })
       ).toBeNull()
     })
@@ -1141,7 +1136,7 @@ describe('team-deployment-service (operations)', () => {
 
       const items = await service.listDeploymentsForTeam(db, {
         teamId: member.teamId,
-        userId: member.userId
+        actor: member.actor
       })
 
       expect(items.map(({ modelSlug }) => modelSlug)).toEqual([
@@ -1161,7 +1156,7 @@ describe('team-deployment-service (operations)', () => {
       await expect(
         service.listDeploymentsForTeam(db, {
           teamId: member.teamId,
-          userId: stranger.userId
+          actor: stranger.actor
         })
       ).rejects.toMatchObject({ output: { statusCode: 404 } })
     })
@@ -1175,7 +1170,7 @@ describe('team-deployment-service (operations)', () => {
         {
           teamId: member.teamId,
           id,
-          requestedBy: member.userId,
+          actor: member.actor,
           ...params
         },
         extra
@@ -1433,7 +1428,7 @@ describe('team-deployment-service (operations)', () => {
       })
 
       await expect(
-        remove({ ...admin, userId: plain.userId }, id)
+        remove({ ...admin, actor: plain.actor }, id)
       ).rejects.toMatchObject({
         output: { statusCode: 403 },
         data: { code: 'admin-required' }
@@ -1504,20 +1499,22 @@ describe('team-deployment-service (operations)', () => {
   })
 
   describe('redispatchApply', () => {
-    async function adminId() {
+    // A Platform Admin: the role is read from the database when the token is
+    // validated, so the actor carries it.
+    async function adminActor() {
       const { insertedId } = await db.collection('users').insertOne({
         email: `admin-${randomUUID()}@defra.gov.uk`,
         displayName: 'Platform Admin',
         roles: ['research-user', 'platform-admin']
       })
 
-      return insertedId.toString()
+      return actorFor(insertedId.toString(), { isPlatformAdmin: true })
     }
 
-    async function redispatch(id, kind, actorUserId, extra = deps) {
+    async function redispatch(id, kind, actor, extra = deps) {
       return service.redispatchApply(
         db,
-        { id, actorUserId: actorUserId ?? (await adminId()), kind },
+        { id, actor: actor ?? (await adminActor()), kind },
         extra
       )
     }
@@ -1543,7 +1540,7 @@ describe('team-deployment-service (operations)', () => {
       const { deployment } = await failedDeployment(member)
 
       await expect(
-        redispatch(deployment._id, 'retry', member.userId)
+        redispatch(deployment._id, 'retry', member.actor)
       ).rejects.toMatchObject({
         output: { statusCode: 403 },
         data: { code: 'platform-admin-required' }
@@ -1580,7 +1577,7 @@ describe('team-deployment-service (operations)', () => {
     test('retries a failed deployment with a fresh apply at the next attempt, back at deploying', async () => {
       const member = await signedInMember()
       const { deployment, operation } = await failedDeployment(member)
-      const admin = await adminId()
+      const admin = await adminActor()
 
       expect((await view(member, deployment._id)).status).toBe('deploy-failed')
 
@@ -1608,7 +1605,11 @@ describe('team-deployment-service (operations)', () => {
           ({ action }) => action === 'teamDeployment.retry'
         )
       ).toMatchObject({
-        actorUserId: admin,
+        actorUserId: admin.userId,
+        role: 'platform-admin',
+        tid: admin.tid,
+        azp: admin.azp,
+        uti: admin.uti,
         outcome: 'success',
         reason: 'deploy-failed -> deploying'
       })
@@ -1688,7 +1689,7 @@ describe('team-deployment-service (operations)', () => {
     test('reports and audits a command that could not be handed on', async () => {
       const member = await signedInMember()
       const { deployment } = await failedDeployment(member)
-      const admin = await adminId()
+      const admin = await adminActor()
 
       await expect(
         redispatch(deployment._id, 'retry', admin, {
