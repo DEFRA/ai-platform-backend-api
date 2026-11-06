@@ -64,15 +64,31 @@ export const mongoDb = {
   }
 }
 
-// 85/86 = IndexOptionsConflict/IndexKeySpecsConflict: a stale index with the
+// IndexOptionsConflict/IndexKeySpecsConflict: a stale index with the
 // same auto-generated name already exists with different options (e.g. built
 // before a partialFilterExpression was added) - drop and rebuild it instead of
 // crashing the server on every startup.
+const MONGO_INDEX_OPTIONS_CONFLICT = 85
+const MONGO_INDEX_KEY_SPECS_CONFLICT = 86
+const MONGO_STALE_INDEX_CODES = new Set([
+  MONGO_INDEX_OPTIONS_CONFLICT,
+  MONGO_INDEX_KEY_SPECS_CONFLICT
+])
+
+// IndexNotFound/NamespaceNotFound: nothing to drop (a fresh
+// database, or an index already removed by a prior run) - not an error.
+const MONGO_INDEX_NOT_FOUND = 27
+const MONGO_NAMESPACE_NOT_FOUND = 26
+const MONGO_NOTHING_TO_DROP_CODES = new Set([
+  MONGO_INDEX_NOT_FOUND,
+  MONGO_NAMESPACE_NOT_FOUND
+])
+
 async function ensureIndex(collection, keys, options) {
   try {
     await collection.createIndex(keys, options)
   } catch (error) {
-    if (error.code !== 85 && error.code !== 86) {
+    if (!MONGO_STALE_INDEX_CODES.has(error.code)) {
       throw error
     }
 
@@ -85,13 +101,11 @@ async function ensureIndex(collection, keys, options) {
   }
 }
 
-// 27/26 = IndexNotFound/NamespaceNotFound: nothing to drop (a fresh
-// database, or an index already removed by a prior run) - not an error.
 async function dropIndexIfExists(collection, name) {
   try {
     await collection.dropIndex(name)
   } catch (error) {
-    if (error.code !== 27 && error.code !== 26) {
+    if (!MONGO_NOTHING_TO_DROP_CODES.has(error.code)) {
       throw error
     }
   }

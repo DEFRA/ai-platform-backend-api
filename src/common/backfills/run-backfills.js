@@ -1,5 +1,6 @@
 import { backfillRegistry } from '#/common/backfills/registry.js'
 import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
+import { forEachSequentially } from '#/common/helpers/sequential.js'
 
 // A claim with no `appliedAt` after this long is assumed to belong to an
 // instance that died mid-run (rather than one still legitimately running),
@@ -112,22 +113,33 @@ export async function runBackfills(
   registry = backfillRegistry,
   store = createSchemaMigrationsStore(db)
 ) {
-  for (const backfill of registry) {
-    const claimed = await claimBackfill(store, backfill)
-    if (!claimed) {
-      continue
-    }
+  await forEachSequentially(registry, (backfill) =>
+    runBackfill(store, backfill, db, logger)
+  )
+}
 
-    try {
-      const result = await backfill.run(db)
-      await store.completeClaim(backfill.id, result)
-      logger.info(
-        { result: result ?? null },
-        `Applied backfill "${backfill.id}": ${backfill.description}`
-      )
-    } catch (error) {
-      await store.releaseClaim(backfill.id)
-      throw error
-    }
+/**
+ * Claims one backfill and, when this instance wins the claim, runs it and
+ * records completion. A run that throws releases its claim and rethrows.
+ * @param {ReturnType<typeof createSchemaMigrationsStore>} store
+ * @param {typeof backfillRegistry[number]} backfill
+ * @param {import('mongodb').Db} db
+ * @param {import('pino').Logger} logger
+ */
+async function runBackfill(store, backfill, db, logger) {
+  if (!(await claimBackfill(store, backfill))) {
+    return
+  }
+
+  try {
+    const result = await backfill.run(db)
+    await store.completeClaim(backfill.id, result)
+    logger.info(
+      { result: result ?? null },
+      `Applied backfill "${backfill.id}": ${backfill.description}`
+    )
+  } catch (error) {
+    await store.releaseClaim(backfill.id)
+    throw error
   }
 }

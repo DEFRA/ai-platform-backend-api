@@ -41,8 +41,8 @@ describe('#expireCredentials', () => {
     const { expired, suspended } = await expireCredentials(
       db,
       fakeLocker(),
-      registry,
-      logger
+      logger,
+      registry
     )
 
     expect(suspend).toHaveBeenCalledTimes(2)
@@ -74,7 +74,7 @@ describe('#expireCredentials', () => {
     const suspend = vi.fn().mockResolvedValue({ externalId: 'cred-9' })
     const registry = { forCredential: () => ({ issuer: { suspend } }) }
 
-    await expireCredentials(db, fakeLocker(), registry)
+    await expireCredentials(db, fakeLocker(), undefined, registry)
 
     expect(recordAuditEvent).toHaveBeenCalledTimes(1)
     expect(recordAuditEvent).toHaveBeenCalledWith(
@@ -101,7 +101,7 @@ describe('#expireCredentials', () => {
     const registry = { forCredential: () => ({ issuer: { suspend } }) }
 
     await expect(
-      expireCredentials(db, fakeLocker(), registry)
+      expireCredentials(db, fakeLocker(), undefined, registry)
     ).resolves.toEqual({ expired: 0, suspended: 0 })
   })
 })

@@ -30,7 +30,7 @@ export function createFileCatalogueSource({
     async fetchCatalogue() {
       const models = readJson(modelsPath)
       const providers = readJson(providersPath)
-      const catalogueSha = createHash('sha1')
+      const catalogueSha = createHash('sha256')
         .update(JSON.stringify({ models, providers }))
         .digest('hex')
 

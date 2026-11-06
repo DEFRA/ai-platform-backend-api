@@ -15,6 +15,9 @@ convict.addFormats(convictFormatWithValidator)
 const isProduction = process.env.NODE_ENV === 'production'
 const isTest = process.env.NODE_ENV === 'test'
 
+const MAINTENANCE_INTERVAL_MINUTES = 5
+const MS_PER_MINUTE = 60 * 1000
+
 // Local-only fallback for armAuth.authMethod - no AWS STS to federate from outside CDP.
 const ARM_AUTH_METHOD_CLIENT_SECRET = 'client-secret'
 
@@ -269,7 +272,7 @@ export const config = convict({
     intervalMs: {
       doc: 'Interval in ms between in-process credential expiry/reconciliation sweeps',
       format: 'nat',
-      default: 5 * 60 * 1000,
+      default: MAINTENANCE_INTERVAL_MINUTES * MS_PER_MINUTE,
       env: 'MAINTENANCE_SCHEDULER_INTERVAL_MS'
     }
   },
@@ -417,11 +420,13 @@ const REQUIRED_CONFIG_BY_GATEWAY = {
 
 // PROVISIONING_MODE=azure predates multi-cloud; the already-deployed CDP
 // config still sets it, so it must keep working.
-if (config.get('provisioning.mode') === 'azure') {
-  config.set('provisioning.mode', 'live')
+const PROVISIONING_MODE_KEY = 'provisioning.mode'
+
+if (config.get(PROVISIONING_MODE_KEY) === 'azure') {
+  config.set(PROVISIONING_MODE_KEY, 'live')
 }
 
-const provisioningMode = config.get('provisioning.mode')
+const provisioningMode = config.get(PROVISIONING_MODE_KEY)
 
 // Production refuses to start with a mock gateway selected for any of the
 // direct paths (design fact). Fail fast here rather than at the first issued

@@ -81,21 +81,21 @@ const issuerFactories = {
   [AZURE_APIM]: createApimCredentialIssuer
 }
 
-const issuersByKey = { mock: mockCredentialIssuer }
+const configuredIssuers = { mock: mockCredentialIssuer }
 
 for (const gateway of config.get('provisioning.gateways')) {
-  issuersByKey[gateway] = issuerFactories[gateway]?.()
+  configuredIssuers[gateway] = issuerFactories[gateway]?.()
 }
 
 // Credentials issued before the catalogue carried a gateway persisted this key.
-issuersByKey.azure = issuersByKey[AZURE_APIM]
+configuredIssuers.azure = configuredIssuers[AZURE_APIM]
 
 /**
  * The live registry, built from config at startup.
  * @type {CredentialIssuerRegistry}
  */
 export const credentialIssuerRegistry = createCredentialIssuerRegistry(
-  issuersByKey,
+  configuredIssuers,
   config.get('provisioning.mode'),
   config.get('provisioning.mockTiers')
 )

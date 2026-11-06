@@ -25,20 +25,26 @@ export async function requireLock(locker, resource) {
  * @param {string} resource
  * @param {{attempts?: number, delayMs?: number}} [options]
  */
-export async function acquireLockWithRetry(
+export function acquireLockWithRetry(
   locker,
   resource,
   { attempts = 50, delayMs = 100 } = {}
 ) {
-  for (let attempt = 0; attempt < attempts; attempt++) {
-    const lock = await locker.lock(resource)
+  return attemptLock(locker, resource, attempts, delayMs)
+}
 
-    if (lock) {
-      return lock
-    }
-
-    await new Promise((resolve) => setTimeout(resolve, delayMs))
+async function attemptLock(locker, resource, attemptsLeft, delayMs) {
+  if (attemptsLeft <= 0) {
+    throw new Error(`Failed to acquire lock for ${resource}`)
   }
 
-  throw new Error(`Failed to acquire lock for ${resource}`)
+  const lock = await locker.lock(resource)
+
+  if (lock) {
+    return lock
+  }
+
+  await new Promise((resolve) => setTimeout(resolve, delayMs))
+
+  return attemptLock(locker, resource, attemptsLeft - 1, delayMs)
 }

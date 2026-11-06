@@ -11,6 +11,10 @@ import {
   credentialLockName
 } from '#/services/credential-service.js'
 import { requireLock, acquireLock } from '#/common/helpers/mongo-lock.js'
+import {
+  forEachSequentially,
+  mapSequentially
+} from '#/common/helpers/sequential.js'
 
 const PENDING_RECONCILE_AFTER_MS = 10 * 60 * 1000
 
@@ -20,12 +24,13 @@ const PENDING_RECONCILE_AFTER_MS = 10 * 60 * 1000
  * @param {import('mongo-locks').LockManager} locker
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('pino').Logger} [logger]
+ * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  */
 export async function expireCredentials(
   db,
   locker,
-  registry = credentialIssuerRegistry,
-  logger
+  logger,
+  registry = credentialIssuerRegistry
 ) {
   const now = new Date().toISOString()
   const dueCredentials = await db
@@ -33,47 +38,57 @@ export async function expireCredentials(
     .find({ status: 'active', expiresAt: { $lt: now } })
     .toArray()
 
-  let expired = 0
-  let suspended = 0
+  const counts = { expired: 0, suspended: 0 }
 
-  for (const credential of dueCredentials) {
-    const lock = await requireLock(locker, credentialLockName(credential._id))
+  await forEachSequentially(dueCredentials, (credential) =>
+    expireCredential({ db, locker, registry, logger, counts }, credential)
+  )
 
-    try {
-      // Suspend in APIM before marking expired in Mongo - if suspend fails,
-      // status stays 'active' so the next sweep retries it, rather than
-      // getting stuck 'expired' here while still active upstream forever.
-      const { issuer } = registry.forCredential(credential)
-      await issuer.suspend({
-        externalId: externalGatewaySubscriptionIdOf(credential),
-        environment: environmentOf(credential)
-      })
-      suspended += 1
+  return counts
+}
 
-      await db
-        .collection('credentials')
-        .updateOne({ _id: credential._id }, { $set: { status: 'expired' } })
-      expired += 1
+/**
+ * Expires one credential under its lock, adding to `counts`. A failure is
+ * logged, never thrown: one credential's issuer failure must not abort the
+ * rest of the batch.
+ */
+async function expireCredential(
+  { db, locker, registry, logger, counts },
+  credential
+) {
+  const lock = await requireLock(locker, credentialLockName(credential._id))
 
-      await recordAuditEvent(db, {
-        actor: systemActor,
-        action: 'credential.expire',
-        resource: 'credential',
-        resourceId: credential._id.toString(),
-        outcome: 'success'
-      })
-    } catch (error) {
-      // One credential's issuer failure must not abort the rest of the batch.
-      logger?.error(
-        error,
-        `Failed to expire credential ${credential._id}, will retry next sweep`
-      )
-    } finally {
-      await lock.free()
-    }
+  try {
+    // Suspend in APIM before marking expired in Mongo - if suspend fails,
+    // status stays 'active' so the next sweep retries it, rather than
+    // getting stuck 'expired' here while still active upstream forever.
+    const { issuer } = registry.forCredential(credential)
+    await issuer.suspend({
+      externalId: externalGatewaySubscriptionIdOf(credential),
+      environment: environmentOf(credential)
+    })
+    counts.suspended += 1
+
+    await db
+      .collection('credentials')
+      .updateOne({ _id: credential._id }, { $set: { status: 'expired' } })
+    counts.expired += 1
+
+    await recordAuditEvent(db, {
+      actor: systemActor,
+      action: 'credential.expire',
+      resource: 'credential',
+      resourceId: credential._id.toString(),
+      outcome: 'success'
+    })
+  } catch (error) {
+    logger?.error(
+      error,
+      `Failed to expire credential ${credential._id}, will retry next sweep`
+    )
+  } finally {
+    await lock.free()
   }
-
-  return { expired, suspended }
 }
 
 /**
@@ -101,12 +116,12 @@ export async function flagStraySubscriptions(
     const { issuer } = registry.forCredential({ issuerKey: AZURE_APIM })
     const strays = await issuer.findStraySubscriptions({ environment })
 
-    for (const stray of strays) {
+    strays.forEach((stray) => {
       logger?.warn(
         { environment, subscription: stray.name, reasons: stray.reasons },
         'API Management subscription is not a research key on the research API'
       )
-    }
+    })
 
     return strays.length
   } catch (error) {
@@ -179,46 +194,60 @@ async function reconcileUnwrittenVaultSecrets(db, locker, registry, vault) {
     .find({ vaultState: 'unwritten', status: { $in: RECONCILABLE_STATUSES } })
     .toArray()
 
-  let reconciled = 0
+  const outcomes = await mapSequentially(unwritten, (found) =>
+    reconcileUnwrittenVaultSecret({ db, locker, registry, vault }, found)
+  )
 
-  for (const found of unwritten) {
-    const lock = await acquireLock(locker, credentialLockName(found._id))
+  return outcomes.filter(Boolean).length
+}
 
-    if (!lock) {
-      continue
-    }
+/**
+ * Retries one flagged credential under its lock.
+ * @returns {Promise<boolean>} whether the secret was written to the vault
+ */
+async function reconcileUnwrittenVaultSecret(
+  { db, locker, registry, vault },
+  found
+) {
+  const lock = await acquireLock(locker, credentialLockName(found._id))
 
-    try {
-      // Read again under the lock: a revocation that finished first leaves
-      // the marker in place, and a revoked credential is never reissued.
-      const credential = await db.collection('credentials').findOne({
-        _id: found._id,
-        vaultState: 'unwritten',
-        status: { $in: RECONCILABLE_STATUSES }
-      })
-
-      if (!credential) {
-        continue
-      }
-
-      const { issuer } = registry.forCredential(credential)
-      const reissued = await issuer.issue({
-        userId: credential.userId,
-        modelSlug: credential.modelSlug,
-        tier: credential.tier,
-        teamId: credential.teamId,
-        environment: environmentOf(credential)
-      })
-
-      if (await writeSecretToVault(db, vault, credential, reissued.secret)) {
-        reconciled += 1
-      }
-    } catch {
-      // issuer call failed - leave vaultState: 'unwritten', retried next run
-    } finally {
-      await lock.free()
-    }
+  if (!lock) {
+    return false
   }
 
-  return reconciled
+  try {
+    return await reissueToVault({ db, registry, vault }, found)
+  } catch {
+    // issuer call failed - leave vaultState: 'unwritten', retried next run
+    return false
+  } finally {
+    await lock.free()
+  }
+}
+
+async function reissueToVault({ db, registry, vault }, found) {
+  // Read again under the lock: a revocation that finished first leaves
+  // the marker in place, and a revoked credential is never reissued.
+  const credential = await db.collection('credentials').findOne({
+    _id: found._id,
+    vaultState: 'unwritten',
+    status: { $in: RECONCILABLE_STATUSES }
+  })
+
+  if (!credential) {
+    return false
+  }
+
+  const { issuer } = registry.forCredential(credential)
+  const reissued = await issuer.issue({
+    userId: credential.userId,
+    modelSlug: credential.modelSlug,
+    tier: credential.tier,
+    teamId: credential.teamId,
+    environment: environmentOf(credential)
+  })
+
+  return Boolean(
+    await writeSecretToVault(db, vault, credential, reissued.secret)
+  )
 }

@@ -1,4 +1,5 @@
-const cacheTtlMs = 5 * 60 * 1000
+const CACHE_TTL_MINUTES = 5
+const cacheTtlMs = CACHE_TTL_MINUTES * 60 * 1000
 const cache = new Map()
 
 function cacheKey(prefix, params) {

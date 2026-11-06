@@ -10,8 +10,10 @@ function secretNameFor(credentialId) {
   return `cred-${credentialId}`
 }
 
+const HTTP_NOT_FOUND = 404
+
 function isNotFound(error) {
-  return error.statusCode === 404 || error.code === 'SecretNotFound'
+  return error.statusCode === HTTP_NOT_FOUND || error.code === 'SecretNotFound'
 }
 
 /**

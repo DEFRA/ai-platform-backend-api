@@ -1,6 +1,7 @@
 import Joi from 'joi'
 import Boom from '@hapi/boom'
 
+import { statusCodes } from '#/common/constants/status-codes.js'
 import { ACCESS } from '#/common/helpers/auth/access.js'
 import {
   issueCredential,
@@ -11,6 +12,9 @@ import {
   revokeCredential,
   revealCredential
 } from '#/services/credential-service.js'
+
+const MAX_PURPOSE_LENGTH = 500
+const MAX_REVEAL_REASON_LENGTH = 500
 
 const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
 
@@ -37,7 +41,11 @@ export const credentials = [
           environment: Joi.string()
             .pattern(/^[a-z][a-z0-9]{1,15}$/)
             .optional(),
-          purpose: Joi.string().trim().max(500).allow('').optional()
+          purpose: Joi.string()
+            .trim()
+            .max(MAX_PURPOSE_LENGTH)
+            .allow('')
+            .optional()
         }).unknown(false)
       }
     },
@@ -63,7 +71,7 @@ export const credentials = [
         response.header('Location', `/v1/credentials/${credential._id}`)
       }
 
-      return response.code(replay ? 200 : 201)
+      return response.code(replay ? statusCodes.ok : statusCodes.created)
     }
   },
   {
@@ -147,7 +155,7 @@ export const credentials = [
         actor: request.auth.credentials
       })
 
-      return h.response().code(204)
+      return h.response().code(statusCodes.noContent)
     }
   },
   {
@@ -158,7 +166,7 @@ export const credentials = [
       validate: {
         params: idParam,
         payload: Joi.object({
-          reason: Joi.string().trim().max(500).required()
+          reason: Joi.string().trim().max(MAX_REVEAL_REASON_LENGTH).required()
         }).unknown(false)
       }
     },

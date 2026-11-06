@@ -1,6 +1,16 @@
-import { deriveTeamSlug, firstFreeSlug } from '#/common/helpers/team-slug.js'
+import {
+  consolidateLegacyTeamCredentials,
+  consolidateLegacyTeamDeployments
+} from '#/common/backfills/consolidate-legacy-team-data.js'
+import {
+  addTeamSlugs,
+  snapshotCredentialProviderCloudAdapter
+} from '#/common/backfills/per-document-backfills.js'
 import { rewriteFailureTexts } from '#/common/backfills/failure-texts.js'
 import { makeTeamMembersDirectoryOnly } from '#/common/backfills/team-members-directory-only.js'
+
+const CREDENTIALS = 'credentials'
+const MODELS = 'models'
 
 /**
  * Ordered registry of one-off data backfills applied by `runBackfills` on
@@ -35,93 +45,7 @@ export const backfillRegistry = [
     id: '2026-09-25-consolidate-legacy-team-deployments',
     description:
       'Merges legacy one-row-per-model teamDeployments docs into one deployments[] doc per team+environment, renaming dev to sandbox',
-    async run(db) {
-      const legacyDocs = await db
-        .collection('teamDeployments')
-        .find({ deployments: { $exists: false } })
-        .toArray()
-
-      const groups = new Map()
-
-      for (const doc of legacyDocs) {
-        const environment =
-          doc.environment === 'dev' ? 'sandbox' : doc.environment
-        const key = `${doc.teamId}::${environment}`
-
-        if (!groups.has(key)) {
-          groups.set(key, { teamId: doc.teamId, environment, docs: [] })
-        }
-
-        groups.get(key).docs.push(doc)
-      }
-
-      let teamsMigrated = 0
-      let deploymentsMigrated = 0
-
-      for (const group of groups.values()) {
-        const entries = group.docs.map((doc) => ({
-          id: doc._id.toString(),
-          modelSlug: doc.modelSlug,
-          status: doc.status,
-          operationId: doc.operationId,
-          requestedBy: doc.requestedBy,
-          idempotencyKey: doc.idempotencyKey,
-          createdAt: doc.createdAt,
-          activatedAt: doc.activatedAt ?? null,
-          failureReason: doc.failureReason ?? null
-        }))
-
-        const allowedDeployments = [
-          ...new Set(
-            entries
-              .filter((entry) => entry.status === 'active')
-              .map((entry) => entry.modelSlug)
-          )
-        ]
-        const earliestCreatedAt = entries
-          .map((entry) => entry.createdAt)
-          .sort()[0]
-        const now = new Date().toISOString()
-
-        const updateOps = {
-          $push: { deployments: { $each: entries } },
-          $setOnInsert: {
-            teamId: group.teamId,
-            environment: group.environment,
-            'gateway.credentialType': null,
-            'gateway.limits': {},
-            oauthClient: { enabled: false, appRoles: [] },
-            createdAt: earliestCreatedAt ?? now
-          },
-          $set: { updatedAt: now }
-        }
-
-        if (allowedDeployments.length > 0) {
-          updateOps.$addToSet = {
-            'gateway.allowedDeployments': { $each: allowedDeployments }
-          }
-        } else {
-          updateOps.$setOnInsert['gateway.allowedDeployments'] = []
-        }
-
-        await db
-          .collection('teamDeployments')
-          .updateOne(
-            { teamId: group.teamId, environment: group.environment },
-            updateOps,
-            { upsert: true }
-          )
-
-        await db.collection('teamDeployments').deleteMany({
-          _id: { $in: group.docs.map((doc) => doc._id) }
-        })
-
-        teamsMigrated += 1
-        deploymentsMigrated += entries.length
-      }
-
-      return { teamsMigrated, deploymentsMigrated }
-    }
+    run: consolidateLegacyTeamDeployments
   },
   // Pre-refactor team credentials were one document per team+model (always
   // `type: 'apim-subscription'`, no `allowedDeployments`/`credentialType`).
@@ -139,83 +63,7 @@ export const backfillRegistry = [
     id: '2026-09-25-consolidate-legacy-team-credentials',
     description:
       'Merges legacy one-per-model team credentials into one per team+environment with allowedDeployments/credentialType, renaming dev to sandbox',
-    async run(db) {
-      const legacyDocs = await db
-        .collection('credentials')
-        .find({ tier: 'team', allowedDeployments: { $exists: false } })
-        .toArray()
-
-      const groups = new Map()
-
-      for (const doc of legacyDocs) {
-        const environment =
-          doc.environment === 'dev' ? 'sandbox' : doc.environment
-        const key = `${doc.teamId}::${environment}`
-
-        if (!groups.has(key)) {
-          groups.set(key, { teamId: doc.teamId, environment, docs: [] })
-        }
-
-        groups.get(key).docs.push(doc)
-      }
-
-      let teamsMigrated = 0
-      let credentialsRetired = 0
-
-      for (const group of groups.values()) {
-        const docs = [...group.docs].sort((a, b) =>
-          a.createdAt < b.createdAt ? -1 : 1
-        )
-        const canonical =
-          docs.find((doc) => doc.status === 'active') ?? docs[docs.length - 1]
-        const allowedDeployments = [
-          ...new Set(docs.map((doc) => doc.modelSlug).filter(Boolean))
-        ]
-
-        await db.collection('credentials').updateOne(
-          { _id: canonical._id },
-          {
-            $set: {
-              environment: group.environment,
-              modelSlug: null,
-              allowedDeployments,
-              credentialType: 'subscription-key',
-              expiresAt: null
-            }
-          }
-        )
-
-        const supersededIds = docs
-          .filter((doc) => !doc._id.equals(canonical._id))
-          .map((doc) => doc._id)
-
-        if (supersededIds.length > 0) {
-          await db
-            .collection('credentials')
-            .deleteMany({ _id: { $in: supersededIds } })
-        }
-
-        await db.collection('teamDeployments').updateOne(
-          {
-            teamId: group.teamId,
-            environment: group.environment,
-            'gateway.credentialType': null
-          },
-          {
-            $set: {
-              'gateway.credentialType': 'subscription-key',
-              'oauthClient.enabled': false,
-              updatedAt: new Date().toISOString()
-            }
-          }
-        )
-
-        teamsMigrated += 1
-        credentialsRetired += supersededIds.length
-      }
-
-      return { teamsMigrated, credentialsRetired }
-    }
+    run: consolidateLegacyTeamCredentials
   },
   // `environment` was added to every credential doc when Route 2 introduced
   // team-tier credentials; research-tier credentials issued before that
@@ -226,7 +74,7 @@ export const backfillRegistry = [
     description: 'Sets environment: null on credentials docs missing it',
     async run(db) {
       const { modifiedCount } = await db
-        .collection('credentials')
+        .collection(CREDENTIALS)
         .updateMany(
           { environment: { $exists: false } },
           { $set: { environment: null } }
@@ -245,7 +93,7 @@ export const backfillRegistry = [
     description: 'Sets issuerKey: "mock" on credentials docs missing it',
     async run(db) {
       const { modifiedCount } = await db
-        .collection('credentials')
+        .collection(CREDENTIALS)
         .updateMany(
           { issuerKey: { $exists: false } },
           { $set: { issuerKey: 'mock' } }
@@ -263,7 +111,7 @@ export const backfillRegistry = [
     description:
       'Sets default lifecycle/catalogueSha/release/syncedAt on models docs predating catalogue sync',
     async run(db) {
-      const { modifiedCount } = await db.collection('models').updateMany(
+      const { modifiedCount } = await db.collection(MODELS).updateMany(
         { lifecycle: { $exists: false } },
         {
           $set: {
@@ -290,7 +138,7 @@ export const backfillRegistry = [
       'Copies apimSubscriptionId into the new externalGatewaySubscriptionId field on credentials docs missing it',
     async run(db) {
       const { modifiedCount } = await db
-        .collection('credentials')
+        .collection(CREDENTIALS)
         .updateMany({ externalGatewaySubscriptionId: { $exists: false } }, [
           { $set: { externalGatewaySubscriptionId: '$apimSubscriptionId' } }
         ])
@@ -307,7 +155,7 @@ export const backfillRegistry = [
       'Sets cloud: "azure" and adapter: "azure-apim" on models docs missing them',
     async run(db) {
       const { modifiedCount } = await db
-        .collection('models')
+        .collection(MODELS)
         .updateMany(
           { adapter: { $exists: false } },
           { $set: { cloud: 'azure', adapter: 'azure-apim' } }
@@ -320,41 +168,7 @@ export const backfillRegistry = [
     id: '2026-10-07-credentials-provider-cloud-adapter',
     description:
       'Snapshots provider/offering/cloud/adapter onto credentials docs missing them, from the credential model (azure/azure-apim if unknown)',
-    async run(db) {
-      const models = new Map(
-        (await db.collection('models').find({}).toArray()).map((model) => [
-          model.slug,
-          model
-        ])
-      )
-      let modifiedCount = 0
-
-      const cursor = db
-        .collection('credentials')
-        .find({ adapter: { $exists: false } })
-
-      for await (const credential of cursor) {
-        const isTeam = credential.tier === 'team'
-        const model = models.get(
-          credential.modelSlug ?? credential.allowedDeployments?.[0]
-        )
-
-        await db.collection('credentials').updateOne(
-          { _id: credential._id },
-          {
-            $set: {
-              provider: isTeam ? null : (model?.provider ?? null),
-              offering: isTeam ? null : (model?.offering ?? null),
-              cloud: model?.cloud ?? 'azure',
-              adapter: model?.adapter ?? 'azure-apim'
-            }
-          }
-        )
-        modifiedCount++
-      }
-
-      return { modifiedCount }
-    }
+    run: snapshotCredentialProviderCloudAdapter
   },
   // Credentials now name their gateway `gateway`, matching the catalogue and
   // model documents. Expand step only: `adapter` is copied, not unset, because
@@ -368,7 +182,7 @@ export const backfillRegistry = [
       'Copies adapter into gateway on credentials docs that have no gateway yet',
     async run(db) {
       const { modifiedCount } = await db
-        .collection('credentials')
+        .collection(CREDENTIALS)
         .updateMany({ gateway: { $exists: false } }, [
           { $set: { gateway: '$adapter' } }
         ])
@@ -385,7 +199,7 @@ export const backfillRegistry = [
       'Replaces flat cloud/adapter with nested hosting and gateway on models docs that have no gateway yet',
     async run(db) {
       const { modifiedCount } = await db
-        .collection('models')
+        .collection(MODELS)
         .updateMany({ gateway: { $exists: false } }, [
           {
             $set: {
@@ -430,38 +244,7 @@ export const backfillRegistry = [
   {
     id: '2026-10-14-add-team-slug',
     description: 'Derives slug from name on teams docs missing it',
-    async run(db) {
-      const teams = await db
-        .collection('teams')
-        .find({ slug: { $exists: false } })
-        .toArray()
-
-      const taken = new Set(
-        (
-          await db
-            .collection('teams')
-            .find({ slug: { $type: 'string' } }, { projection: { slug: 1 } })
-            .toArray()
-        ).map((team) => team.slug)
-      )
-
-      let modifiedCount = 0
-
-      for (const team of teams) {
-        const slug = firstFreeSlug(deriveTeamSlug(team.name), (candidate) =>
-          taken.has(candidate)
-        )
-
-        await db
-          .collection('teams')
-          .updateOne({ _id: team._id }, { $set: { slug } })
-
-        taken.add(slug)
-        modifiedCount += 1
-      }
-
-      return { modifiedCount }
-    }
+    run: addTeamSlugs
   },
   // A team's Entra app registration identifiers now come off its run report
   // onto `oauthClient.registration` when a deployment verifies, for the Graph
@@ -534,7 +317,7 @@ export const backfillRegistry = [
       'Sets environment: "sandbox" on research credentials docs with no environment',
     async run(db) {
       const { modifiedCount } = await db
-        .collection('credentials')
+        .collection(CREDENTIALS)
         .updateMany({ tier: 'research', environment: null }, [
           { $set: { environment: 'sandbox' } }
         ])

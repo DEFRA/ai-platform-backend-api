@@ -199,40 +199,70 @@ function nextPagePath(nextLink, usersUrl) {
  * @param {{userAssertion?: string, query: string}} params
  * @param {{usersUrl: URL, maxPages: number, signal: AbortSignal}} limits
  */
-async function readPages(
-  { send, readJson, unavailable },
+function readPages(
+  graph,
   { userAssertion, query },
   { usersUrl, maxPages, signal }
 ) {
   const phrase = `${quoted('displayName', query)} OR ${quoted('mail', query)}`
-  let path = `/users?$search=${encodeURIComponent(phrase)}&$select=${SELECT}&$top=${SEARCH_TOP}`
-  const people = []
+  const path = `/users?$search=${encodeURIComponent(phrase)}&$select=${SELECT}&$top=${SEARCH_TOP}`
 
-  // The pages are read one after another on purpose: each page's `nextLink`
-  // names the next, so they cannot be requested together (S9382 does not apply).
-  for (let page = 0; path && page < maxPages; page++) {
-    const response = await send(SEARCH, userAssertion, path, signal)
+  return readPagesFrom(graph, path, maxPages, {
+    userAssertion,
+    usersUrl,
+    signal
+  })
+}
 
-    if (!response.ok) {
-      throw unavailable(SEARCH, response)
-    }
-
-    const body = await readJson(SEARCH, response)
-
-    if (!Array.isArray(body?.value)) {
-      throw unavailable(SEARCH, { name: 'UnexpectedResponse' })
-    }
-
-    people.push(...body.value.map(toPerson))
-
-    try {
-      path = nextPagePath(body['@odata.nextLink'], usersUrl)
-    } catch {
-      throw unavailable(SEARCH, { name: 'UnexpectedNextLink' })
-    }
+/**
+ * Reads the page at `path`, then the pages after it while `pagesLeft` allows.
+ * The pages are read one after another on purpose: each page's `nextLink`
+ * names the next, so they cannot be requested together.
+ * @param {GraphClient} graph
+ * @param {string|null} path - the page to read, or null when there is none
+ * @param {number} pagesLeft
+ * @param {{userAssertion?: string, usersUrl: URL, signal: AbortSignal}} context
+ * @returns {Promise<object[]>}
+ */
+async function readPagesFrom(
+  graph,
+  path,
+  pagesLeft,
+  { userAssertion, usersUrl, signal }
+) {
+  if (!path || pagesLeft <= 0) {
+    return []
   }
 
-  return people
+  const { send, readJson, unavailable } = graph
+  const response = await send(SEARCH, userAssertion, path, signal)
+
+  if (!response.ok) {
+    throw unavailable(SEARCH, response)
+  }
+
+  const body = await readJson(SEARCH, response)
+
+  if (!Array.isArray(body?.value)) {
+    throw unavailable(SEARCH, { name: 'UnexpectedResponse' })
+  }
+
+  const people = body.value.map(toPerson)
+  let nextPath
+
+  try {
+    nextPath = nextPagePath(body['@odata.nextLink'], usersUrl)
+  } catch {
+    throw unavailable(SEARCH, { name: 'UnexpectedNextLink' })
+  }
+
+  const rest = await readPagesFrom(graph, nextPath, pagesLeft - 1, {
+    userAssertion,
+    usersUrl,
+    signal
+  })
+
+  return [...people, ...rest]
 }
 
 /**

@@ -43,17 +43,17 @@ const vaultFactories = new Map([
   [AZURE_APIM, () => createKeyVaultCredentialVault()]
 ])
 
-const vaultsByKey = { mock: mockCredentialVault }
+const configuredVaults = { mock: mockCredentialVault }
 
 for (const gateway of config.get('provisioning.gateways')) {
-  vaultsByKey[gateway] = vaultFactories.get(gateway)?.()
+  configuredVaults[gateway] = vaultFactories.get(gateway)?.()
 }
 
 // Credentials issued before the catalogue carried a gateway persisted this key.
-vaultsByKey.azure = vaultsByKey[AZURE_APIM]
+configuredVaults.azure = configuredVaults[AZURE_APIM]
 
 /**
  * The live vault, routing by each credential's `issuerKey`.
  * @type {import('#/adapters/credential-vault.js').CredentialVault}
  */
-export const credentialVault = createCredentialVaultRegistry(vaultsByKey)
+export const credentialVault = createCredentialVaultRegistry(configuredVaults)
