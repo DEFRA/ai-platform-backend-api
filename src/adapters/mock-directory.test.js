@@ -120,22 +120,22 @@ describe('#mockDirectory matching', () => {
 
     const directory = createMockDirectory({ db: failingDb })
 
-    await expect(directory.searchPeople({ query: 'test' })).rejects.toMatchObject(
-      {
-        isBoom: true,
-        output: {
+    await expect(
+      directory.searchPeople({ query: 'test' })
+    ).rejects.toMatchObject({
+      isBoom: true,
+      output: {
+        statusCode: 503,
+        payload: {
           statusCode: 503,
-          payload: {
-            statusCode: 503,
-            error: 'Service Unavailable',
-            message: 'The directory is unavailable'
-          }
-        },
-        data: {
-          code: 'directory-unavailable'
+          error: 'Service Unavailable',
+          message: 'The directory is unavailable'
         }
+      },
+      data: {
+        code: 'directory-unavailable'
       }
-    )
+    })
   })
 
   test('throws directory-unavailable when MongoDB getPerson fails', async () => {
@@ -149,21 +149,21 @@ describe('#mockDirectory matching', () => {
 
     const directory = createMockDirectory({ db: failingDb })
 
-    await expect(directory.getPerson({ oid: 'test-oid' })).rejects.toMatchObject(
-      {
-        isBoom: true,
-        output: {
+    await expect(
+      directory.getPerson({ oid: 'test-oid' })
+    ).rejects.toMatchObject({
+      isBoom: true,
+      output: {
+        statusCode: 503,
+        payload: {
           statusCode: 503,
-          payload: {
-            statusCode: 503,
-            error: 'Service Unavailable',
-            message: 'The directory is unavailable'
-          }
-        },
-        data: {
-          code: 'directory-unavailable'
+          error: 'Service Unavailable',
+          message: 'The directory is unavailable'
         }
+      },
+      data: {
+        code: 'directory-unavailable'
       }
-    )
+    })
   })
 })
