@@ -106,7 +106,19 @@ export function federationViewOf(entry) {
     ...(entry.principalId ? { principalId: entry.principalId } : {}),
     status: entry.status,
     operationId: entry.operationId ?? null,
-    failureReason: entry.failureReason ?? null
+    failureReason: entry.failureReason ?? null,
+    ...(entry.pending && entry.status === FEDERATION_STATUS.SETTING_UP
+      ? { changingTo: changingToOf(entry.pending) }
+      : {})
+  }
+}
+
+// What an application is being changed to, as the person asked for it.
+function changingToOf({ name, service, principalId }) {
+  return {
+    name,
+    ...(service ? { service } : {}),
+    ...(principalId ? { principalId } : {})
   }
 }
 
@@ -136,14 +148,32 @@ export function heldTrustKeys(doc, file, except = {}) {
 }
 
 /**
- * The names held in a registration, as for `heldTrustKeys`.
+ * What the registration holds or is about to hold, for telling a duplicate:
+ * the trust keys and names held, and those a change in progress is changing
+ * an application to (an application keeps its old definition until the
+ * change is applied, so both are reserved).
  * @param {{federations?: object[]}|null|undefined} doc
  * @param {{oauth?: {federations?: object[]}}|null|undefined} file
  * @param {{id?: string, name?: string}} [except]
- * @returns {Set<string>}
+ * @returns {{trustKeys: Set<string>, names: Set<string>}}
  */
-export function heldNames(doc, file, except = {}) {
-  return new Set(heldApplications(doc, file, except).map(({ name }) => name))
+export function reservedBy(doc, file, except = {}) {
+  const applications = [
+    ...heldApplications(doc, file, except),
+    ...(doc?.federations ?? [])
+      .filter(
+        (entry) =>
+          entry.pending &&
+          entry.status === FEDERATION_STATUS.SETTING_UP &&
+          entry.id !== except.id
+      )
+      .map(({ host, pending }) => ({ host, ...pending }))
+  ]
+
+  return {
+    trustKeys: new Set(applications.map(trustKeyOf)),
+    names: new Set(applications.map(({ name }) => name))
+  }
 }
 
 function heldApplications(doc, file, { id, name }) {

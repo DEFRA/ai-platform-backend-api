@@ -66,7 +66,7 @@ describe('#createFixtureConnectionDetails', () => {
       `https://login.microsoftonline.com/${details.tenantId}/oauth2/v2.0/token`
     )
     expect(details.gatewayUrl).toBe(
-      'https://mock-gateway.ai-platform.defra.gov.uk/alpha'
+      'https://mock-gateway.ai-platform.example/alpha'
     )
     expect(details.cdpAudience).toBe('api://AzureADTokenExchange')
   })

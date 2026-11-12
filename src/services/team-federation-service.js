@@ -67,17 +67,25 @@ function lockNameOf(teamId, environment) {
   return `team-deployment:${teamId}:${environment}`
 }
 
-async function underLock(locker, teamId, environment, work) {
-  const lock = await acquireLockWithRetry(
-    locker,
-    lockNameOf(teamId, environment)
-  )
+async function withLock(locker, name, work) {
+  const lock = await acquireLockWithRetry(locker, name)
 
   try {
     return await work()
   } finally {
     await lock.free()
   }
+}
+
+function underLock(locker, teamId, environment, work) {
+  return withLock(locker, lockNameOf(teamId, environment), work)
+}
+
+// One lock for a team's additions and changes, taken before any
+// environment's: a second request waits for the first to finish, so it is
+// checked against what the first queued.
+function underTeamLock(locker, teamId, work) {
+  return withLock(locker, `team-federation:${teamId}`, work)
 }
 
 // The code an audit records for a refusal: the API's own, or what kind of
@@ -442,19 +450,84 @@ async function requireAllAllowed(db, context, environments) {
   }
 }
 
+// Each environment's operation, in order. A refusal found inside an
+// environment's lock (another team took the workload since the checks) is
+// kept, so that a request that queued anything answers with what it did.
+async function queueEach(db, context, environments) {
+  const federations = []
+  const refused = []
+
+  for (const environment of environments) {
+    try {
+      federations.push(await federateIn(db, context, environment)) // NOSONAR: sequential, each environment its own operation
+    } catch (error) {
+      if (error.data?.code !== 'federation-refused') {
+        throw error
+      }
+
+      refused.push(...error.data.environments)
+    }
+  }
+
+  return { federations, refused }
+}
+
+async function requestUnderTeamLock(db, context, environments) {
+  const pending = []
+
+  for (const environment of environments) {
+    if (!(await replayIn(db, context, environment))) {
+      // NOSONAR: sequential, one answer per key
+      pending.push(environment)
+    }
+  }
+
+  await requireAllAllowed(db, context, pending)
+
+  const { federations, refused } = await queueEach(db, context, environments)
+
+  if (refused.length > 0) {
+    const refusal = federationRefused(refused)
+
+    // Nothing queued is the whole request refused; otherwise it is answered
+    // with what was queued, and the refusal audited here.
+    if (federations.length === 0) {
+      throw refusal
+    }
+
+    await auditRefusal(db, context, ACTIONS.REQUEST, refusal)
+  }
+
+  return {
+    federations: federations.map(
+      ({ environment, id, status, operationId }) => ({
+        environment,
+        id,
+        status,
+        operationId
+      })
+    ),
+    ...(refused.length > 0 ? { refused } : {}),
+    replay: federations.every(({ replay }) => replay)
+  }
+}
+
 /**
  * Federates an application in each environment asked for, for any team
  * member: one operation per environment, under the key `{Idempotency-Key}:{environment}`,
- * the environments in this instance's order. All or nothing up front: if any
- * environment that does not already have the key's operation would refuse it
- * (`409 federation-refused` with each environment's code), nothing is queued.
+ * the environments in this instance's order, one request of a team at a time.
+ * All or nothing up front: if any environment that does not already have the
+ * key's operation would refuse it (`409 federation-refused` with each
+ * environment's code), nothing is queued. `409` always means nothing was
+ * queued; if another team takes the workload while the operations are being
+ * queued, the request answers with those queued and `refused` for the rest.
  * A repeat of the key replays what was made and makes the rest. A key used for
  * another application is `409 idempotency-key-reused`.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{teamId: string, request: {host: string, service?: string, principalId?: string, name?: string, environments: string[]}, actor: {userId: string, oid: string}, idempotencyKey: string, traceParent?: string, cdpRequestId?: string}} params - `teamId` is the team's id or slug
  * @param {{operations: ReturnType<typeof import('#/operations/operations-service.js').createOperationsService>, registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry}} deps
- * @returns {Promise<{federations: Array<{environment: string, id: string, status: string, operationId: string}>, replay: boolean}>}
+ * @returns {Promise<{federations: Array<{environment: string, id: string, status: string, operationId: string}>, refused?: Array<{environment: string, code: string}>, replay: boolean}>}
  */
 export async function requestFederations(
   db,
@@ -476,43 +549,16 @@ export async function requestFederations(
     idempotencyKey,
     definition: definitionOf(request)
   }
-  const environments = inFixedOrder(request.environments)
 
   return audited(
     db,
     context,
     ACTIONS.REQUEST,
     'Failed to request the federation',
-    async () => {
-      const pending = []
-
-      for (const environment of environments) {
-        if (!(await replayIn(db, context, environment))) {
-          // NOSONAR: sequential, one answer per key
-          pending.push(environment)
-        }
-      }
-
-      await requireAllAllowed(db, context, pending)
-
-      const federations = []
-
-      for (const environment of environments) {
-        federations.push(await federateIn(db, context, environment)) // NOSONAR: sequential, each environment its own operation
-      }
-
-      return {
-        federations: federations.map(
-          ({ environment, id, status, operationId }) => ({
-            environment,
-            id,
-            status,
-            operationId
-          })
-        ),
-        replay: federations.every(({ replay }) => replay)
-      }
-    }
+    () =>
+      underTeamLock(locker, teamId, () =>
+        requestUnderTeamLock(db, context, inFixedOrder(request.environments))
+      )
   )
 }
 
@@ -578,18 +624,62 @@ async function requireChangeable(db, context, entry, definition) {
   }
 }
 
-function entryFieldsOf(definition) {
+// What an application is being changed to waits in `pending` on its entry
+// until the change commits: the entry keeps the definition the team file
+// still holds, so it stays listed, and can be removed, if the change fails.
+function pendingOf(definition) {
   return {
-    'federations.$[f].name': definition.name,
-    'federations.$[f].trustKey': trustKeyOf(definition),
+    name: definition.name,
+    trustKey: trustKeyOf(definition),
     ...(definition.service
-      ? { 'federations.$[f].service': definition.service }
-      : { 'federations.$[f].principalId': definition.principalId })
+      ? { service: definition.service }
+      : { principalId: definition.principalId })
+  }
+}
+
+function setPending(db, { teamId, environment }, entryId, pending) {
+  return db
+    .collection('teamDeployments')
+    .updateOne(
+      { teamId, environment },
+      pending
+        ? { $set: { 'federations.$[f].pending': pending } }
+        : { $unset: { 'federations.$[f].pending': '' } },
+      { arrayFilters: [{ 'f.id': entryId }] }
+    )
+}
+
+// Queues the change with its pending definition recorded first, so the
+// projection finds it; a request that is refused leaves nothing pending.
+async function queueChange(db, context, { entry, definition, fingerprint }) {
+  const { teamId, environment, idempotencyKey, operations } = context
+
+  await setPending(db, context, entry.id, pendingOf(definition))
+
+  try {
+    const { operation } = await operations.request(
+      operationRequestOf(
+        context,
+        environment,
+        {
+          entryId: entry.id,
+          change: 'change',
+          name: entry.name,
+          federation: definition
+        },
+        { idempotencyKey, requestFingerprint: fingerprint }
+      )
+    )
+
+    return operation
+  } catch (error) {
+    await setPending(db, { teamId, environment }, entry.id, null)
+    throw error
   }
 }
 
 async function changeUnderLock(db, context, { entry, request, federationId }) {
-  const { teamId, environment, idempotencyKey, operations } = context
+  const { teamId, environment, idempotencyKey } = context
   const definition = changedDefinition(entry, request)
   const fingerprint = federationFingerprintOf('change', entry.id, definition)
   const replayed = await findByIdempotencyKey(db, {
@@ -609,27 +699,12 @@ async function changeUnderLock(db, context, { entry, request, federationId }) {
 
   await requireChangeable(db, context, entry, definition)
 
-  const { operation } = await operations.request(
-    operationRequestOf(
-      context,
-      environment,
-      {
-        entryId: entry.id,
-        change: 'change',
-        name: entry.name,
-        federation: definition
-      },
-      { idempotencyKey, requestFingerprint: fingerprint }
-    )
-  )
+  const operation = await queueChange(db, context, {
+    entry,
+    definition,
+    fingerprint
+  })
 
-  await db
-    .collection('teamDeployments')
-    .updateOne(
-      { teamId, environment },
-      { $set: entryFieldsOf(definition) },
-      { arrayFilters: [{ 'f.id': entry.id }] }
-    )
   await projectOperation(db, operation)
   await auditSuccess(db, context, ACTIONS.CHANGE, entry, environment)
 
@@ -721,12 +796,14 @@ export async function changeFederation(
     ACTIONS.CHANGE,
     'Failed to change the application',
     () =>
-      underLock(locker, context.teamId, environment, async () =>
-        changeUnderLock(db, context, {
-          entry: await requireLiveEntry(db, context, federationId),
-          request,
-          federationId
-        })
+      underTeamLock(locker, context.teamId, () =>
+        underLock(locker, context.teamId, environment, async () =>
+          changeUnderLock(db, context, {
+            entry: await requireLiveEntry(db, context, federationId),
+            request,
+            federationId
+          })
+        )
       )
   )
 }

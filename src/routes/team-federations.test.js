@@ -360,6 +360,72 @@ describe('#team-federations routes', () => {
       expect(await entriesOf(team, 'infradev')).toHaveLength(1)
     })
 
+    test('answers 409 only when nothing was queued: two requests together for one application queue one, and the other is refused with nothing for its key', async () => {
+      const team = await deployedTeam('fed-race-1')
+
+      withInfradev(team)
+
+      const body = { ...CDP, environments: ['sandbox', 'infradev'] }
+      const keys = [randomUUID(), randomUUID()]
+      const answers = await Promise.all(
+        keys.map((key) => post(team, 'fed-race-1', body, { key }))
+      )
+      const codes = answers.map(({ statusCode }) => statusCode).sort()
+
+      expect(codes).toEqual([202, 409])
+
+      const refusedKey = keys[answers.findIndex((a) => a.statusCode === 409)]
+      const operations = await operationsOf(team)
+
+      expect(operations).toHaveLength(2)
+      expect(
+        operations.flatMap(({ idempotencyKeys }) => idempotencyKeys)
+      ).not.toContainEqual(expect.stringContaining(refusedKey))
+      expect(
+        answers.find((a) => a.statusCode === 409).result.environments
+      ).toEqual([
+        { environment: 'sandbox', code: 'federation-exists' },
+        { environment: 'infradev', code: 'federation-exists' }
+      ])
+    })
+
+    test('answers what it queued, with the refusal, when another team takes the workload in a later environment meanwhile', async () => {
+      const team = await deployedTeam('fed-race-2')
+      const other = await deployedTeam('fed-race-2-other')
+      const operations = server.app.operations.operations
+      const original = operations.request.bind(operations)
+
+      withInfradev(team)
+      vi.spyOn(operations, 'request').mockImplementation(async (params) => {
+        const result = await original(params)
+
+        await seedEntries(other, 'infradev', [
+          { name: 'beta-api', service: 'beta-api' }
+        ])
+
+        return result
+      })
+
+      const { statusCode, result } = await post(team, 'fed-race-2', {
+        ...CDP,
+        environments: ['sandbox', 'infradev']
+      })
+
+      expect(statusCode).toBe(202)
+      expect(result.federations.map(({ environment }) => environment)).toEqual([
+        'sandbox'
+      ])
+      expect(result.refused).toEqual([
+        { environment: 'infradev', code: 'federation-trusted-elsewhere' }
+      ])
+      expect(
+        await auditOf(team, {
+          action: 'teamFederation.request',
+          outcome: 'failure'
+        })
+      ).toHaveLength(1)
+    })
+
     test('replays a repeated key: 200, the same applications, nothing queued twice', async () => {
       const team = await deployedTeam('fed-replay-1')
       const key = randomUUID()
@@ -827,6 +893,50 @@ describe('#team-federations routes', () => {
       expect(JSON.stringify(elsewhere.result)).not.toContain(other.slug)
     })
 
+    test.each([
+      ['braces', `{${PRINCIPAL}}`],
+      ['no hyphens', PRINCIPAL.replaceAll('-', '')],
+      ['a urn prefix', `urn:uuid:${PRINCIPAL}`]
+    ])(
+      'refuses an Azure principal ID with %s, on every route that takes one',
+      async (_name, principalId) => {
+        const team = await deployedTeam(`fed-guid-${_name.length}`)
+        const label = `fed-guid-${_name.length}`
+        const body = { ...AZURE, principalId }
+        const { result: ready } = await post(team, label, AZURE)
+
+        await settleEvents()
+
+        expect((await post(team, label, body)).statusCode).toBe(400)
+        expect((await check(team, label, body)).statusCode).toBe(400)
+        expect(
+          (
+            await patch(team, label, ready.federations[0].id, {
+              principalId,
+              name: 'renamed-app'
+            })
+          ).statusCode
+        ).toBe(400)
+      }
+    )
+
+    test('accepts a canonical principal ID in capitals as the one in lower case, so a check from another team finds it', async () => {
+      const team = await deployedTeam('fed-guid-case')
+      const other = await deployedTeam('fed-guid-case-other')
+
+      expect((await post(team, 'fed-guid-case', AZURE)).statusCode).toBe(202)
+      await settleEvents()
+
+      const { result } = await check(other, 'fed-guid-case-other', {
+        ...AZURE,
+        principalId: PRINCIPAL.toLowerCase()
+      })
+
+      expect(result.environments).toEqual([
+        { environment: 'sandbox', code: 'federation-trusted-elsewhere' }
+      ])
+    })
+
     test('is not found for someone outside the team, and a bad request for a body that is not a request', async () => {
       const team = await deployedTeam('fed-check-4')
 
@@ -861,12 +971,15 @@ describe('#team-federations routes', () => {
       })
 
       expect(statusCode).toBe(202)
+      // Until it commits the application stays as it was, and shows what it
+      // is changing to.
       expect(result.federation).toMatchObject({
         id,
-        name: 'delta-api',
+        name: 'beta-api',
         host: 'cdp',
-        service: 'delta-api',
-        status: 'setting-up'
+        service: 'beta-api',
+        status: 'setting-up',
+        changingTo: { name: 'delta-api', service: 'delta-api' }
       })
       expect(result.operationId).toEqual(expect.any(String))
 
@@ -976,6 +1089,209 @@ describe('#team-federations routes', () => {
       expect(statusCode).toBe(409)
       expect(result.code).toBe('federation-trusted-elsewhere')
       expect(JSON.stringify(result)).not.toContain(other.slug)
+    })
+
+    test('accepts a change of a failed application that makes 20, as it holds no place now', async () => {
+      const { team, id } = await readyApplication('fed-patch-5b')
+
+      await seedEntries(
+        team,
+        'sandbox',
+        Array.from({ length: 19 }, (_, index) => ({
+          name: `app-${index}`,
+          service: `app-${index}`
+        }))
+      )
+      // The application fails: it holds no place, so 19 + 1 failed is 20.
+      await server.db
+        .collection('teamDeployments')
+        .updateOne(
+          { teamId: team.teamId, environment: 'sandbox' },
+          { $set: { 'federations.$[f].status': 'failed' } },
+          { arrayFilters: [{ 'f.id': id }] }
+        )
+
+      const accepted = await patch(team, 'fed-patch-5b', id, {
+        service: 'delta-api'
+      })
+
+      expect(accepted.statusCode).toBe(202)
+    })
+
+    test('refuses the change of a failed application when the registration already holds 20 others', async () => {
+      const { team, id } = await readyApplication('fed-patch-5c')
+
+      await seedEntries(
+        team,
+        'sandbox',
+        Array.from({ length: 20 }, (_, index) => ({
+          name: `app-${index}`,
+          service: `app-${index}`
+        }))
+      )
+      await server.db
+        .collection('teamDeployments')
+        .updateOne(
+          { teamId: team.teamId, environment: 'sandbox' },
+          { $set: { 'federations.$[f].status': 'failed' } },
+          { arrayFilters: [{ 'f.id': id }] }
+        )
+
+      const { statusCode, result } = await patch(team, 'fed-patch-5c', id, {
+        service: 'delta-api'
+      })
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('federation-limit-reached')
+      expect(await operationsOf(team)).toHaveLength(1)
+    })
+
+    describe('a change that fails', () => {
+      const FAILING = { service: 'mock-checks-failed-api' }
+
+      async function failedChange(label) {
+        const { team, id } = await readyApplication(label)
+        const { statusCode, result } = await patch(team, label, id, FAILING)
+
+        expect(statusCode).toBe(202)
+        await settleEvents()
+
+        return { team, id, first: result }
+      }
+
+      test('shows what it is changing to while it runs, then leaves the application listed as it was, with the reason', async () => {
+        const { team, id, first } = await failedChange('fed-patch-f1')
+
+        expect(first.federation).toMatchObject({
+          id,
+          name: 'beta-api',
+          service: 'beta-api',
+          status: 'setting-up',
+          changingTo: {
+            name: 'mock-checks-failed-api',
+            service: 'mock-checks-failed-api'
+          }
+        })
+
+        const [entry] = await entriesOf(team)
+
+        expect(entry).toMatchObject({
+          name: 'beta-api',
+          service: 'beta-api',
+          status: 'ready',
+          failureReason: expect.stringContaining('checks failed')
+        })
+        expect((await fileOf(team)).oauth.federations).toEqual([
+          { name: 'beta-api', host: 'cdp', service: 'beta-api' }
+        ])
+
+        const read = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${team.slug}/environments/sandbox`,
+          headers: fixtures.as('fed-patch-f1')
+        })
+
+        expect(read.result.applications.items).toMatchObject([
+          { id, name: 'beta-api', status: 'ready' }
+        ])
+        expect(read.result.applications.items[0]).not.toHaveProperty(
+          'changingTo'
+        )
+      })
+
+      test('can be removed: the file loses the old application', async () => {
+        const { team, id } = await failedChange('fed-patch-f2')
+        const { statusCode } = await remove(team, 'fed-patch-f2', id)
+
+        await settleEvents()
+
+        expect(statusCode).toBe(202)
+        expect((await fileOf(team)).oauth.federations).toEqual([])
+        expect((await entriesOf(team))[0].status).toBe('removed')
+      })
+
+      test('can be asked again: the new change is applied, and the application takes its definition', async () => {
+        const { team, id } = await failedChange('fed-patch-f3')
+        const { statusCode } = await patch(team, 'fed-patch-f3', id, {
+          service: 'delta-api'
+        })
+
+        await settleEvents()
+
+        expect(statusCode).toBe(202)
+        expect((await fileOf(team)).oauth.federations).toEqual([
+          { name: 'delta-api', host: 'cdp', service: 'delta-api' }
+        ])
+        expect((await entriesOf(team))[0]).toMatchObject({
+          name: 'delta-api',
+          service: 'delta-api',
+          status: 'ready',
+          failureReason: null
+        })
+        expect((await entriesOf(team))[0].pending ?? null).toBeNull()
+      })
+
+      test('holds the new workload against another team, and against the same team, only while it is being set up', async () => {
+        const team = await deployedTeam('fed-patch-f4')
+        const other = await deployedTeam('fed-patch-f4-other')
+
+        await seedEntries(team, 'sandbox', [
+          {
+            name: 'old-api',
+            service: 'old-api',
+            status: 'setting-up',
+            pending: {
+              name: 'new-api',
+              service: 'new-api',
+              trustKey: 'CDP service new-api'
+            }
+          }
+        ])
+
+        const ask = (who, label) =>
+          check(who, label, { ...CDP, service: 'new-api' })
+
+        expect((await ask(other, 'fed-patch-f4-other')).result).toEqual({
+          environments: [
+            { environment: 'sandbox', code: 'federation-trusted-elsewhere' }
+          ]
+        })
+        expect((await ask(team, 'fed-patch-f4')).result).toEqual({
+          environments: [{ environment: 'sandbox', code: 'federation-exists' }]
+        })
+
+        await server.db
+          .collection('teamDeployments')
+          .updateOne(
+            { teamId: team.teamId, environment: 'sandbox' },
+            { $set: { 'federations.$[f].status': 'ready' } },
+            { arrayFilters: [{ 'f.service': 'old-api' }] }
+          )
+
+        expect((await ask(other, 'fed-patch-f4-other')).result).toEqual({
+          environments: [{ environment: 'sandbox', code: null }]
+        })
+      })
+
+      test('on an Azure application renamed, leaves the old name listed and removable', async () => {
+        const { team, id } = await readyApplication('fed-patch-f5', AZURE)
+        const { statusCode } = await patch(team, 'fed-patch-f5', id, {
+          principalId: '11111111-1111-4111-8111-111111111111',
+          name: 'mock-checks-failed-app'
+        })
+
+        await settleEvents()
+
+        expect(statusCode).toBe(202)
+        expect((await entriesOf(team))[0]).toMatchObject({
+          name: 'data-app',
+          principalId: PRINCIPAL.toLowerCase(),
+          status: 'ready'
+        })
+        expect((await remove(team, 'fed-patch-f5', id)).statusCode).toBe(202)
+        await settleEvents()
+        expect((await fileOf(team)).oauth.federations).toEqual([])
+      })
     })
 
     test('accepts a change in a registration that holds 20', async () => {
