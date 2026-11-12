@@ -20,11 +20,11 @@ describe('#mockTeamFileReader with a database', () => {
   let clock = Date.parse('2026-11-12T10:00:00.000Z')
 
   // An operation as the operations hold it: the document is canonical JSON,
-  // and each is created a minute after the last.
+  // and each is created, and committed, a minute after the last. `gitops`
+  // overrides its commit facts.
   function operation(overrides = {}) {
-    const { document = { revision: 1 }, ...rest } = overrides
-
-    clock += 60000
+    const { document = { revision: 1 }, gitops, ...rest } = overrides
+    const createdAt = nextMinute()
 
     return {
       _id: uuidv7(),
@@ -32,10 +32,16 @@ describe('#mockTeamFileReader with a database', () => {
       state: 'committed',
       target: { path: PATH },
       document: JSON.stringify(document),
-      gitops: { commitSha: 'a'.repeat(40) },
-      createdAt: new Date(clock).toISOString(),
+      gitops: { commitSha: 'a'.repeat(40), committedAt: createdAt, ...gitops },
+      createdAt,
       ...rest
     }
+  }
+
+  function nextMinute() {
+    clock += 60000
+
+    return new Date(clock).toISOString()
   }
 
   async function arrange(...operations) {
@@ -137,7 +143,7 @@ describe('#mockTeamFileReader with a database', () => {
   })
 
   test('serves nothing for another path, and uses the placeholder sha when no commit is recorded', async () => {
-    await arrange(operation({ gitops: {} }))
+    await arrange(operation({ gitops: { commitSha: undefined } }))
 
     await expect(
       reader.getCurrentDocument({ path: 'environments/infradev/beta.json' })
@@ -146,6 +152,104 @@ describe('#mockTeamFileReader with a database', () => {
     const { sha } = await reader.getCurrentDocument({ path: PATH })
 
     expect(sha).toMatch(/^[0-9a-f]{40}$/)
+  })
+
+  test('serves the change that committed last, even when an older operation committed after a newer one (a retry)', async () => {
+    const older = operation({ document: { revision: 1, change: 'older' } })
+    const newer = operation({ document: { revision: 2, change: 'newer' } })
+
+    // The older operation timed out, and its retry committed after the newer
+    // operation finished.
+    older.gitops.committedAt = nextMinute()
+
+    await arrange(older, newer)
+
+    const { document } = await reader.getCurrentDocument({ path: PATH })
+
+    expect(document).toEqual({ revision: 1, change: 'older' })
+  })
+
+  test('serves a missing file once a committed deletion is the newest change, as a revert of a new file leaves it', async () => {
+    const created = operation({
+      state: 'deploy-failed',
+      document: { revision: 1 }
+    })
+    const reverted = operation({ action: 'remove' })
+
+    delete reverted.document
+
+    await arrange(created, reverted)
+
+    await expect(reader.getCurrentDocument({ path: PATH })).resolves.toEqual({
+      document: null,
+      sha: null
+    })
+  })
+
+  describe('the file before a commit, for a revert', () => {
+    const FIRST_SHA = '1'.repeat(40)
+    const SECOND_SHA = '2'.repeat(40)
+
+    function twoChanges() {
+      return [
+        operation({
+          state: 'active',
+          document: { revision: 1, models: ['a'], limits: 1000 },
+          gitops: { commitSha: FIRST_SHA }
+        }),
+        operation({
+          state: 'deploy-failed',
+          document: { revision: 2, models: ['a', 'b'], limits: 2000 },
+          gitops: { commitSha: SECOND_SHA }
+        })
+      ]
+    }
+
+    test('is the file as the change before it left it, with its models and limits', async () => {
+      await arrange(...twoChanges())
+
+      await expect(
+        reader.getPreviousDocument({ path: PATH, commitSha: SECOND_SHA })
+      ).resolves.toEqual({
+        document: { revision: 1, models: ['a'], limits: 1000 }
+      })
+    })
+
+    test('is null when the commit made the file, so a revert removes it', async () => {
+      await arrange(...twoChanges())
+
+      await expect(
+        reader.getPreviousDocument({ path: PATH, commitSha: FIRST_SHA })
+      ).resolves.toEqual({ document: null })
+    })
+
+    test('is null when the file before the commit had been deleted, or the commit is not known', async () => {
+      const [first, second] = twoChanges()
+      const removal = operation({ state: 'active', action: 'remove' })
+      const third = operation({
+        document: { revision: 1 },
+        gitops: { commitSha: '3'.repeat(40) }
+      })
+
+      delete removal.document
+
+      await arrange(first, second, removal, third)
+
+      await expect(
+        reader.getPreviousDocument({ path: PATH, commitSha: '3'.repeat(40) })
+      ).resolves.toEqual({ document: null })
+      await expect(
+        reader.getPreviousDocument({ path: PATH, commitSha: 'f'.repeat(40) })
+      ).resolves.toEqual({ document: null })
+    })
+
+    test('is null with no database', async () => {
+      await expect(
+        createMockTeamFileReader({
+          getDatabase: () => null
+        }).getPreviousDocument({ path: PATH, commitSha: SECOND_SHA })
+      ).resolves.toEqual({ document: null })
+    })
   })
 
   test('still serves the research file before any operation', async () => {
