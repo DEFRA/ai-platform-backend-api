@@ -345,6 +345,38 @@ describe('toOperationView', () => {
     expect(text).not.toMatch(/secret|commandId|entra:|traceparent|user-1/)
   })
 
+  test('a deployment that recovered from a failure shows the time of the later success for its Deployed step', () => {
+    const view = toOperationView(
+      operationThrough(
+        [
+          'requested',
+          'committed',
+          'deploying',
+          'deploy-failed',
+          'deployed',
+          'verified'
+        ],
+        { slot: undefined }
+      )
+    )
+
+    expect(statusesOf(view)).toEqual([
+      'done',
+      'done',
+      'done',
+      'done',
+      'current'
+    ])
+    // Not minute 3, the failure's.
+    expect(view.steps.map(({ at }) => at)).toEqual([
+      T(0),
+      T(1),
+      T(2),
+      T(4),
+      T(5)
+    ])
+  })
+
   test('an operation with no history still shows its first step at creation', () => {
     const view = toOperationView({
       ...operationThrough(['requested']),

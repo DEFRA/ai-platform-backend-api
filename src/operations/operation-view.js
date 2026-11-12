@@ -41,6 +41,7 @@ const STEPS = Object.freeze([
 export const STEP_KEYS = STEPS.map(({ key }) => key)
 
 const LAST_STEP = STEPS.length - 1
+const FAILURE_STATES = new Set([CHECKS_FAILED, DEPLOY_FAILED, TIMED_OUT])
 const STEP_AFTER_DEPLOYING_FAILS = 2
 const STEP_AFTER_VERIFY_FAILS = 3
 const STEP_CHECKS = 1
@@ -95,7 +96,10 @@ function statusOf(index, current, failed) {
 
 // When the operation reached the step: the first event of that step or a
 // later one (a step it went past without an event reads as reached with the
-// next), and for the step it failed at, the failure.
+// next), and for the step it failed at, the failure. A failure state ranks
+// with the step it stopped at, so a later success is preferred to it: a
+// deployment that recovered reached Deployed when it deployed. Only when
+// nothing but a failure followed does the failure's time stand.
 function timeOf(history, index, status) {
   if (status === 'todo') {
     return null
@@ -105,7 +109,10 @@ function timeOf(history, index, status) {
     return history.at(-1)?.at ?? null
   }
 
-  return history.find(({ state }) => stepIndexOf(state) >= index)?.at ?? null
+  const reached = history.filter(({ state }) => stepIndexOf(state) >= index)
+  const reachedWell = reached.find(({ state }) => !FAILURE_STATES.has(state))
+
+  return (reachedWell ?? reached[0])?.at ?? null
 }
 
 function stepsOf(operation) {
