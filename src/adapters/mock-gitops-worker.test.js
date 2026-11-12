@@ -4,6 +4,10 @@ import {
   createMockTransport,
   mockOutcomeOfPurpose
 } from '#/adapters/mock-gitops-worker.js'
+import {
+  attachMockTeamFileDatabase,
+  mockTeamFileReader
+} from '#/adapters/mock-team-file-reader.js'
 import { validateEvent } from '#/contracts/message-validators.js'
 import { exampleCommand } from '#/common/test-helpers/gitops-messages.js'
 import { uuidv7 } from '#/common/helpers/uuid-v7.js'
@@ -362,6 +366,33 @@ describe('mock-gitops-worker', () => {
 
       expect(transport.publisher.publish).toEqual(expect.any(Function))
       await transport.stop()
+    })
+
+    test('has the shared mock team file reader serve what its operations committed, from its database', async () => {
+      const document = JSON.stringify({ revision: 3 })
+      const committed = {
+        document,
+        gitops: { commitSha: 'c'.repeat(40) }
+      }
+      const find = vi.fn().mockReturnValue({
+        sort: () => ({ limit: () => ({ next: async () => committed }) })
+      })
+      const transport = createMockTransport({
+        db: { collection: () => ({ find }) },
+        handle
+      })
+
+      await expect(
+        mockTeamFileReader.getCurrentDocument({
+          path: 'environments/infradev/alpha.json'
+        })
+      ).resolves.toEqual({
+        document: { revision: 3 },
+        sha: 'c'.repeat(40)
+      })
+
+      await transport.stop()
+      attachMockTeamFileDatabase(null)
     })
   })
 
