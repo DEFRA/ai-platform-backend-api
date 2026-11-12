@@ -21,7 +21,7 @@ import {
   MAX_OPERATIONS_LIMIT,
   viewsOf
 } from '#/services/team-operations-service.js'
-import { readTeamFiles, resolveTeamId } from '#/services/team-service.js'
+import { readTeamFiles, requireTeamId } from '#/services/team-service.js'
 import { principalOf } from '#/services/user-service.js'
 
 const CHANGE_ACTION = 'teamLimits.change'
@@ -181,11 +181,7 @@ export async function changeTeamLimits(
   { teamId: teamRef, environment, limits, actor, idempotencyKey, ...trace },
   { operations, registry = tenantOrchestratorRegistry }
 ) {
-  const teamId = await resolveTeamId(db, teamRef)
-
-  if (!teamId) {
-    throw Boom.notFound()
-  }
+  const teamId = await requireTeamId(db, teamRef)
 
   const role = await requireTeamRole(db, actor, teamId, {
     role: TEAM_ADMIN,

@@ -2,6 +2,7 @@ import Joi from 'joi'
 
 import { statusCodes } from '#/common/constants/status-codes.js'
 import { ACCESS } from '#/common/helpers/auth/access.js'
+import { environmentName } from '#/common/helpers/environment-name.js'
 import { changeTeamLimits } from '#/services/team-limits-service.js'
 
 export const teamLimits = [
@@ -18,9 +19,7 @@ export const teamLimits = [
         }).unknown(true),
         params: Joi.object({
           teamId: Joi.string().required(),
-          environment: Joi.string()
-            .pattern(/^[a-z][a-z0-9]{1,15}$/)
-            .required()
+          environment: environmentName.required()
         }).unknown(false),
         // Whole numbers; whether they sit within the bounds is the service's
         // to say, with the bounds in the answer.

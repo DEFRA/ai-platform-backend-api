@@ -3,6 +3,7 @@ import Boom from '@hapi/boom'
 
 import { statusCodes } from '#/common/constants/status-codes.js'
 import { ACCESS } from '#/common/helpers/auth/access.js'
+import { environmentName } from '#/common/helpers/environment-name.js'
 import { REMOVING } from '#/services/team-deployment-entries.js'
 import {
   MAX_MODELS_PER_REQUEST,
@@ -39,9 +40,7 @@ export const teamDeployments = [
             .required(),
           // Any registry-shaped name; which ones this instance may deploy to
           // is configuration, refused as environment-not-available.
-          environment: Joi.string()
-            .pattern(/^[a-z][a-z0-9]{1,15}$/)
-            .required(),
+          environment: environmentName.required(),
           // What the team wants the models for. It is not stored; only the
           // mock orchestrator reads a marker in it (see the registry).
           purpose: Joi.string()

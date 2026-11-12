@@ -1,6 +1,7 @@
 import Joi from 'joi'
 
 import { ACCESS } from '#/common/helpers/auth/access.js'
+import { environmentName } from '#/common/helpers/environment-name.js'
 import {
   DEFAULT_OPERATIONS_LIMIT,
   MAX_OPERATIONS_LIMIT,
@@ -22,7 +23,7 @@ export const teamOperations = [
         params: teamParam,
         query: Joi.object({
           // Any registry-shaped name; one the team has no changes in lists none.
-          environment: Joi.string().pattern(/^[a-z][a-z0-9]{1,15}$/),
+          environment: environmentName,
           status: Joi.string().valid('open', 'recent'),
           limit: Joi.number()
             .integer()

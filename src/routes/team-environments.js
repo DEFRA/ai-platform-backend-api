@@ -1,12 +1,11 @@
 import Joi from 'joi'
 
 import { ACCESS } from '#/common/helpers/auth/access.js'
+import { environmentName } from '#/common/helpers/environment-name.js'
 import {
   getTeamEnvironment,
   listTeamEnvironments
 } from '#/services/team-environments-service.js'
-
-const environmentName = Joi.string().pattern(/^[a-z][a-z0-9]{1,15}$/)
 
 export const teamEnvironments = [
   {
