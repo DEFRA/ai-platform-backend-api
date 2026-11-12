@@ -6,6 +6,8 @@ import { buildOperation } from '#/operations/operation-factory.js'
 const ENTRA_TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 const TARGET_REPOSITORY = 'DEFRA/ai-platform-tenants'
 const DEFAULT_ITEM = { entryId: 'e1', modelSlug: 'gpt-4o', change: 'add' }
+// Enough random characters that two teams of one test never share a name.
+const NAME_SUFFIX_LENGTH = 6
 
 /**
  * Helpers for route tests of a team's environments and operations: people
@@ -46,7 +48,7 @@ export function createTeamFixtures(server) {
       url: '/v1/teams',
       headers: asWithKey(label),
       payload: {
-        name: `Fixture ${label} ${randomUUID().slice(0, 6)}`,
+        name: `Fixture ${label} ${randomUUID().slice(0, NAME_SUFFIX_LENGTH)}`,
         serviceCode: 'ABC'
       }
     })
@@ -70,35 +72,8 @@ export function createTeamFixtures(server) {
 
   // An operation on the team's file, created `minute` minutes into the hour
   // of 2026-11-12 10:00; `requestedBy` names a signed-in person.
-  async function seedOperation(
-    team,
-    { minute, requestedBy, items = [DEFAULT_ITEM], ...overrides }
-  ) {
-    const now = `2026-11-12T10:${String(minute).padStart(2, '0')}:00.000Z`
-    const environment = overrides.environment ?? 'infradev'
-    const operation = {
-      ...buildOperation({
-        type: 'team-file.write',
-        state: 'active',
-        teamId: team.teamId,
-        environment,
-        target: {
-          repository: TARGET_REPOSITORY,
-          team: team.slug,
-          path: `environments/${environment}/${team.slug}.json`
-        },
-        items,
-        requestedBy: 'entra:00000000-0000-4000-8000-000000000001',
-        requestedByUserId: requestedBy ? userIds.get(requestedBy) : undefined,
-        now,
-        idempotencyKeys: [randomUUID()]
-      }),
-      ...overrides
-    }
-
-    await server.db.collection('operations').insertOne(operation)
-
-    return operation
+  function seedOperation(team, options) {
+    return insertOperation(server, userIds, team, options)
   }
 
   return {
@@ -109,4 +84,37 @@ export function createTeamFixtures(server) {
     addMember,
     seedOperation
   }
+}
+
+async function insertOperation(
+  server,
+  userIds,
+  team,
+  { minute, requestedBy, items = [DEFAULT_ITEM], ...overrides }
+) {
+  const now = `2026-11-12T10:${String(minute).padStart(2, '0')}:00.000Z`
+  const environment = overrides.environment ?? 'infradev'
+  const operation = {
+    ...buildOperation({
+      type: 'team-file.write',
+      state: 'active',
+      teamId: team.teamId,
+      environment,
+      target: {
+        repository: TARGET_REPOSITORY,
+        team: team.slug,
+        path: `environments/${environment}/${team.slug}.json`
+      },
+      items,
+      requestedBy: 'entra:00000000-0000-4000-8000-000000000001',
+      requestedByUserId: requestedBy ? userIds.get(requestedBy) : undefined,
+      now,
+      idempotencyKeys: [randomUUID()]
+    }),
+    ...overrides
+  }
+
+  await server.db.collection('operations').insertOne(operation)
+
+  return operation
 }

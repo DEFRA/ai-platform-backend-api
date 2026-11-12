@@ -134,7 +134,7 @@ function audit(db, { actor, role, teamId, environment, limits }, extra) {
 
 // Asks for the operation that sets the limits. Under the team's lock, so two
 // Admins asking together are told apart by the file's own operations.
-async function requestChange(db, locker, context, { operations, target }) {
+async function requestChange(locker, context, { operations, target }) {
   const { teamId, environment, limits, actor, idempotencyKey } = context
   const lock = await acquireLockWithRetry(
     locker,
@@ -216,7 +216,6 @@ export async function changeTeamLimits(
     )
 
     const { operation, replay } = await requestChange(
-      db,
       locker,
       { ...context, ...trace },
       { operations, target }
