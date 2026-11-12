@@ -4,7 +4,8 @@
 
 export const ITEM_KINDS = Object.freeze({
   MODEL: 'model',
-  LIMITS: 'limits'
+  LIMITS: 'limits',
+  FEDERATION: 'federation'
 })
 
 /**
@@ -30,6 +31,14 @@ export function isModelItem(item) {
  */
 export function isLimitsItem(item) {
   return itemKindOf(item) === ITEM_KINDS.LIMITS
+}
+
+/**
+ * @param {{kind?: string}} item
+ * @returns {boolean}
+ */
+export function isFederationItem(item) {
+  return itemKindOf(item) === ITEM_KINDS.FEDERATION
 }
 
 /**

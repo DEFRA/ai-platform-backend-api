@@ -195,7 +195,7 @@ describe('#createTeamDesiredStateBuilder', () => {
       oauth: {
         federations: [{ name: 'beta-api', host: 'cdp', service: 'beta-api' }],
         externalClients: [],
-        secretsAllowed: false
+        secretsAllowed: true
       },
       operationId: 'earlier-operation-id',
       updatedBy: 'entra:00000000-0000-0000-0000-000000000001',
@@ -425,7 +425,7 @@ describe('#createTeamDesiredStateBuilder', () => {
       oauth: {
         federations: [{ name: 'beta-api', host: 'cdp', service: 'beta-api' }],
         externalClients: [],
-        secretsAllowed: false
+        secretsAllowed: true
       },
       operationId: 'earlier-operation-id',
       updatedBy: PRINCIPAL,
@@ -770,7 +770,7 @@ describe('#createTeamDesiredStateBuilder', () => {
       oauth: {
         federations: [{ name: 'beta-api', host: 'cdp', service: 'beta-api' }],
         externalClients: [],
-        secretsAllowed: false
+        secretsAllowed: true
       },
       operationId: 'earlier-operation-id',
       updatedBy: PRINCIPAL,
@@ -949,6 +949,244 @@ describe('#createTeamDesiredStateBuilder', () => {
         TEAM_MODEL.slug
       ])
       expect(second.document.gateway.limits).toEqual(LIMITS)
+    })
+  })
+
+  describe('federations', () => {
+    const CDP = { host: 'cdp', name: 'beta-api', service: 'beta-api' }
+    const AZURE = {
+      host: 'azure',
+      name: 'data-app',
+      principalId: '6f504113-6b64-43f2-ade9-242e05780007'
+    }
+    const held = {
+      schemaVersion: 1,
+      revision: 5,
+      environment: 'infradev',
+      status: 'active',
+      team: { slug: 'ignored', serviceCode: 'ZZZ' },
+      deployments: [
+        {
+          slug: TEAM_MODEL.slug,
+          sku: 'DataZoneStandard',
+          capacity: 2,
+          status: 'active'
+        }
+      ],
+      gateway: {
+        credentialType: 'oauth',
+        allowedDeployments: [TEAM_MODEL.slug],
+        limits: { tokensPerMinute: 1000, requestsPerMinute: 60 }
+      },
+      oauth: {
+        federations: [
+          { name: 'old-api', host: 'cdp', service: 'old-api' },
+          { name: 'other-api', host: 'cdp', service: 'other-api' }
+        ],
+        externalClients: [
+          {
+            name: 'partner',
+            tenantId: '11111111-1111-4111-8111-111111111111',
+            clientId: '22222222-2222-4222-8222-222222222222'
+          }
+        ],
+        secretsAllowed: true
+      },
+      operationId: 'earlier-operation-id',
+      updatedBy: PRINCIPAL,
+      updatedAt: '2026-10-13T00:00:00.000Z'
+    }
+
+    async function buildFederation(current, items, environment = 'infradev') {
+      const { teamId } = await team()
+      const builder = createTeamDesiredStateBuilder({
+        registry: { reader: reader(current) }
+      })
+
+      return builder(db, {
+        teamId,
+        environment,
+        items,
+        operationId: '651f2c0f5c1b4a0012ab34d4'
+      })
+    }
+
+    const add = (federation) => ({
+      kind: 'federation',
+      entryId: 'f1',
+      change: 'add',
+      name: federation.name,
+      federation
+    })
+
+    test('adds a CDP application with only its name, host and service, and changes nothing else', async () => {
+      const { document, expectedRevision } = await buildFederation(held, [
+        add(CDP)
+      ])
+
+      expect(expectedRevision).toBe(5)
+      expect(document.revision).toBe(6)
+      expect(document.oauth.federations).toEqual([
+        ...held.oauth.federations,
+        { name: 'beta-api', host: 'cdp', service: 'beta-api' }
+      ])
+      expect(document.oauth.externalClients).toEqual(held.oauth.externalClients)
+      expect(document.deployments).toEqual(held.deployments)
+      expect(document.gateway).toEqual(held.gateway)
+      expect(schemaProblems(document)).toEqual([])
+    })
+
+    test('adds an Azure application with the Defra tenant’s issuer and the principal ID as subject', async () => {
+      const { defraIssuer } =
+        await import('#/services/team-federation-entries.js')
+      const { document } = await buildFederation(held, [add(AZURE)])
+
+      expect(document.oauth.federations.at(-1)).toEqual({
+        name: 'data-app',
+        host: 'azure',
+        issuer: defraIssuer(),
+        subject: AZURE.principalId
+      })
+      expect(schemaProblems(document)).toEqual([])
+    })
+
+    test('starts a new file with no federations but the one added', async () => {
+      const { document } = await buildFederation(null, [
+        { modelSlug: TEAM_MODEL.slug, change: 'add' },
+        add(CDP)
+      ])
+
+      expect(document.oauth.federations).toEqual([
+        { name: 'beta-api', host: 'cdp', service: 'beta-api' }
+      ])
+    })
+
+    test('does not repeat an application added twice, and puts it in its place', async () => {
+      const { document } = await buildFederation(held, [add(CDP), add(CDP)])
+
+      expect(
+        document.oauth.federations.filter(({ name }) => name === 'beta-api')
+      ).toHaveLength(1)
+    })
+
+    test('changes an application by its name, in its place', async () => {
+      const { document } = await buildFederation(held, [
+        {
+          kind: 'federation',
+          entryId: 'f1',
+          change: 'change',
+          name: 'old-api',
+          federation: { host: 'cdp', name: 'new-api', service: 'new-api' }
+        }
+      ])
+
+      expect(document.oauth.federations).toEqual([
+        { name: 'new-api', host: 'cdp', service: 'new-api' },
+        held.oauth.federations[1]
+      ])
+    })
+
+    test('adds an application a change names when the file no longer holds it', async () => {
+      const { document } = await buildFederation(held, [
+        {
+          kind: 'federation',
+          entryId: 'f1',
+          change: 'change',
+          name: 'gone-api',
+          federation: { host: 'cdp', name: 'new-api', service: 'new-api' }
+        }
+      ])
+
+      expect(document.oauth.federations.map(({ name }) => name)).toEqual([
+        'old-api',
+        'other-api',
+        'new-api'
+      ])
+    })
+
+    test('removes an application by its name and no other', async () => {
+      const { document } = await buildFederation(held, [
+        {
+          kind: 'federation',
+          entryId: 'f1',
+          change: 'remove',
+          name: 'old-api',
+          federation: { host: 'cdp', name: 'old-api', service: 'old-api' }
+        }
+      ])
+
+      expect(document.oauth.federations).toEqual([held.oauth.federations[1]])
+      expect(document.deployments).toEqual(held.deployments)
+    })
+
+    test('leaves the applications alone for a model change and for a limits change', async () => {
+      const models = await buildFederation(held, [
+        { modelSlug: TEAM_MODEL.slug, change: 'add' }
+      ])
+      const limits = await buildFederation(held, [
+        {
+          kind: 'limits',
+          change: 'set',
+          limits: { tokensPerMinute: 2000, requestsPerMinute: 30 }
+        }
+      ])
+
+      expect(models.document.oauth.federations).toEqual(held.oauth.federations)
+      expect(limits.document.oauth.federations).toEqual(held.oauth.federations)
+    })
+
+    test('keeps a pending removal, as a limits change does', async () => {
+      const pending = {
+        ...held,
+        status: 'pending-removal',
+        removeAfter: '2026-12-01'
+      }
+      const { document } = await buildFederation(pending, [add(CDP)])
+
+      expect(document.status).toBe('pending-removal')
+      expect(document.removeAfter).toBe('2026-12-01')
+      expect(schemaProblems(document)).toEqual([])
+    })
+
+    describe('secretsAllowed', () => {
+      let config
+      let configured
+
+      beforeAll(async () => {
+        ;({ config } = await import('#/config.js'))
+        configured = config.get('teamDeployment.clientSecretEnvironments')
+      })
+
+      afterEach(() => {
+        config.set('teamDeployment.clientSecretEnvironments', configured)
+      })
+
+      test('is written from the client-secret environments: true in Infradev, false in QA', async () => {
+        const infradev = await buildFederation(null, [add(CDP)], 'infradev')
+        const qa = await buildFederation(null, [add(CDP)], 'qa')
+
+        expect(infradev.document.oauth.secretsAllowed).toBe(true)
+        expect(qa.document.oauth.secretsAllowed).toBe(false)
+      })
+
+      test('follows the configuration over what the file held, and keeps an exception it holds', async () => {
+        const exception = {
+          host: 'legacy.example',
+          reason: 'No federation',
+          reviewDate: '2027-01-01'
+        }
+        const current = {
+          ...held,
+          oauth: { ...held.oauth, secretsAllowed: true, exception }
+        }
+
+        config.set('teamDeployment.clientSecretEnvironments', ['sandbox'])
+
+        const { document } = await buildFederation(current, [add(CDP)])
+
+        expect(document.oauth.secretsAllowed).toBe(false)
+        expect(document.oauth.exception).toEqual(exception)
+      })
     })
   })
 

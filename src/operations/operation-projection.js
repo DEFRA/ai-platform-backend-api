@@ -1,5 +1,7 @@
 import { supportReferenceOf } from '#/operations/support-reference.js'
+import { isFederationItem } from '#/operations/operation-items.js'
 import { REMOVED, withStatusTime } from '#/services/team-deployment-entries.js'
+import { FEDERATION_STATUS } from '#/services/team-federation-constants.js'
 
 // The projection of an operation onto the `teamDeployments` entries of its
 // items (plan 5, "Projection to teamDeployments entries"; contract C6): the
@@ -263,6 +265,26 @@ export async function projectOperation(db, operation) {
     return
   }
 
+  await projectDeployments(db, doc, operation)
+  await projectFederations(db, doc, operation)
+}
+
+// A version guard per entry: a slower projection of the same operation never
+// overwrites a newer one. An entry last projected from another operation (a
+// removal of an added model) takes this one at once, since state versions
+// only order the writes of one operation.
+function versionGuardOf(key, operation, entryId) {
+  return {
+    [`${key}.id`]: entryId,
+    $or: [
+      { [`${key}.projectedVersion`]: { $exists: false } },
+      { [`${key}.operation.id`]: { $exists: true, $ne: operation._id } },
+      { [`${key}.projectedVersion`]: { $lt: operation.stateVersion } }
+    ]
+  }
+}
+
+async function projectDeployments(db, doc, operation) {
   const at = new Date().toISOString()
   const set = {}
   const addToSet = []
@@ -279,20 +301,7 @@ export async function projectOperation(db, operation) {
     const key = `e${index}`
     const fields = entryFieldsOf(operation, item, entry, at)
 
-    // A version guard per entry: a slower projection of the same operation
-    // never overwrites a newer one. An entry last projected from another
-    // operation (a removal of an added model) takes this one at once, since
-    // state versions only order the writes of one operation.
-    arrayFilters.push({
-      [`${key}.id`]: item.entryId,
-      $or: [
-        { [`${key}.projectedVersion`]: { $exists: false } },
-        {
-          [`${key}.operation.id`]: { $exists: true, $ne: operation._id }
-        },
-        { [`${key}.projectedVersion`]: { $lt: operation.stateVersion } }
-      ]
-    })
+    arrayFilters.push(versionGuardOf(key, operation, item.entryId))
 
     for (const [field, value] of Object.entries(fields)) {
       set[`deployments.$[${key}].${field}`] = value
@@ -330,4 +339,104 @@ export async function projectOperation(db, operation) {
   await db
     .collection('teamDeployments')
     .updateOne({ _id: doc._id }, update, { arrayFilters })
+}
+
+const ACTIVE_STATES = new Set(['active', REMOVED])
+const FEDERATION_FAILED_STATES = new Set([
+  'checks-failed',
+  'deploy-failed',
+  'timed-out'
+])
+
+/**
+ * The status an application shows for its operation: an addition or a change
+ * is setting up until the operation is active, then ready, or failed; a
+ * removal is removing until it is done, then removed, and ready again with a
+ * reason if it failed (the application is still federated).
+ * @param {{state: string}} operation
+ * @param {{change: string}} item
+ * @returns {string}
+ */
+export function federationStatusOf(operation, item) {
+  const done = ACTIVE_STATES.has(operation.state)
+  const failed = FEDERATION_FAILED_STATES.has(operation.state)
+
+  if (item.change === 'remove') {
+    if (done) {
+      return FEDERATION_STATUS.REMOVED
+    }
+
+    return failed ? FEDERATION_STATUS.READY : FEDERATION_STATUS.REMOVING
+  }
+
+  if (done) {
+    return FEDERATION_STATUS.READY
+  }
+
+  return failed ? FEDERATION_STATUS.FAILED : FEDERATION_STATUS.SETTING_UP
+}
+
+// What a person is told when an application could not be removed.
+function removeFederationFailedText(operation) {
+  return `The application could not be removed, so it is still federated. Contact AI Platform Support, quoting reference ${supportReferenceOf(operation._id)}`
+}
+
+function federationFailureReasonOf(operation, item) {
+  if (item.change === 'remove') {
+    return FEDERATION_FAILED_STATES.has(operation.state)
+      ? removeFederationFailedText(operation)
+      : null
+  }
+
+  return entryFailureReasonOf(operation, { change: item.change })
+}
+
+function federationFieldsOf(operation, item, entry, at) {
+  const status = federationStatusOf(operation, item)
+
+  return {
+    status,
+    statusTimes: withStatusTime(entry.statusTimes, status, at),
+    failureReason: federationFailureReasonOf(operation, item),
+    projectedVersion: operation.stateVersion,
+    operationId: operation._id,
+    operation: operationSummaryOf(operation, operation.gitops ?? {})
+  }
+}
+
+// Writes an operation's state onto the applications its federation items
+// name, in the team's document. A removed application stays as a record, so a
+// removal repeated is answered, and holds no place in the registration.
+async function projectFederations(db, doc, operation) {
+  const at = new Date().toISOString()
+  const set = {}
+  const arrayFilters = []
+
+  operation.items.filter(isFederationItem).forEach((item, index) => {
+    const entry = doc.federations?.find(({ id }) => id === item.entryId)
+
+    if (!entry) {
+      return
+    }
+
+    const key = `f${index}`
+
+    arrayFilters.push(versionGuardOf(key, operation, item.entryId))
+
+    for (const [field, value] of Object.entries(
+      federationFieldsOf(operation, item, entry, at)
+    )) {
+      set[`federations.$[${key}].${field}`] = value
+    }
+  })
+
+  if (arrayFilters.length > 0) {
+    await db
+      .collection('teamDeployments')
+      .updateOne(
+        { _id: doc._id },
+        { $set: { ...set, updatedAt: at } },
+        { arrayFilters }
+      )
+  }
 }

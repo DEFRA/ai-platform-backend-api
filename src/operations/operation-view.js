@@ -140,6 +140,21 @@ function changeOf(item) {
     return { kind, change: item.change, limits: item.limits }
   }
 
+  if (kind === ITEM_KINDS.FEDERATION && item.federation) {
+    const { name, host, service, principalId } = item.federation
+
+    return {
+      kind,
+      change: item.change,
+      application: {
+        name,
+        host,
+        ...(service ? { service } : {}),
+        ...(principalId ? { principalId } : {})
+      }
+    }
+  }
+
   return { kind, change: item.change }
 }
 
