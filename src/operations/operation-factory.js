@@ -68,6 +68,7 @@ export function buildOperation({
   slot,
   action = 'write',
   idempotencyKeys,
+  requestFingerprints,
   requestedBy,
   requestedByUserId,
   traceparent = null,
@@ -109,6 +110,12 @@ export function buildOperation({
 
   if (idempotencyKeys) {
     operation.idempotencyKeys = idempotencyKeys
+  }
+
+  // What each key asked for, so a key replayed for another request of the same
+  // kind is told apart (a limits change records one; a model request none).
+  if (requestFingerprints) {
+    operation.requestFingerprints = requestFingerprints
   }
 
   if (slot) {

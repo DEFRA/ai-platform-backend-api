@@ -2,11 +2,7 @@ import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
-import {
-  ITEM_KINDS,
-  isLimitsItem,
-  requestedLimitsOf
-} from '#/operations/operation-items.js'
+import { ITEM_KINDS, requestedLimitsOf } from '#/operations/operation-items.js'
 import {
   findByIdempotencyKey,
   findTeamOperations
@@ -42,16 +38,32 @@ function sameLimits(a, b) {
   )
 }
 
-// A key replayed for another request (another environment, other limits, or
-// not a limits change at all) is refused, never answered with that request.
-function requireSameRequest(operation, { environment, limits }) {
-  const same =
-    operation.environment === environment &&
-    operation.items.some(
-      (item) => isLimitsItem(item) && sameLimits(item.limits, limits)
-    )
+/**
+ * What a limits request asks for, recorded under its `Idempotency-Key` on the
+ * operation it made or joined: a key replayed for another request, in
+ * another environment or for other limits, is not that request's.
+ * @param {string} environment
+ * @param {{tokensPerMinute: number, requestsPerMinute: number}} limits
+ * @returns {string}
+ */
+export function limitsFingerprintOf(
+  environment,
+  { tokensPerMinute, requestsPerMinute }
+) {
+  return `limits:${environment}:${tokensPerMinute}:${requestsPerMinute}`
+}
 
-  if (!same) {
+// A key replayed for another request (another environment, other limits, a
+// model request, or a different request that merged into the same operation)
+// is refused, never answered with the operation. The operation records what
+// each key asked for.
+function requireSameRequest(
+  operation,
+  { idempotencyKey, environment, limits }
+) {
+  const asked = operation.requestFingerprints?.[idempotencyKey]
+
+  if (asked !== limitsFingerprintOf(environment, limits)) {
     throw boomWithCode(
       Boom.conflict,
       'This idempotency key was used for a different request',
@@ -132,29 +144,51 @@ function audit(db, { actor, role, teamId, environment, limits }, extra) {
   })
 }
 
-// Asks for the operation that sets the limits. Under the team's lock, so two
-// Admins asking together are told apart by the file's own operations.
-async function requestChange(locker, context, { operations, target }) {
+// Asks for the operation that sets the limits, recording what the key asked
+// for so the key is told apart if it is replayed for another request.
+function requestChange(context, { operations, target }) {
   const { teamId, environment, limits, actor, idempotencyKey } = context
-  const lock = await acquireLockWithRetry(
-    locker,
-    `team-deployment:${teamId}:${environment}`
-  )
 
-  try {
-    return await operations.request({
-      teamId,
-      environment,
-      target,
-      items: [{ kind: ITEM_KINDS.LIMITS, change: 'set', limits }],
-      requestedBy: principalOf(actor),
-      requestedByUserId: actor.userId,
-      idempotencyKey,
-      ...traceOf(context)
-    })
-  } finally {
-    await lock.free()
+  return operations.request({
+    teamId,
+    environment,
+    target,
+    items: [{ kind: ITEM_KINDS.LIMITS, change: 'set', limits }],
+    requestedBy: principalOf(actor),
+    requestedByUserId: actor.userId,
+    idempotencyKey,
+    requestFingerprint: limitsFingerprintOf(environment, limits),
+    ...traceOf(context)
+  })
+}
+
+// Everything that depends on the file's state, under the team's lock, so two
+// requests asking together see each other's: a replayed key answers with its
+// operation; otherwise the request must be allowed, and is then queued.
+async function decideAndRequest(db, context, deps) {
+  const { teamId, idempotencyKey } = context
+  const replayed = await findByIdempotencyKey(db, {
+    teamId,
+    key: idempotencyKey
+  })
+
+  if (replayed) {
+    requireSameRequest(replayed, context)
+
+    return { operation: replayed, replay: true }
   }
+
+  await requireAllowed(db, context, deps.registry)
+
+  const { operation, replay } = await requestChange(context, deps)
+
+  if (replay) {
+    requireSameRequest(operation, context)
+  } else {
+    await audit(db, context, { outcome: 'success' })
+  }
+
+  return { operation, replay }
 }
 
 /**
@@ -164,9 +198,11 @@ async function requestChange(locker, context, { operations, target }) {
  * catalogue's bounds for the models the team holds there (`400
  * limits-out-of-bounds`), the environment must be set up (`409
  * environment-not-set-up`) and the limits must change what the team has or is
- * about to have (`409 limits-unchanged`). While another change holds the
- * file, the request waits and merges into the next. Replaying an
- * `Idempotency-Key` returns its operation; a key used for another request is
+ * about to have (`409 limits-unchanged`); these are decided under the team's
+ * lock, as are model requests, so concurrent requests see one another. While
+ * another change holds the file, the request waits and merges into the next.
+ * Replaying an `Idempotency-Key` returns its operation; a key used for
+ * another request, even one that merged into the same operation, is
  * `409 idempotency-key-reused`. A Member is refused `403` and
  * a non-member `404`, both audited, as is every refusal and the change.
  * @param {import('mongodb').Db} db
@@ -192,42 +228,34 @@ export async function changeTeamLimits(
 
   // Resolved first: a team that cannot have a file built has nothing to change.
   const target = await resolveTeamTarget(db, { teamId, environment })
-  const context = { actor, role, teamId, environment, limits, idempotencyKey }
+  const context = {
+    ...trace,
+    actor,
+    role,
+    teamId,
+    teamSlug: target.team,
+    environment,
+    limits,
+    idempotencyKey
+  }
 
   try {
-    const replayed = await findByIdempotencyKey(db, {
-      teamId,
-      key: idempotencyKey
-    })
-
-    if (replayed) {
-      requireSameRequest(replayed, context)
-
-      return {
-        operation: (await viewsOf(db, [replayed]))[0],
-        replay: true
-      }
-    }
-
-    await requireAllowed(
-      db,
-      { teamId, teamSlug: target.team, environment, limits },
-      registry
-    )
-
-    const { operation, replay } = await requestChange(
+    const lock = await acquireLockWithRetry(
       locker,
-      { ...context, ...trace },
-      { operations, target }
+      `team-deployment:${teamId}:${environment}`
     )
 
-    if (replay) {
-      requireSameRequest(operation, context)
-    } else {
-      await audit(db, context, { outcome: 'success' })
-    }
+    try {
+      const { operation, replay } = await decideAndRequest(db, context, {
+        operations,
+        registry,
+        target
+      })
 
-    return { operation: (await viewsOf(db, [operation]))[0], replay }
+      return { operation: (await viewsOf(db, [operation]))[0], replay }
+    } finally {
+      await lock.free()
+    }
   } catch (error) {
     const refusal = refusalOf(error, 'Failed to request the limits change')
 

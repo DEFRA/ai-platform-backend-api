@@ -17,6 +17,7 @@ describe('#team-limits routes', () => {
   let server
   let fixtures
   let mockTeamFileReader
+  let limitsFingerprintOf
 
   beforeAll(async () => {
     // A short mock stage so a change can run to its end within a test.
@@ -26,6 +27,8 @@ describe('#team-limits routes', () => {
 
     ;({ mockTeamFileReader } =
       await import('#/adapters/mock-team-file-reader.js'))
+    ;({ limitsFingerprintOf } =
+      await import('#/services/team-limits-service.js'))
     server = await createServer()
     await server.initialize()
     withTestUsers(server)
@@ -458,10 +461,14 @@ describe('#team-limits routes', () => {
 
     test('replays the operation another request made first under the same key, when it is the same change', async () => {
       const team = await deployedTeam('limits-fail-2')
+      const key = randomUUID()
       const earlier = await fixtures.seedOperation(team, {
         minute: 1,
         environment: 'sandbox',
-        items: [{ kind: 'limits', change: 'set', limits: CHANGED }]
+        items: [{ kind: 'limits', change: 'set', limits: CHANGED }],
+        requestFingerprints: {
+          [key]: limitsFingerprintOf('sandbox', CHANGED)
+        }
       })
 
       vi.spyOn(server.app.operations.operations, 'request').mockResolvedValue({
@@ -469,7 +476,9 @@ describe('#team-limits routes', () => {
         replay: true
       })
 
-      const { statusCode, result } = await put(team, 'limits-fail-2', CHANGED)
+      const { statusCode, result } = await put(team, 'limits-fail-2', CHANGED, {
+        key
+      })
 
       expect(statusCode).toBe(200)
       expect(result.operation.id).toBe(earlier._id)
@@ -494,6 +503,83 @@ describe('#team-limits routes', () => {
 
       expect(statusCode).toBe(409)
       expect(result.code).toBe('idempotency-key-reused')
+    })
+  })
+
+  describe('a repeated Idempotency-Key on a merged operation', () => {
+    const OTHER = { tokensPerMinute: 3000, requestsPerMinute: 30 }
+
+    // A change holds the file, so the limits requests wait and merge.
+    async function teamWithBusyFile(label) {
+      const team = await deployedTeam(label)
+
+      await fixtures.seedOperation(team, {
+        minute: 1,
+        environment: 'sandbox',
+        state: 'deploying',
+        slot: 'active'
+      })
+
+      return team
+    }
+
+    test('answers each key with its own request, not with the merged operation’s other limits', async () => {
+      const team = await teamWithBusyFile('limits-merge-1')
+      const [keyA, keyB] = [randomUUID(), randomUUID()]
+      const first = await put(team, 'limits-merge-1', CHANGED, { key: keyA })
+      const second = await put(team, 'limits-merge-1', OTHER, { key: keyB })
+
+      expect(second.result.operation.id).toBe(first.result.operation.id)
+
+      const crossed = await put(team, 'limits-merge-1', OTHER, { key: keyA })
+      const ownA = await put(team, 'limits-merge-1', CHANGED, { key: keyA })
+      const ownB = await put(team, 'limits-merge-1', OTHER, { key: keyB })
+
+      expect(crossed.statusCode).toBe(409)
+      expect(crossed.result.code).toBe('idempotency-key-reused')
+      expect(ownA.statusCode).toBe(200)
+      expect(ownB.statusCode).toBe(200)
+    })
+
+    test('refuses the key of a model request that a limits change then joined', async () => {
+      const team = await teamWithBusyFile('limits-merge-2')
+      const modelKey = randomUUID()
+
+      await fixtures.seedOperation(team, {
+        minute: 2,
+        environment: 'sandbox',
+        state: 'queued',
+        slot: 'waiting',
+        idempotencyKeys: [modelKey]
+      })
+
+      const joined = await put(team, 'limits-merge-2', CHANGED)
+      const replay = await put(team, 'limits-merge-2', CHANGED, {
+        key: modelKey
+      })
+
+      expect(joined.statusCode).toBe(202)
+      expect(replay.statusCode).toBe(409)
+      expect(replay.result.code).toBe('idempotency-key-reused')
+    })
+  })
+
+  describe('two requests at once', () => {
+    test('accept the same limits once: the second finds them already asked for', async () => {
+      const team = await deployedTeam('limits-race-1')
+
+      const answers = await Promise.all([
+        put(team, 'limits-race-1', CHANGED),
+        put(team, 'limits-race-1', CHANGED)
+      ])
+
+      expect(answers.map(({ statusCode }) => statusCode).sort()).toEqual([
+        202, 409
+      ])
+      expect(
+        answers.find(({ statusCode }) => statusCode === 409).result.code
+      ).toBe('limits-unchanged')
+      expect(await limitOperations(team)).toHaveLength(1)
     })
   })
 

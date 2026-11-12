@@ -329,6 +329,36 @@ describe('operations-service', () => {
         expect(buildDocument).toHaveBeenCalledTimes(1)
       })
 
+      test('records the fingerprint of each request that has one under its key, merged or not', async () => {
+        const active = params({ requestFingerprint: 'limits:infradev:1:2' })
+        const second = params({
+          items: [PHI],
+          requestFingerprint: 'limits:infradev:3:4'
+        })
+        const third = params({ items: [GPT] })
+
+        const { operation } = await service.request(active)
+        const waiting = await service.request(second)
+
+        await service.request(third)
+
+        expect((await stored(operation._id)).requestFingerprints).toEqual({
+          [active.idempotencyKey]: 'limits:infradev:1:2'
+        })
+        // The third request has none, so nothing is recorded for its key.
+        expect(
+          (await stored(waiting.operation._id)).requestFingerprints
+        ).toEqual({ [second.idempotencyKey]: 'limits:infradev:3:4' })
+      })
+
+      test('holds no fingerprints for a request that has none', async () => {
+        const { operation } = await service.request(params())
+
+        expect(await stored(operation._id)).not.toHaveProperty(
+          'requestFingerprints'
+        )
+      })
+
       test('merges later requests into the waiting operation, keeping every key', async () => {
         await service.request(params())
         const second = params({ items: [PHI] })
