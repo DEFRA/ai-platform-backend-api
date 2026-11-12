@@ -5,13 +5,17 @@ import {
   tenantOrchestratorRegistry
 } from '#/adapters/tenant-orchestrator-registry.js'
 import { mockTeamFileReader } from '#/adapters/mock-team-file-reader.js'
-import { mockOutcomeOfPurpose } from '#/adapters/mock-gitops-worker.js'
+import {
+  mockOutcomeOfName,
+  mockOutcomeOfPurpose
+} from '#/adapters/mock-gitops-worker.js'
 
 describe('#createTenantOrchestratorRegistry', () => {
   const mock = {
     reader: { id: 'mock-reader' },
     createTransport: vi.fn(),
-    mockOutcomeOf: vi.fn().mockReturnValue('deploy-failed')
+    mockOutcomeOf: vi.fn().mockReturnValue('deploy-failed'),
+    mockOutcomeOfName: vi.fn().mockReturnValue('checks-failed')
   }
   const sqs = {
     reader: { id: 'github-reader' },
@@ -45,6 +49,22 @@ describe('#createTenantOrchestratorRegistry', () => {
 
     expect(live.mockOutcomeOf('[mock:deploy-failed]')).toBeNull()
     expect(staged.mockOutcomeOf('[mock:deploy-failed]')).toBe('deploy-failed')
+  })
+
+  test('forces no outcome from an application name unless the mode is the mock', () => {
+    const live = createTenantOrchestratorRegistry(
+      adaptersByMode,
+      SQS_ORCHESTRATOR,
+      'dev'
+    )
+    const staged = createTenantOrchestratorRegistry(
+      adaptersByMode,
+      MOCK_ORCHESTRATOR,
+      'dev'
+    )
+
+    expect(live.mockOutcomeOfName('mock-checks-failed')).toBeNull()
+    expect(staged.mockOutcomeOfName('mock-checks-failed')).toBe('checks-failed')
   })
 
   test('refuses to start with the mock orchestrator in prod', () => {
@@ -84,6 +104,10 @@ describe('#tenantOrchestratorRegistry', () => {
     expect(tenantOrchestratorRegistry.key).toBe('mock')
     expect(tenantOrchestratorRegistry.reader).toBe(mockTeamFileReader)
     expect(tenantOrchestratorRegistry.mockOutcomeOf).toBe(mockOutcomeOfPurpose)
+    expect(tenantOrchestratorRegistry.mockOutcomeOfName).toBe(mockOutcomeOfName)
+    expect(
+      tenantOrchestratorRegistry.mockOutcomeOfName('mock-deploy-failed')
+    ).toBe('deploy-failed')
     expect(
       tenantOrchestratorRegistry.mockOutcomeOf('[mock:checks-failed]')
     ).toBe('checks-failed')

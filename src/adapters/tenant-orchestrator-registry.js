@@ -2,6 +2,7 @@ import { config } from '#/config.js'
 import { mockTeamFileReader } from '#/adapters/mock-team-file-reader.js'
 import {
   createMockTransport,
+  mockOutcomeOfName,
   mockOutcomeOfPurpose
 } from '#/adapters/mock-gitops-worker.js'
 import { createGithubTeamFileReader } from '#/adapters/github/github-team-file-reader.js'
@@ -20,6 +21,7 @@ function noOutcome() {
  * @property {import('#/adapters/team-file-reader.js').TeamFileReader} reader - how the team files are read
  * @property {(deps: {db: import('mongodb').Db, handle: (event: object) => Promise<unknown>, logger?: import('pino').Logger}) => {publisher: import('#/adapters/command-publisher.js').CommandPublisher, runReader: object, start: () => void, stop: () => Promise<void>}} createTransport - how commands go out and events come back
  * @property {(purpose: string|undefined) => 'checks-failed'|'deploy-failed'|null} mockOutcomeOf - the outcome a request's purpose forces; always null outside the mock
+ * @property {(name: string|undefined) => 'checks-failed'|'deploy-failed'|null} mockOutcomeOfName - the outcome a federated application's name forces; always null outside the mock
  */
 
 /**
@@ -54,7 +56,8 @@ export function createTenantOrchestratorRegistry(
     key: mode,
     reader: adapters.reader,
     createTransport: adapters.createTransport,
-    mockOutcomeOf: adapters.mockOutcomeOf ?? noOutcome
+    mockOutcomeOf: adapters.mockOutcomeOf ?? noOutcome,
+    mockOutcomeOfName: adapters.mockOutcomeOfName ?? noOutcome
   }
 }
 
@@ -68,7 +71,8 @@ export const tenantOrchestratorRegistry = createTenantOrchestratorRegistry(
     [MOCK_ORCHESTRATOR]: {
       reader: mockTeamFileReader,
       createTransport: createMockTransport,
-      mockOutcomeOf: mockOutcomeOfPurpose
+      mockOutcomeOf: mockOutcomeOfPurpose,
+      mockOutcomeOfName
     },
     [SQS_ORCHESTRATOR]: {
       reader: createGithubTeamFileReader({
