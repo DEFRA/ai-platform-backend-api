@@ -4,6 +4,8 @@ import { readFileSync } from 'node:fs'
 import Ajv2020 from 'ajv/dist/2020.js'
 import addFormats from 'ajv-formats'
 
+import { isPolicyRefusal } from '#/operations/operations-support.js'
+
 // The team file schema as ai-platform-infra publishes it, copied under
 // fixtures: a document the builder produces must validate against it, with
 // only `updatedBy` added by the caller.
@@ -724,6 +726,28 @@ describe('#createTeamDesiredStateBuilder', () => {
   describe('a limits change', () => {
     const LIMITS = { tokensPerMinute: 4000, requestsPerMinute: 45 }
     const LIMITS_ITEM = { kind: 'limits', change: 'set', limits: LIMITS }
+    const SECOND_MODEL = 'limits-second-desired'
+
+    beforeAll(async () => {
+      await db
+        .collection('models')
+        .insertOne({ ...TEAM_MODEL, slug: SECOND_MODEL })
+      invalidateModelsCache()
+    })
+
+    // The held file with these models deployed.
+    function fileHolding(slugs) {
+      return {
+        ...held,
+        deployments: slugs.map((slug) => ({
+          slug,
+          sku: 'DataZoneStandard',
+          capacity: 1,
+          status: 'active'
+        })),
+        gateway: { ...held.gateway, allowedDeployments: slugs }
+      }
+    }
     const held = {
       schemaVersion: 1,
       revision: 5,
@@ -802,6 +826,80 @@ describe('#createTeamDesiredStateBuilder', () => {
 
       expect(document.gateway.limits).toEqual(LIMITS)
       expect(document.deployments).toEqual(held.deployments)
+    })
+
+    test('refuses limits above the ceiling of the models the file will hold, when a removal ahead of them shrinks the set', async () => {
+      const both = fileHolding([TEAM_MODEL.slug, SECOND_MODEL])
+      const request = buildLimits(both, [
+        { entryId: 'e2', modelSlug: SECOND_MODEL, change: 'remove' },
+        {
+          kind: 'limits',
+          change: 'set',
+          limits: { tokensPerMinute: 6000, requestsPerMinute: 40 }
+        }
+      ])
+
+      // One model in Infradev allows 5 capacity units: 5,000 tokens a minute.
+      await expect(request).rejects.toMatchObject({
+        data: {
+          code: 'limits-out-of-bounds',
+          limitBounds: { tokensPerMinute: { min: 1, max: 5000 } }
+        }
+      })
+      await expect(request).rejects.toSatisfy(isPolicyRefusal)
+    })
+
+    test('accepts the same limits while both models stay, and the ceiling of the remaining one after a removal', async () => {
+      const both = fileHolding([TEAM_MODEL.slug, SECOND_MODEL])
+      const wide = { tokensPerMinute: 6000, requestsPerMinute: 40 }
+      const ceiling = { tokensPerMinute: 5000, requestsPerMinute: 90 }
+
+      const kept = await buildLimits(both, [
+        { kind: 'limits', change: 'set', limits: wide }
+      ])
+      const shrunk = await buildLimits(both, [
+        { entryId: 'e2', modelSlug: SECOND_MODEL, change: 'remove' },
+        { kind: 'limits', change: 'set', limits: ceiling }
+      ])
+
+      expect(kept.document.gateway.limits).toEqual(wide)
+      expect(shrunk.document.gateway.limits).toEqual(ceiling)
+    })
+
+    test('refuses limits when the same operation removes every model', async () => {
+      await expect(
+        buildLimits(held, [
+          { entryId: 'e1', modelSlug: TEAM_MODEL.slug, change: 'remove' },
+          LIMITS_ITEM
+        ])
+      ).rejects.toMatchObject({ data: { code: 'limits-out-of-bounds' } })
+    })
+
+    describe('on a file that is pending removal', () => {
+      const pending = {
+        ...held,
+        status: 'pending-removal',
+        removeAfter: '2026-12-01'
+      }
+
+      test('keeps the status and the removal date, changing only the limits', async () => {
+        const { document } = await buildLimits(pending, [LIMITS_ITEM])
+
+        expect(document.status).toBe('pending-removal')
+        expect(document.removeAfter).toBe('2026-12-01')
+        expect(document.gateway.limits).toEqual(LIMITS)
+        expect(schemaProblems(document)).toEqual([])
+      })
+
+      test('is made active again, with no removal date, by a model change, as before', async () => {
+        const { document } = await buildLimits(pending, [
+          { modelSlug: TEAM_MODEL.slug, change: 'add' }
+        ])
+
+        expect(document.status).toBe('active')
+        expect(document).not.toHaveProperty('removeAfter')
+        expect(schemaProblems(document)).toEqual([])
+      })
     })
 
     test('a second change built on the first keeps its models, as against the mock reader', async () => {

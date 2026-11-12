@@ -5,7 +5,12 @@ import { config } from '#/config.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { findModelBySlug } from '#/services/models-service.js'
 import { isTeamEligible, teamSkuOf } from '#/services/catalogue-service.js'
-import { isModelItem, requestedLimitsOf } from '#/operations/operation-items.js'
+import {
+  isLimitsItem,
+  isModelItem,
+  requestedLimitsOf
+} from '#/operations/operation-items.js'
+import { limitBoundsFor, withinBounds } from '#/services/team-limit-bounds.js'
 
 // WS6: builds the whole team file the submit workflow writes
 // (`ai-platform-infra/schemas/team.schema.json`). The file holds no resource
@@ -127,6 +132,51 @@ function carriedOver(current) {
   return {
     ...(current?.$schema ? { $schema: current.$schema } : {}),
     ...(current?.promotedFrom ? { promotedFrom: current.promotedFrom } : {})
+  }
+}
+
+// The file's lifecycle: a change to its models makes it active (a file with a
+// scheduled removal is wanted again), but a change that only sets limits
+// leaves it as it is, including its `removeAfter`, so it never cancels a
+// scheduled removal.
+function lifecycleOf(current, items) {
+  const limitsOnly = items.length > 0 && items.every(isLimitsItem)
+
+  if (!limitsOnly || !current?.status) {
+    return { status: 'active' }
+  }
+
+  return {
+    status: current.status,
+    ...(current.removeAfter ? { removeAfter: current.removeAfter } : {})
+  }
+}
+
+// Limits asked for must sit within the bounds of the models the file will
+// hold once this operation's own model changes apply: a limits change that
+// waited behind a removal was checked against the models of its day. One that
+// no longer fits can never be submitted as it stands, so it is refused and
+// the queue moves on.
+async function requireLimitsWithin(
+  db,
+  { environment, deployments, requestedLimits }
+) {
+  if (!requestedLimits) {
+    return
+  }
+
+  const bounds = await limitBoundsFor(db, {
+    environment,
+    document: { deployments }
+  })
+
+  if (!bounds || !withinBounds(bounds, requestedLimits)) {
+    throw boomWithCode(
+      Boom.badRequest,
+      'The limits are outside the bounds the catalogue allows for the models the team will hold',
+      'limits-out-of-bounds',
+      { limitBounds: bounds }
+    )
   }
 }
 
@@ -262,12 +312,14 @@ export function createTeamDesiredStateBuilder({
       : null
     const requestedLimits = requestedLimitsOf(items)
 
+    await requireLimitsWithin(db, { environment, deployments, requestedLimits })
+
     const document = {
       ...carriedOver(current),
       schemaVersion: SCHEMA_VERSION,
       revision: expectedRevision + 1,
       environment,
-      status: 'active',
+      ...lifecycleOf(current, items),
       team: teamFields(team),
       deployments,
       gateway: {

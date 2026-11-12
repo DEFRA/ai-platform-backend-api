@@ -973,35 +973,34 @@ describe('operations-service', () => {
       expect((await stored(operation._id)).deferred).toBeUndefined()
     })
 
-    test('ends the operation refused when its document cannot be built any longer', async () => {
-      const operation = await held()
-      const waiting = await seed('queued', {
-        slot: 'waiting',
-        teamId: operation.teamId,
-        items: [PHI]
-      })
-      buildDocument.mockRejectedValueOnce(
-        boomWithCode(
-          Boom.badRequest,
-          'Service code needed',
-          'service-code-required'
+    test.each(['service-code-required', 'limits-out-of-bounds'])(
+      'ends the operation refused when its document cannot be built any longer (%s)',
+      async (code) => {
+        const operation = await held()
+        const waiting = await seed('queued', {
+          slot: 'waiting',
+          teamId: operation.teamId,
+          items: [PHI]
+        })
+        buildDocument.mockRejectedValueOnce(
+          boomWithCode(Boom.badRequest, 'Cannot build', code)
         )
-      )
 
-      const result = await service.resubmit(operation._id)
+        const result = await service.resubmit(operation._id)
 
-      const persisted = await stored(operation._id)
+        const persisted = await stored(operation._id)
 
-      expect(result.state).toBe('checks-failed')
-      expect(persisted.error).toEqual({
-        code: 'operation-checks-failed',
-        message: 'Service code needed',
-        retryable: false
-      })
-      expect(persisted.held).toBeUndefined()
-      expect(persisted.slot).toBeUndefined()
-      expect((await stored(waiting._id)).slot).toBe('active')
-    })
+        expect(result.state).toBe('checks-failed')
+        expect(persisted.error).toEqual({
+          code: 'operation-checks-failed',
+          message: 'Cannot build',
+          retryable: false
+        })
+        expect(persisted.held).toBeUndefined()
+        expect(persisted.slot).toBeUndefined()
+        expect((await stored(waiting._id)).slot).toBe('active')
+      }
+    )
 
     describe('a revert child refused and resubmitted', () => {
       async function refusedRevert(previous) {
