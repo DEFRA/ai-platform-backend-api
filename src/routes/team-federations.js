@@ -23,7 +23,11 @@ const service = Joi.string()
   .pattern(/^[a-z0-9]+(-[a-z0-9]+)*$/)
   .max(MAX_SERVICE_LENGTH)
 const applicationName = Joi.string().pattern(/^[a-z0-9][a-z0-9-]{0,62}$/)
-const principalId = Joi.string().guid()
+// The canonical form (8-4-4-4-12, no braces): Joi's `guid()` also accepts
+// braces and no hyphens, which would make one principal two trust keys.
+const principalId = Joi.string()
+  .pattern(/^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i)
+  .lowercase()
 
 const federationRequest = Joi.object({
   host: Joi.string()
@@ -112,7 +116,7 @@ export const teamFederations = [
       }
     },
     handler: async (request, h) => {
-      const { federations, replay } = await requestFederations(
+      const { federations, refused, replay } = await requestFederations(
         request.db,
         request.locker,
         {
@@ -126,7 +130,7 @@ export const teamFederations = [
       )
 
       return h
-        .response({ federations })
+        .response({ federations, ...(refused ? { refused } : {}) })
         .code(replay ? statusCodes.ok : statusCodes.accepted)
     }
   },

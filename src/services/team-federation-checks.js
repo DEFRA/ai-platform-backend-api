@@ -2,8 +2,8 @@ import { teamEnvironments } from '#/services/team-deployment-service.js'
 import {
   FEDERATION_STATUS,
   MAX_FEDERATIONS,
-  heldNames,
   heldTrustKeys,
+  reservedBy,
   trustKeyOf
 } from '#/services/team-federation-entries.js'
 import { readTeamFiles } from '#/services/team-service.js'
@@ -82,7 +82,16 @@ async function isTrustedElsewhere(db, { teamId, environment, trustKey }) {
       environment,
       teamId: { $ne: teamId },
       federations: {
-        $elemMatch: { trustKey, status: { $in: OCCUPYING_STATUSES } }
+        $elemMatch: {
+          $or: [
+            { trustKey, status: { $in: OCCUPYING_STATUSES } },
+            // What a change is changing an application to, while it runs.
+            {
+              'pending.trustKey': trustKey,
+              status: FEDERATION_STATUS.SETTING_UP
+            }
+          ]
+        }
       }
     },
     { projection: { _id: 1 } }
@@ -95,10 +104,11 @@ async function isTrustedElsewhere(db, { teamId, environment, trustKey }) {
  * Why an application cannot be federated in an environment, or null. An
  * environment this instance does not offer, or the team has not set up, is
  * refused first; then an application the team's registration holds already
- * (by workload or by name); then a workload another team trusts; then a
- * registration that is full. A change names the application it is about in
- * `except`, which is left out of what the registration holds, and so cannot
- * fill it.
+ * (by workload or by name, including what a change in progress is changing an
+ * application to); then a workload another team trusts; then a registration
+ * that is full. A change names the application it is about in `except`,
+ * which is left out of what the registration holds: it counts once, as the
+ * application it replaces.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, environment: string, registration?: {file: object|null, doc: object|null}, definition: {host: string, name: string, service?: string, principalId?: string}, except?: {id?: string, name?: string}}} params
  * @returns {Promise<string|null>}
@@ -118,9 +128,9 @@ export async function refusalFor(
   }
 
   const trustKey = trustKeyOf(definition)
-  const keys = heldTrustKeys(doc, file, except)
+  const reserved = reservedBy(doc, file, except)
 
-  if (keys.has(trustKey) || heldNames(doc, file, except).has(definition.name)) {
+  if (reserved.trustKeys.has(trustKey) || reserved.names.has(definition.name)) {
     return FEDERATION_REFUSALS.EXISTS
   }
 
@@ -128,7 +138,10 @@ export async function refusalFor(
     return FEDERATION_REFUSALS.TRUSTED_ELSEWHERE
   }
 
-  return !except.id && keys.size >= MAX_FEDERATIONS
+  // The application counts once on the resulting registration, whether it is
+  // new or replaces the entry `except` leaves out: a change of a failed
+  // application, which holds no place, is a new place.
+  return heldTrustKeys(doc, file, except).size >= MAX_FEDERATIONS
     ? FEDERATION_REFUSALS.LIMIT_REACHED
     : null
 }

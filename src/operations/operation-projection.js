@@ -373,7 +373,17 @@ export function federationStatusOf(operation, item) {
     return FEDERATION_STATUS.READY
   }
 
-  return failed ? FEDERATION_STATUS.FAILED : FEDERATION_STATUS.SETTING_UP
+  // A change that failed before it committed leaves the application as it
+  // was: still federated, with the reason, as a removal that failed does. One
+  // that failed in its deploy had committed, so the file holds the new
+  // definition and it shows as failed, as an addition does.
+  if (failed) {
+    return item.change === 'change' && operation.state !== 'deploy-failed'
+      ? FEDERATION_STATUS.READY
+      : FEDERATION_STATUS.FAILED
+  }
+
+  return FEDERATION_STATUS.SETTING_UP
 }
 
 // What a person is told when an application could not be removed.
@@ -391,6 +401,36 @@ function federationFailureReasonOf(operation, item) {
   return entryFailureReasonOf(operation, { change: item.change })
 }
 
+// A change is applied to the entry once it has committed (it is active, or
+// its deploy failed after the commit): until then the entry keeps the
+// definition the team file still holds, and what it is changing to waits in
+// `pending` (also through a failure before the commit, or a timeout, in case
+// it recovers).
+const COMMITTED_CHANGE_STATES = new Set(['active', 'deploy-failed'])
+
+function appliedFieldsOf(operation, item, entry) {
+  if (
+    item.change !== 'change' ||
+    !COMMITTED_CHANGE_STATES.has(operation.state)
+  ) {
+    return {}
+  }
+
+  if (!entry.pending) {
+    return {}
+  }
+
+  const { name, service, principalId, trustKey } = entry.pending
+
+  return {
+    name,
+    trustKey,
+    ...(service ? { service } : {}),
+    ...(principalId ? { principalId } : {}),
+    pending: null
+  }
+}
+
 function federationFieldsOf(operation, item, entry, at) {
   const status = federationStatusOf(operation, item)
 
@@ -400,7 +440,8 @@ function federationFieldsOf(operation, item, entry, at) {
     failureReason: federationFailureReasonOf(operation, item),
     projectedVersion: operation.stateVersion,
     operationId: operation._id,
-    operation: operationSummaryOf(operation, operation.gitops ?? {})
+    operation: operationSummaryOf(operation, operation.gitops ?? {}),
+    ...appliedFieldsOf(operation, item, entry)
   }
 }
 

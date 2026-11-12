@@ -72,9 +72,11 @@ describe('projecting an operation onto the federations of a team document', () =
   })
 
   describe.each([
-    ['an addition', ADD],
-    ['a change', CHANGE]
-  ])('%s', (_name, item) => {
+    ['an addition', ADD, 'failed', 'failed'],
+    // A change that failed before it committed leaves the application as it
+    // was, still federated; one that failed in its deploy had committed.
+    ['a change', CHANGE, 'ready', 'failed']
+  ])('%s', (_name, item, failedStatus, deployFailedStatus) => {
     test.each([
       ['queued', 'setting-up'],
       ['requested', 'setting-up'],
@@ -83,15 +85,137 @@ describe('projecting an operation onto the federations of a team document', () =
       ['deployed', 'setting-up'],
       ['verified', 'setting-up'],
       ['active', 'ready'],
-      ['checks-failed', 'failed'],
-      ['deploy-failed', 'failed'],
-      ['timed-out', 'failed']
+      ['checks-failed', failedStatus],
+      ['deploy-failed', deployFailedStatus],
+      ['timed-out', failedStatus]
     ])('in the state %s shows %s', async (state, status) => {
       await seed([fresh({ status: 'ready' })])
 
       await projectOperation(db, operationAt(state, [item]))
 
       expect((await entry()).status).toBe(status)
+    })
+  })
+
+  describe('a change', () => {
+    const pending = {
+      name: 'new-api',
+      service: 'new-api',
+      trustKey: 'CDP service new-api'
+    }
+    const changing = (extra = {}) =>
+      fresh({
+        trustKey: 'CDP service beta-api',
+        pending,
+        status: 'setting-up',
+        ...extra
+      })
+
+    test('keeps the old definition while it is set up', async () => {
+      await seed([changing()])
+
+      await projectOperation(db, operationAt('deploying', [CHANGE]))
+
+      expect(await entry()).toMatchObject({
+        name: 'beta-api',
+        service: 'beta-api',
+        trustKey: 'CDP service beta-api',
+        pending
+      })
+    })
+
+    test('applies the new definition once it is active, and no longer holds it as pending', async () => {
+      await seed([changing()])
+
+      await projectOperation(db, operationAt('active', [CHANGE]))
+
+      const applied = await entry()
+
+      expect(applied).toMatchObject({
+        name: 'new-api',
+        service: 'new-api',
+        trustKey: 'CDP service new-api',
+        status: 'ready',
+        pending: null
+      })
+    })
+
+    test('applies an Azure application’s new name and principal ID', async () => {
+      await seed([
+        {
+          id: 'fed-1',
+          name: 'old-app',
+          host: 'azure',
+          principalId: 'a',
+          trustKey: 'issuer a',
+          status: 'setting-up',
+          statusTimes: {},
+          pending: { name: 'new-app', principalId: 'b', trustKey: 'issuer b' }
+        }
+      ])
+
+      await projectOperation(db, operationAt('active', [CHANGE]))
+
+      expect(await entry()).toMatchObject({
+        name: 'new-app',
+        principalId: 'b',
+        trustKey: 'issuer b'
+      })
+    })
+
+    test('that failed leaves the application as it was, ready, with the reason, and holds the pending one for a recovery', async () => {
+      await seed([changing()])
+
+      await projectOperation(
+        db,
+        operationAt('checks-failed', [CHANGE], {
+          error: { code: 'operation-checks-failed', message: 'Not valid' }
+        })
+      )
+
+      expect(await entry()).toMatchObject({
+        name: 'beta-api',
+        service: 'beta-api',
+        status: 'ready',
+        failureReason: 'Not valid',
+        pending
+      })
+    })
+
+    test('that recovers from a timeout applies the new definition then', async () => {
+      await seed([changing()])
+
+      await projectOperation(db, operationAt('timed-out', [CHANGE]))
+      await projectOperation(
+        db,
+        operationAt('active', [CHANGE], { stateVersion: 7 })
+      )
+
+      expect(await entry()).toMatchObject({ name: 'new-api', status: 'ready' })
+    })
+
+    test('that failed in its deploy had committed: the new definition shows, failed', async () => {
+      await seed([changing()])
+
+      await projectOperation(db, operationAt('deploy-failed', [CHANGE]))
+
+      expect(await entry()).toMatchObject({
+        name: 'new-api',
+        service: 'new-api',
+        status: 'failed',
+        pending: null
+      })
+    })
+
+    test('with nothing pending changes only the status', async () => {
+      await seed([fresh({ status: 'setting-up' })])
+
+      await projectOperation(db, operationAt('active', [CHANGE]))
+
+      expect(await entry()).toMatchObject({
+        name: 'beta-api',
+        status: 'ready'
+      })
     })
   })
 

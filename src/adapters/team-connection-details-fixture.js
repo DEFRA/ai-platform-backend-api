@@ -6,7 +6,7 @@ import { config } from '#/config.js'
 // Entra while the credential issuer is mocked (until admin consent and HVE
 // item #87), so they are flagged as a placeholder and a page says so.
 
-const FIXTURE_GATEWAY = 'https://mock-gateway.ai-platform.defra.gov.uk'
+const FIXTURE_GATEWAY = 'https://mock-gateway.ai-platform.example'
 const FIXTURE_TENANT = '00000000-0000-4000-8000-000000000000'
 const CDP_AUDIENCE = 'api://AzureADTokenExchange'
 const UUID_GROUPS = [8, 4, 4, 4, 12]

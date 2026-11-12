@@ -6,10 +6,10 @@ import {
   federationFingerprintOf,
   federationViewOf,
   fileEntryOf,
-  heldNames,
   heldTrustKeys,
   isOccupying,
   liveFederationsOf,
+  reservedBy,
   trustKeyOf
 } from '#/services/team-federation-entries.js'
 
@@ -144,7 +144,7 @@ describe('team federation entries', () => {
         'CDP service six',
         'CDP service two'
       ])
-      expect([...heldNames(doc, file)].sort()).toEqual([
+      expect([...reservedBy(doc, file).names].sort()).toEqual([
         'five',
         'one',
         'six',
@@ -158,13 +158,54 @@ describe('team federation entries', () => {
       expect(heldTrustKeys(doc, file, except).has('CDP service one')).toBe(
         false
       )
-      expect(heldNames(doc, file, except).has('one')).toBe(false)
-      expect(heldNames(doc, file, except).has('six')).toBe(true)
+      expect(reservedBy(doc, file, except).names.has('one')).toBe(false)
+      expect(reservedBy(doc, file, except).names.has('six')).toBe(true)
+    })
+
+    test('reserves what a change in progress is changing an application to, as well as its old definition', () => {
+      const changing = {
+        federations: [
+          {
+            id: 'f9',
+            name: 'old',
+            host: 'cdp',
+            service: 'old',
+            status: 'setting-up',
+            pending: {
+              name: 'new',
+              service: 'new',
+              trustKey: 'CDP service new'
+            }
+          },
+          {
+            id: 'f8',
+            name: 'steady',
+            host: 'cdp',
+            service: 'steady',
+            status: 'ready',
+            pending: { name: 'stale', service: 'stale' }
+          }
+        ]
+      }
+      const reserved = reservedBy(changing, null)
+
+      expect([...reserved.trustKeys].sort()).toEqual([
+        'CDP service new',
+        'CDP service old',
+        'CDP service steady'
+      ])
+      expect([...reserved.names].sort()).toEqual(['new', 'old', 'steady'])
+      // The count is of applications, so the pending definition is not one more.
+      expect(heldTrustKeys(changing, null).size).toBe(2)
+      // The change itself is compared with every other application.
+      expect(reservedBy(changing, null, { id: 'f9' }).names.has('new')).toBe(
+        false
+      )
     })
 
     test('holds nothing for no document and no file', () => {
       expect(heldTrustKeys(null, null).size).toBe(0)
-      expect(heldNames(undefined, undefined).size).toBe(0)
+      expect(reservedBy(undefined, undefined).names.size).toBe(0)
     })
 
     test('lists the applications not removed', () => {
@@ -190,6 +231,35 @@ describe('team federation entries', () => {
   })
 
   describe('federationViewOf', () => {
+    test('shows what an application is being changed to while it is set up, and not once it is not', () => {
+      const entry = {
+        id: 'f1',
+        name: 'old',
+        host: 'cdp',
+        service: 'old',
+        status: 'setting-up',
+        pending: { name: 'new', service: 'new', trustKey: 'CDP service new' }
+      }
+
+      expect(federationViewOf(entry).changingTo).toEqual({
+        name: 'new',
+        service: 'new'
+      })
+      expect(
+        federationViewOf({
+          ...entry,
+          host: 'azure',
+          pending: { name: 'renamed', principalId: LOWER }
+        }).changingTo
+      ).toEqual({ name: 'renamed', principalId: LOWER })
+      expect(
+        federationViewOf({ ...entry, status: 'ready' })
+      ).not.toHaveProperty('changingTo')
+      expect(
+        federationViewOf({ ...entry, pending: undefined })
+      ).not.toHaveProperty('changingTo')
+    })
+
     test('shows a CDP application by its service and an Azure one by its principal ID', () => {
       expect(
         federationViewOf({
