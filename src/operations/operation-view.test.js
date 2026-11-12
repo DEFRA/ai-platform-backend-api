@@ -318,14 +318,58 @@ describe('toOperationView', () => {
       expect(view.kind).toBe('revert')
     })
 
-    test('keeps the kind of a federation item without knowing its payload', () => {
+    test('names the application of a federation item', () => {
+      const view = toOperationView(
+        operationThrough(['requested'], {
+          items: [
+            {
+              kind: 'federation',
+              entryId: 'f1',
+              change: 'add',
+              name: 'beta-api',
+              federation: { host: 'cdp', name: 'beta-api', service: 'beta-api' }
+            },
+            {
+              kind: 'federation',
+              entryId: 'f2',
+              change: 'remove',
+              name: 'data-app',
+              federation: {
+                host: 'azure',
+                name: 'data-app',
+                principalId: '6f504113-6b64-43f2-ade9-242e05780007'
+              }
+            }
+          ]
+        })
+      )
+
+      expect(view.kind).toBe('federation')
+      expect(view.changes).toEqual([
+        {
+          kind: 'federation',
+          change: 'add',
+          application: { name: 'beta-api', host: 'cdp', service: 'beta-api' }
+        },
+        {
+          kind: 'federation',
+          change: 'remove',
+          application: {
+            name: 'data-app',
+            host: 'azure',
+            principalId: '6f504113-6b64-43f2-ade9-242e05780007'
+          }
+        }
+      ])
+    })
+
+    test('keeps the kind of an item it knows nothing more of', () => {
       const view = toOperationView(
         operationThrough(['requested'], {
           items: [{ kind: 'federation', entryId: 'f1', change: 'add' }]
         })
       )
 
-      expect(view.kind).toBe('federation')
       expect(view.changes).toEqual([{ kind: 'federation', change: 'add' }])
     })
   })

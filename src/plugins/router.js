@@ -7,6 +7,7 @@ import { teamDeployments } from '#/routes/team-deployments.js'
 import { teamOperations } from '#/routes/team-operations.js'
 import { teamEnvironments } from '#/routes/team-environments.js'
 import { teamLimits } from '#/routes/team-limits.js'
+import { teamFederations } from '#/routes/team-federations.js'
 import { adminTeamDeployments } from '#/routes/admin-team-deployments.js'
 import { maintenance } from '#/routes/maintenance.js'
 
@@ -24,6 +25,7 @@ export const router = {
           teamOperations,
           teamEnvironments,
           teamLimits,
+          teamFederations,
           adminTeamDeployments
         )
       )

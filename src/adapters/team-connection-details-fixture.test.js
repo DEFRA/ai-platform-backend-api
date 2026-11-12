@@ -38,6 +38,24 @@ describe('#createFixtureConnectionDetails', () => {
     expect(infradev.scope).toBe(`api://${infradev.clientId}/.default`)
   })
 
+  test('uses a fixture tenant when none is configured', async () => {
+    const { config } = await import('#/config.js')
+    const configured = config.get('portalAuth.tenantId')
+
+    config.set('portalAuth.tenantId', null)
+
+    try {
+      const details = await adapter.detailsFor({
+        team: { slug: 'alpha' },
+        environment: 'infradev'
+      })
+
+      expect(details.tenantId).toBe('00000000-0000-4000-8000-000000000000')
+    } finally {
+      config.set('portalAuth.tenantId', configured)
+    }
+  })
+
   test('points at the Defra tenant’s token endpoint and the mock gateway’s team path', async () => {
     const details = await adapter.detailsFor({
       team: { slug: 'alpha' },

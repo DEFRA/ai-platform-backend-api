@@ -1,5 +1,6 @@
 import {
   ITEM_KINDS,
+  isFederationItem,
   isLimitsItem,
   isModelItem,
   itemKindOf,
@@ -23,6 +24,21 @@ describe('operation items', () => {
     expect(itemKindOf(item)).toBe('limits')
     expect(isLimitsItem(item)).toBe(true)
     expect(isModelItem(item)).toBe(false)
+  })
+
+  test('a federation item is a federation item and neither a model nor a limits item', () => {
+    const item = {
+      kind: 'federation',
+      entryId: 'f1',
+      change: 'add',
+      federation: { host: 'cdp', name: 'beta-api', service: 'beta-api' }
+    }
+
+    expect(itemKindOf(item)).toBe('federation')
+    expect(isFederationItem(item)).toBe(true)
+    expect(isModelItem(item)).toBe(false)
+    expect(isLimitsItem(item)).toBe(false)
+    expect(isFederationItem({ entryId: 'e1', change: 'add' })).toBe(false)
   })
 
   test('the limits asked for are the last limits item, and none when no item asks', () => {
