@@ -721,6 +721,139 @@ describe('#createTeamDesiredStateBuilder', () => {
     })
   })
 
+  describe('a limits change', () => {
+    const LIMITS = { tokensPerMinute: 4000, requestsPerMinute: 45 }
+    const LIMITS_ITEM = { kind: 'limits', change: 'set', limits: LIMITS }
+    const held = {
+      schemaVersion: 1,
+      revision: 5,
+      environment: 'infradev',
+      status: 'active',
+      team: { slug: 'ignored', serviceCode: 'ZZZ' },
+      deployments: [
+        {
+          slug: TEAM_MODEL.slug,
+          sku: 'DataZoneStandard',
+          capacity: 2,
+          status: 'active'
+        }
+      ],
+      gateway: {
+        credentialType: 'oauth',
+        allowedDeployments: [TEAM_MODEL.slug],
+        limits: { tokensPerMinute: 1000, requestsPerMinute: 60 }
+      },
+      oauth: {
+        federations: [{ name: 'beta-api', host: 'cdp', service: 'beta-api' }],
+        externalClients: [],
+        secretsAllowed: false
+      },
+      operationId: 'earlier-operation-id',
+      updatedBy: PRINCIPAL,
+      updatedAt: '2026-10-13T00:00:00.000Z'
+    }
+
+    async function buildLimits(current, items) {
+      const { teamId } = await team()
+      const builder = createTeamDesiredStateBuilder({
+        registry: { reader: reader(current) }
+      })
+
+      return builder(db, {
+        teamId,
+        environment: 'infradev',
+        items,
+        operationId: '651f2c0f5c1b4a0012ab34d1'
+      })
+    }
+
+    test('sets only the limits, keeping the models, grants and OAuth block', async () => {
+      const { document, expectedRevision } = await buildLimits(held, [
+        LIMITS_ITEM
+      ])
+
+      expect(expectedRevision).toBe(5)
+      expect(document.revision).toBe(6)
+      expect(document.gateway).toEqual({
+        credentialType: 'oauth',
+        allowedDeployments: held.gateway.allowedDeployments,
+        limits: LIMITS
+      })
+      expect(document.deployments).toEqual(held.deployments)
+      expect(document.oauth).toEqual(held.oauth)
+      expect(schemaProblems(document)).toEqual([])
+    })
+
+    test('takes the last limits change when a waiting operation holds more than one', async () => {
+      const later = { tokensPerMinute: 2500, requestsPerMinute: 20 }
+      const { document } = await buildLimits(held, [
+        LIMITS_ITEM,
+        { kind: 'limits', change: 'set', limits: later }
+      ])
+
+      expect(document.gateway.limits).toEqual(later)
+    })
+
+    test('shares one file with a model change in the same operation', async () => {
+      const { document } = await buildLimits(held, [
+        { entryId: 'e1', modelSlug: 'gpt-4-1-nano-absent', change: 'remove' },
+        LIMITS_ITEM
+      ])
+
+      expect(document.gateway.limits).toEqual(LIMITS)
+      expect(document.deployments).toEqual(held.deployments)
+    })
+
+    test('a second change built on the first keeps its models, as against the mock reader', async () => {
+      const { createMockTeamFileReader } =
+        await import('#/adapters/mock-team-file-reader.js')
+      const { insertOperation } =
+        await import('#/operations/operation-repository.js')
+      const { buildOperation } =
+        await import('#/operations/operation-factory.js')
+      const { teamId, slug } = await team()
+      const registry = {
+        reader: createMockTeamFileReader({ getDatabase: () => db })
+      }
+      const builder = createTeamDesiredStateBuilder({ registry })
+      const path = `environments/infradev/${slug}.json`
+      const first = await builder(db, {
+        teamId,
+        environment: 'infradev',
+        items: [{ modelSlug: TEAM_MODEL.slug, change: 'add' }],
+        operationId: '651f2c0f5c1b4a0012ab34d2'
+      })
+
+      expect(first.document.revision).toBe(1)
+
+      await insertOperation(db, {
+        ...buildOperation({
+          type: 'team-file.write',
+          state: 'active',
+          teamId,
+          environment: 'infradev',
+          target: { repository: 'DEFRA/ai-platform-tenants', team: slug, path },
+          items: [{ entryId: 'e1', modelSlug: TEAM_MODEL.slug, change: 'add' }]
+        }),
+        document: JSON.stringify(first.document)
+      })
+
+      const second = await builder(db, {
+        teamId,
+        environment: 'infradev',
+        items: [LIMITS_ITEM],
+        operationId: '651f2c0f5c1b4a0012ab34d3'
+      })
+
+      expect(second.expectedRevision).toBe(1)
+      expect(second.document.revision).toBe(2)
+      expect(second.document.deployments.map(({ slug: s }) => s)).toEqual([
+        TEAM_MODEL.slug
+      ])
+      expect(second.document.gateway.limits).toEqual(LIMITS)
+    })
+  })
+
   describe('#resolveTeamTarget', () => {
     let resolveTeamTarget
 

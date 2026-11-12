@@ -10,6 +10,7 @@ import {
   verifyOutcome
 } from '#/operations/operation-state-machine.js'
 import { writeOperation } from '#/operations/operation-writer.js'
+import { isModelItem } from '#/operations/operation-items.js'
 import { auditDeployment } from '#/services/team-deployment-entries.js'
 
 /**
@@ -39,12 +40,15 @@ export function createOperationVerifier(deps) {
   }
 }
 
-// Only a write of a team file creates resources to read back: a removal, a
-// revert or a pin has nothing team-specific to confirm.
+// Only a write of a team file that adds a model creates resources to read
+// back: a removal, a limits change, a revert or a pin has nothing
+// team-specific to confirm.
 function needsReadBack(operation) {
   return (
     operation.type === OPERATION_TYPES.WRITE &&
-    operation.items.some(({ change }) => change !== 'remove')
+    operation.items.some(
+      (item) => isModelItem(item) && item.change !== 'remove'
+    )
   )
 }
 
@@ -127,7 +131,7 @@ async function report({ ctx }, operation, reason, attempts, final) {
   const max = settings.verifyMaxAttempts
 
   await Promise.all(
-    operation.items.map(({ entryId }) =>
+    operation.items.filter(isModelItem).map(({ entryId }) =>
       auditDeployment(
         db,
         { id: entryId },

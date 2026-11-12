@@ -5,6 +5,7 @@ import { config } from '#/config.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { findModelBySlug } from '#/services/models-service.js'
 import { isTeamEligible, teamSkuOf } from '#/services/catalogue-service.js'
+import { isModelItem, requestedLimitsOf } from '#/operations/operation-items.js'
 
 // WS6: builds the whole team file the submit workflow writes
 // (`ai-platform-infra/schemas/team.schema.json`). The file holds no resource
@@ -93,17 +94,19 @@ function withModelRemoved({ held, granted }, modelSlug) {
   }
 }
 
-// The file's models after each change in turn: an add is idempotent for a
-// slug already held, and a remove for one it does not hold.
+// The file's models after each model change in turn: an add is idempotent for
+// a slug already held, and a remove for one it does not hold. Other kinds of
+// change leave the models alone.
 async function withItemsApplied(db, models, items, environment) {
+  const modelItems = items.filter(isModelItem)
   const added = await Promise.all(
-    items.map(({ modelSlug, change }) =>
+    modelItems.map(({ modelSlug, change }) =>
       change === 'remove' ? null : findModelBySlug(db, modelSlug)
     )
   )
   let next = models
 
-  items.forEach(({ modelSlug, change }, index) => {
+  modelItems.forEach(({ modelSlug, change }, index) => {
     next =
       change === 'remove'
         ? withModelRemoved(
@@ -212,14 +215,16 @@ async function limitsFor({ current, registry, team, environment, model }) {
  * Creates the builder the operations submit with. Returns the whole next
  * revision of the team's file and the revision it was built from, which
  * `submit` compares with `main` and refuses as `stale-revision` if another
- * change has landed meanwhile. `items` are the operation's changes, each
- * `{modelSlug, change}` with `change` `add` or `remove`: a removal is the
- * file without the model's deployment and grant, which the next apply
- * destroys (design C #deletion); it never touches the team's other models,
- * limits or OAuth block, and needs no eligible model, so a deprecated or
- * retired model can still be removed. `updatedBy` is left out: the caller
- * sets it to the requester's principal, which the workflow requires to equal
- * `requested_by`.
+ * change has landed meanwhile. `items` are the operation's changes: a model
+ * change is `{modelSlug, change}` with `change` `add` or `remove` (an item
+ * with no `kind` is one), a limits change `{kind: 'limits', change: 'set',
+ * limits}`. A removal is the file without the model's deployment and grant,
+ * which the next apply destroys (design C #deletion); it never touches the
+ * team's other models, limits or OAuth block, and needs no eligible model,
+ * so a deprecated or retired model can still be removed. A limits change
+ * sets `gateway.limits` and nothing else. `updatedBy` is left out: the
+ * caller sets it to the requester's principal, which the workflow requires
+ * to equal `requested_by`.
  * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry}} [deps]
  */
 export function createTeamDesiredStateBuilder({
@@ -249,10 +254,13 @@ export function createTeamDesiredStateBuilder({
       items,
       environment
     )
-    const firstAdd = items.find(({ change }) => change !== 'remove')
+    const firstAdd = items
+      .filter(isModelItem)
+      .find(({ change }) => change !== 'remove')
     const model = firstAdd
       ? await findModelBySlug(db, firstAdd.modelSlug)
       : null
+    const requestedLimits = requestedLimitsOf(items)
 
     const document = {
       ...carriedOver(current),
@@ -265,10 +273,14 @@ export function createTeamDesiredStateBuilder({
       gateway: {
         credentialType: 'oauth',
         allowedDeployments,
-        // A team's agreed limits are never overwritten by a later request;
-        // a removal keeps them even when the catalogue has moved on. A team's
-        // first request in an environment copies its first environment's.
-        limits: await limitsFor({ current, registry, team, environment, model })
+        // A team's agreed limits are never overwritten by a later request
+        // that does not ask for them; a removal keeps them even when the
+        // catalogue has moved on. A team's first request in an environment
+        // copies its first environment's. A limits change sets them, and
+        // nothing else in the file.
+        limits: requestedLimits
+          ? { ...current?.gateway?.limits, ...requestedLimits }
+          : await limitsFor({ current, registry, team, environment, model })
       },
       oauth: current?.oauth ?? {
         federations: [],

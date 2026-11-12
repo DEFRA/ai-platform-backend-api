@@ -420,6 +420,25 @@ describe('operation-writer', () => {
         })
       })
 
+      test('record no transition for a limits change, which has no deployment to audit', async () => {
+        const operation = await seedOperation({
+          items: [
+            { entryId: 'entry-1', modelSlug: 'gpt-4o', change: 'add' },
+            {
+              kind: 'limits',
+              change: 'set',
+              limits: { tokensPerMinute: 2000, requestsPerMinute: 30 }
+            }
+          ]
+        })
+
+        await writeOperation(ctx(), operation, { state: 'committed' })
+
+        expect(
+          (await auditEvents()).map(({ resourceId }) => resourceId)
+        ).toEqual(['entry-1'])
+      })
+
       test.each(['checks-failed', 'deploy-failed', 'timed-out'])(
         'record a failure outcome for the state %s',
         async (state) => {

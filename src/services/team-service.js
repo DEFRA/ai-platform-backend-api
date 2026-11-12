@@ -375,10 +375,12 @@ export async function findTeamById(
  * as an empty list.
  * @param {import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry} registry
  * @param {string} slug
+ * @param {string[]} [excluding] - environments not to read
+ * @returns {Promise<Array<{environment: string, document: object}>>}
  */
-async function readTeamFiles(registry, slug) {
+export async function readTeamFiles(registry, slug, excluding = []) {
   try {
-    return await readTeamEnvironments(registry, slug)
+    return await readTeamEnvironments(registry, slug, excluding)
   } catch {
     throw boomWithCode(
       Boom.badGateway,

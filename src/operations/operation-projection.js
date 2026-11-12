@@ -166,12 +166,21 @@ export function appRegistrationOf(resources) {
 
 const VERIFIED_STATES = new Set(['verified', 'active', 'removed'])
 
+/**
+ * The run a person follows for an operation: the apply's, else the submit's.
+ * @param {{gitops?: {applyRunUrl?: string, submitRunUrl?: string}}} operation
+ * @returns {string|null}
+ */
+export function runUrlOf({ gitops = {} }) {
+  return gitops.applyRunUrl ?? gitops.submitRunUrl ?? null
+}
+
 function operationSummaryOf(operation, gitops) {
   return {
     id: operation._id,
     state: operation.state,
     attempt: operation.attempt,
-    runUrl: gitops.applyRunUrl ?? gitops.submitRunUrl ?? null,
+    runUrl: runUrlOf(operation),
     commitSha: gitops.commitSha ?? null,
     failureReason: operation.error?.code ?? null
   }

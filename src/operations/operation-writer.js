@@ -7,6 +7,7 @@ import {
   projectOperation
 } from '#/operations/operation-projection.js'
 import { deadlineFor, TIMED_OUT } from '#/operations/operation-state-machine.js'
+import { isModelItem } from '#/operations/operation-items.js'
 import {
   failureLogFields,
   supportReferenceOf
@@ -159,12 +160,14 @@ function logFailure({ logger }, before, written) {
     `Deployment failed, support reference ${supportReferenceOf(written._id)}`
   )
 }
-// One audit event per item, like the single-model operations before it.
+// One audit event per model item, like the single-model operations before it.
+// A limits change has no deployment entry to audit against; its request is
+// audited when it is made.
 async function auditTransition({ db, logger }, before, written, change) {
   const failed = FAILED.has(written.state)
 
   await Promise.all(
-    (written.items ?? []).map(async ({ entryId }) => {
+    (written.items ?? []).filter(isModelItem).map(async ({ entryId }) => {
       try {
         await auditDeployment(
           db,

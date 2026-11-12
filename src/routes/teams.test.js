@@ -1697,6 +1697,26 @@ describe('#teams routes', () => {
         expect(result.environments).toEqual([])
       })
 
+      test('shows a file that holds no limits of its own with null limits', async () => {
+        const team = await newTeam('env-5')
+
+        config.set('teamDeployment.environments', ['infradev'])
+        tenantFiles({
+          [`environments/infradev/${team.slug}.json`]: {
+            gateway: { credentialType: 'oauth' }
+          }
+        })
+
+        const { result } = await getTeam(team, 'env-5')
+
+        expect(result.environments).toEqual([
+          {
+            environment: 'infradev',
+            limits: { requestsPerMinute: null, tokensPerMinute: null }
+          }
+        ])
+      })
+
       test('is refused as upstream-unavailable when a file cannot be read, not as an empty list', async () => {
         const team = await newTeam('env-4')
 

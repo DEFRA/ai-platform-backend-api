@@ -155,7 +155,7 @@ async function tryRequest(ctx, base, paused) {
  * request's too) finds its operation. Nothing is written when the document
  * cannot be built.
  * @param {object} ctx
- * @param {{teamId: string, environment: string, target: object, items: Array<{entryId: string, modelSlug: string, change: 'add'|'remove'}>, requestedBy: string, requestedByUserId: string, idempotencyKey: string, traceparent?: string|null, cdpRequestId?: string|null}} params
+ * @param {{teamId: string, environment: string, target: object, items: Array<{entryId: string, modelSlug: string, change: 'add'|'remove'}|{kind: 'limits', change: 'set', limits: {tokensPerMinute: number, requestsPerMinute: number}}>, requestedBy: string, requestedByUserId: string, idempotencyKey: string, traceparent?: string|null, cdpRequestId?: string|null}} params
  * @returns {Promise<{operation: object, replay: boolean, waiting: boolean}>}
  */
 export async function requestOperation(ctx, params) {

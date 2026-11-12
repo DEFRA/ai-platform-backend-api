@@ -10,6 +10,8 @@ import {
   findOverdue,
   findPendingOutbox,
   findSlotHolder,
+  findTeamOperation,
+  findTeamOperations,
   findVerificationDue,
   insertOperation,
   isDuplicateKey,
@@ -325,6 +327,96 @@ describe('#operation-repository', () => {
           slot: 'waiting'
         })
       ).toBeNull()
+    })
+  })
+
+  describe("a team's operations", () => {
+    // Three of team-1's operations, minutes apart, and one of team-2's.
+    async function arrange() {
+      const make = (minute, overrides) =>
+        newOperation({
+          createdAt: `2026-11-12T10:0${minute}:00.000Z`,
+          idempotencyKeys: undefined,
+          slot: undefined,
+          ...overrides
+        })
+      const first = await insertOperation(db, make(1))
+      const second = await insertOperation(
+        db,
+        make(2, { environment: 'sandbox', slot: 'active' })
+      )
+      const third = await insertOperation(
+        db,
+        make(3, { type: 'team-file.remove' })
+      )
+
+      await insertOperation(db, make(4, { teamId: 'team-2' }))
+      await insertOperation(db, make(5, { type: 'break-glass' }))
+
+      return { first, second, third }
+    }
+
+    test('lists only the team’s own file changes, newest first', async () => {
+      const { first, second, third } = await arrange()
+
+      const found = await findTeamOperations(db, { teamId: 'team-1' })
+
+      expect(found.map(({ _id }) => _id)).toEqual([
+        third._id,
+        second._id,
+        first._id
+      ])
+    })
+
+    test('filters by environment and by whether the operation holds its file', async () => {
+      const { first, second, third } = await arrange()
+
+      expect(
+        (
+          await findTeamOperations(db, {
+            teamId: 'team-1',
+            environment: 'sandbox'
+          })
+        ).map(({ _id }) => _id)
+      ).toEqual([second._id])
+      expect(
+        (
+          await findTeamOperations(db, { teamId: 'team-1', status: 'open' })
+        ).map(({ _id }) => _id)
+      ).toEqual([second._id])
+      expect(
+        (
+          await findTeamOperations(db, { teamId: 'team-1', status: 'recent' })
+        ).map(({ _id }) => _id)
+      ).toEqual([third._id, first._id])
+    })
+
+    test('limits the list', async () => {
+      await arrange()
+
+      expect(
+        await findTeamOperations(db, { teamId: 'team-1', limit: 1 })
+      ).toHaveLength(1)
+    })
+
+    test('finds one of the team’s operations and nothing for another team’s id', async () => {
+      const { first } = await arrange()
+
+      expect(
+        (await findTeamOperation(db, { teamId: 'team-1', id: first._id }))._id
+      ).toBe(first._id)
+      expect(
+        await findTeamOperation(db, { teamId: 'team-2', id: first._id })
+      ).toBeNull()
+    })
+
+    test('is served by an index on the team and its newest first', async () => {
+      const indexes = await db.collection('operations').indexes()
+
+      expect(indexes.map(({ key }) => key)).toContainEqual({
+        teamId: 1,
+        createdAt: -1
+      })
     })
   })
 })

@@ -3,6 +3,8 @@
 // never overwrites a newer one. Every function takes the `db`; none holds a
 // connection, so the handler, the relay and the sweeper share it freely.
 
+import { OPERATION_TYPES } from '#/operations/operation-state-machine.js'
+
 const COLLECTION = 'operations'
 const DUPLICATE_KEY = 11000
 
@@ -52,6 +54,8 @@ export async function createOperationIndexes(db) {
     }
   )
   await operations.createIndex({ teamId: 1, environment: 1, state: 1 })
+  // A team's operations, newest first (the environments section's reads).
+  await operations.createIndex({ teamId: 1, createdAt: -1 })
   // The sweeps.
   await operations.createIndex(
     { outboxPending: 1 },
@@ -113,6 +117,52 @@ export function findByIdempotencyKey(db, { teamId, key }) {
  */
 export function findSlotHolder(db, { environment, teamId, slot }) {
   return operationsOf(db).findOne({ environment, teamId, slot })
+}
+
+// The operations that change a team's file; an external or pin operation is
+// not a team's change, and no team sees it.
+const TEAM_FILE_TYPES = [
+  OPERATION_TYPES.WRITE,
+  OPERATION_TYPES.REMOVE,
+  OPERATION_TYPES.REVERT
+]
+
+/**
+ * A team's changes to its files, newest first. Every read carries the team.
+ * `open` ones hold the file (a slot); `recent` ones have ended.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, environment?: string, status?: 'open'|'recent', limit?: number}} params
+ * @returns {Promise<object[]>}
+ */
+export function findTeamOperations(
+  db,
+  { teamId, environment, status, limit = 10 }
+) {
+  return operationsOf(db)
+    .find({
+      teamId,
+      type: { $in: TEAM_FILE_TYPES },
+      ...(environment ? { environment } : {}),
+      ...(status ? { slot: { $exists: status === 'open' } } : {})
+    })
+    .sort({ createdAt: -1 })
+    .limit(limit)
+    .toArray()
+}
+
+/**
+ * One of a team's changes to its files, or null when the team has no such
+ * operation (another team's id finds nothing).
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, id: string}} params
+ * @returns {Promise<object|null>}
+ */
+export function findTeamOperation(db, { teamId, id }) {
+  return operationsOf(db).findOne({
+    _id: id,
+    teamId,
+    type: { $in: TEAM_FILE_TYPES }
+  })
 }
 
 /**
