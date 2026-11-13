@@ -11,9 +11,9 @@ import {
 
 const AUDIT_ISSUE = 'credential.issue'
 
-function auditIssue(db, actor, insertedId, outcome) {
+function auditIssue(db, { actor, role }, insertedId, outcome) {
   return recordAuditEvent(db, {
-    ...issuanceAuditActor(actor),
+    ...issuanceAuditActor(actor, role),
     action: AUDIT_ISSUE,
     resource: 'credential',
     resourceId: insertedId.toString(),
@@ -43,7 +43,7 @@ async function savePending(db, { reusable, insertId, pending }) {
 
 // Asks the issuer for the secret. A failing issuer leaves the document
 // `failed`, audited, and is reported as `502 upstream-unavailable`.
-async function requestSecret(db, { issuer, issueParams, insertedId, actor }) {
+async function requestSecret(db, { issuer, issueParams, insertedId, audit }) {
   try {
     return await issuer.issue(issueParams)
   } catch {
@@ -51,7 +51,7 @@ async function requestSecret(db, { issuer, issueParams, insertedId, actor }) {
       { _id: insertedId },
       { $set: { status: 'failed', failureReason: 'issuer-error' } }
     )
-    await auditIssue(db, actor, insertedId, 'failure')
+    await auditIssue(db, audit, insertedId, 'failure')
 
     throw boomWithCode(
       Boom.badGateway,
@@ -75,19 +75,32 @@ function withoutVaultMarker(credential) {
  * issuer for the secret, then activates the document, puts the secret in the
  * vault and audits it. A failing issuer leaves the document `failed`. The
  * caller decides who sees the secret. A credential with `noExpiry` never
- * expires; otherwise it expires when the issuer says.
+ * expires; one with an `expiresAt` of its own (a team secret an Admin adds)
+ * expires then; otherwise it expires when the issuer says. `role` is the right
+ * the audit names the actor as using (the owner's, unless the caller says).
  */
 export async function issueAndActivate(
   db,
   vault,
-  { issuer, pending, reusable, insertId, issueParams, noExpiry, actor }
+  {
+    issuer,
+    pending,
+    reusable,
+    insertId,
+    issueParams,
+    noExpiry,
+    expiresAt,
+    actor,
+    role
+  }
 ) {
   const insertedId = await savePending(db, { reusable, insertId, pending })
+  const audit = { actor, role }
   const issued = await requestSecret(db, {
     issuer,
     issueParams,
     insertedId,
-    actor
+    audit
   })
 
   // `vaultState: unwritten` is stored with the activation and cleared once
@@ -99,7 +112,7 @@ export async function issueAndActivate(
     externalGatewaySubscriptionId: issued.externalId,
     keyHint: issued.keyHint,
     activatedAt: pending.createdAt,
-    expiresAt: noExpiry ? null : issued.expiresAt,
+    expiresAt: noExpiry ? null : (expiresAt ?? issued.expiresAt),
     vaultState: VAULT_UNWRITTEN
   }
 
@@ -117,7 +130,7 @@ export async function issueAndActivate(
   )
   const credential = vaultWritten ? withoutVaultMarker(unsettled) : unsettled
 
-  await auditIssue(db, actor, insertedId, 'success')
+  await auditIssue(db, audit, insertedId, 'success')
 
   return { credential, secret: issued.secret, vaultWritten }
 }

@@ -28,6 +28,32 @@ describe('mockCredentialIssuer', () => {
     expect(issued.keyHint).toBe(issued.secret.slice(-4))
   })
 
+  test('issue names a secret an Admin adds by its credential id, so each is its own and differs from the automatic one', async () => {
+    const base = {
+      userId: 'user-1',
+      modelSlug: 'gpt-4o',
+      tier: 'team',
+      teamId: 'team-1',
+      environment: 'sandbox'
+    }
+    const automatic = await mockCredentialIssuer.issue(base)
+    const first = await mockCredentialIssuer.issue({
+      ...base,
+      credentialId: 'cred-1'
+    })
+    const second = await mockCredentialIssuer.issue({
+      ...base,
+      credentialId: 'cred-2'
+    })
+
+    expect(automatic.externalId).toBe('team-team-1-sandbox')
+    expect(first.externalId).toBe('team-team-1-sandbox-cred-1')
+    expect(second.externalId).toBe('team-team-1-sandbox-cred-2')
+    expect(
+      new Set([automatic.externalId, first.externalId, second.externalId]).size
+    ).toBe(3)
+  })
+
   test('rotate keeps a team credential an OAuth client secret and a research one a key', async () => {
     const team = await mockCredentialIssuer.rotate({
       externalId: 'team-team-1-sandbox'

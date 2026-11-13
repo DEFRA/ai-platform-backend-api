@@ -15,7 +15,7 @@
  * so a credential issued in an earlier environment still renews and revokes
  * against the resources that hold it.
  * @typedef {object} CredentialIssuer
- * @property {(params: {userId: string, modelSlug: string, tier: 'research'|'team', teamId?: string|null, environment: string|null}) => Promise<{externalId: string, secret: string, keyHint: string, expiresAt: string}>} issue
+ * @property {(params: {userId: string, modelSlug: string|null, tier: 'research'|'team', teamId?: string|null, environment: string|null, credentialId?: string, expiresAt?: string}) => Promise<{externalId: string, secret: string, keyHint: string, expiresAt: string}>} issue - `credentialId` names a team secret an Admin adds, so each one has its own `externalId`; `expiresAt` is when the portal wants it to expire
  * @property {(params: {externalId: string, expiresAt: string, environment: string|null}) => Promise<{externalId: string}>} renew
  * @property {(params: {externalId: string, environment: string|null}) => Promise<{externalId: string, secret: string, keyHint: string}>} rotate
  * @property {(params: {externalId: string, environment: string|null}) => Promise<{externalId: string}>} revoke

@@ -28,6 +28,17 @@ export const TEAM_CREDENTIAL_FILTER = {
   credentialType: TEAM_CREDENTIAL_TYPE
 }
 
+// What a team credential was made for: the one made when the team's first
+// model turns active carries no `origin`; one an Admin adds is marked, so
+// recovery of the first can never take an attempt at the other for its own.
+export const ADMIN_ADDED = 'admin-added'
+
+// The attempts the first model's credential is judged by: an addition that
+// did not finish is an Admin's request to answer, not the team's credential.
+export const NOT_AN_UNFINISHED_ADDITION = {
+  $nor: [{ origin: ADMIN_ADDED, status: { $in: UNFINISHED_STATUSES } }]
+}
+
 const REVOKED_MESSAGE = 'Credential has been revoked'
 const REVOKED_CODE = 'credential-revoked'
 
@@ -135,8 +146,8 @@ export function resolveIssuer(registry, model, tier) {
 // acting with the owner's right, or, when no request did (a team's credential
 // issued as its first model turns active), the system, whose role the audit
 // service records. The person the credential is for is on the credential.
-export function issuanceAuditActor(actor) {
-  return actor ? { actor, role: ROLE_OWNER } : { actor: systemActor }
+export function issuanceAuditActor(actor, role = ROLE_OWNER) {
+  return actor ? { actor, role } : { actor: systemActor }
 }
 
 // Runs `work` holding the lock `revokeCredential` takes on the credential
