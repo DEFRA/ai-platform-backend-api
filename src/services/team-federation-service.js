@@ -739,18 +739,23 @@ function reserveChange(
 }
 
 // Gives the reservation back: no operation took the change, so the
-// application is as it was.
-function releaseChange(db, { teamId, environment }, entry) {
+// application is as it was, and holds the generation it held, so the
+// operation it last had is not refused as superseded by one that never was.
+// Only a reservation still at the generation this change took is given back.
+function releaseChange(db, { teamId, environment }, entry, generation) {
   return db.collection('teamDeployments').updateOne(
     { teamId, environment },
     {
-      $set: { 'federations.$[f].status': entry.status },
+      $set: {
+        'federations.$[f].status': entry.status,
+        'federations.$[f].generation': entry.generation ?? 0
+      },
       $unset: {
         'federations.$[f].pending': '',
         'federations.$[f].statusBefore': ''
       }
     },
-    { arrayFilters: [{ 'f.id': entry.id }] }
+    { arrayFilters: [{ 'f.id': entry.id, 'f.generation': generation }] }
   )
 }
 
@@ -783,7 +788,7 @@ async function queueChange(db, context, { entry, definition, fingerprint }) {
     return operation
   } catch (error) {
     if (!(await isAcceptedFor(db, { teamId, key: idempotencyKey }, entry))) {
-      await releaseChange(db, { teamId, environment }, entry)
+      await releaseChange(db, { teamId, environment }, entry, generation)
     }
 
     throw error
@@ -998,8 +1003,56 @@ async function takeGeneration(db, { teamId, environment }, entry) {
   return generation
 }
 
-async function removeUnderLock(db, context, federationId) {
+// Gives a removal's generation back when no operation took it, so the
+// operation the application last had is not refused as superseded.
+function releaseGeneration(db, { teamId, environment }, entry, generation) {
+  return db
+    .collection('teamDeployments')
+    .updateOne(
+      { teamId, environment },
+      { $set: { 'federations.$[f].generation': entry.generation ?? 0 } },
+      { arrayFilters: [{ 'f.id': entry.id, 'f.generation': generation }] }
+    )
+}
+
+// Asks for a removal's operation, with the generation it took; one no
+// operation accepted gives the generation back.
+async function requestRemoval(db, context, entry) {
   const { teamId, environment, operations } = context
+  const scope = { teamId, environment }
+  const generation = await takeGeneration(db, scope, entry)
+  // A removal has no key of its own: the application's status is what
+  // makes a repeat harmless, and each removal is its own operation.
+  const key = `remove:${uuidv7()}`
+
+  try {
+    const { operation } = await operations.request(
+      operationRequestOf(
+        context,
+        environment,
+        {
+          entryId: entry.id,
+          change: 'remove',
+          generation,
+          name: entry.name,
+          federation: definitionOf(entry)
+        },
+        { idempotencyKey: key }
+      )
+    )
+
+    return operation
+  } catch (error) {
+    if (!(await isAcceptedFor(db, { teamId, key }, entry))) {
+      await releaseGeneration(db, scope, entry, generation)
+    }
+
+    throw error
+  }
+}
+
+async function removeUnderLock(db, context, federationId) {
+  const { teamId, environment } = context
   const scope = { teamId, environment }
   const entry = await requireEntry(db, context, federationId)
 
@@ -1025,23 +1078,7 @@ async function removeUnderLock(db, context, federationId) {
     return { federation: await viewOfEntry(db, scope, entry.id), done: true }
   }
 
-  const generation = await takeGeneration(db, scope, entry)
-  const { operation } = await operations.request(
-    operationRequestOf(
-      context,
-      environment,
-      {
-        entryId: entry.id,
-        change: 'remove',
-        generation,
-        name: entry.name,
-        federation: definitionOf(entry)
-      },
-      // A removal has no key of its own: the application's status is what
-      // makes a repeat harmless, and each removal is its own operation.
-      { idempotencyKey: `remove:${uuidv7()}` }
-    )
-  )
+  const operation = await requestRemoval(db, context, entry)
 
   await projectOperation(db, operation)
   await auditSuccess(db, context, ACTIONS.REMOVE, entry, environment)
