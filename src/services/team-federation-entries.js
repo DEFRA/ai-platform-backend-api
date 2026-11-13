@@ -1,11 +1,14 @@
 import { config } from '#/config.js'
 import {
   FEDERATION_HOSTS,
+  FEDERATION_STATUS
+} from '#/services/team-federation-constants.js'
+
+export {
+  FEDERATION_HOSTS,
   FEDERATION_STATUS,
   MAX_FEDERATIONS
 } from '#/services/team-federation-constants.js'
-
-export { FEDERATION_HOSTS, FEDERATION_STATUS, MAX_FEDERATIONS }
 
 // A team's federated applications as the backend keeps them: one entry per
 // application per environment in the team's `teamDeployments` document,

@@ -24,7 +24,7 @@ export function clientSecretsAllowedIn(environment) {
 // entry it names, a removal takes it out. A change that finds nothing adds.
 function withFederationApplied(held, { change, name, federation }) {
   if (change === 'remove') {
-    return held.filter((entry) => entry.name !== name)
+    return held.filter((existing) => existing.name !== name)
   }
 
   const entry = fileEntryOf(federation)
@@ -41,7 +41,9 @@ function withFederationApplied(held, { change, name, federation }) {
  * @returns {object[]}
  */
 export function federationsAfter(held, items) {
-  return items.filter(isFederationItem).reduce(withFederationApplied, held)
+  return items
+    .filter(isFederationItem)
+    .reduce((entries, item) => withFederationApplied(entries, item), held)
 }
 
 /**
