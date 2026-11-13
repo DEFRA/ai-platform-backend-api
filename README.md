@@ -534,7 +534,7 @@ those asked for and those the team file holds, not failed or removed ones). `POS
 as a dry run: `{environments: [{environment, code | null}]}`, no side effects. `PATCH
 /v1/teams/{teamId}/environments/{environment}/federations/{id}` (team admin; `{service}` or `{principalId, name}`) changes an
 application, comparing it with every other one but itself (a full registration does not refuse a change), `409
-federation-unchanged` and `federation-in-progress` besides the codes above, `400 federation-host-mismatch`; `DELETE` on the
+federation-unchanged`, `federation-in-progress` and `federation-replaced` (a failed application another of the same name has replaced; only a removal clears it) besides the codes above, `400 federation-host-mismatch`; `DELETE` on the
 same path (team admin) removes it, `202` while removing, `200` once removed. Every request, change, removal and refusal is
 audited (`teamFederation.*`, refusals against the team with the environment and the code). Under the mock orchestrator a CDP
 service or Azure application name containing `mock-checks-failed` or `mock-deploy-failed` forces that outcome of making or

@@ -13,7 +13,6 @@ const ADD = {
 }
 const CHANGE = { ...ADD, change: 'change' }
 const REMOVE = { ...ADD, change: 'remove' }
-// Operation ids are version 7 UUIDs, which sort by the time they were made.
 const OLDER = '0193a000-0000-7000-8000-000000000001'
 const NEWER = '0193b000-0000-7000-8000-000000000001'
 
@@ -476,18 +475,77 @@ describe('projecting an operation onto the federations of a team document', () =
       fresh({
         operationId: OLDER,
         operation: { id: OLDER },
+        projectedGeneration: 1,
         projectedVersion: 9
       })
     ])
 
     await projectOperation(
       db,
-      operationAt('requested', [CHANGE], { stateVersion: 0 })
+      operationAt('requested', [{ ...CHANGE, generation: 2 }], {
+        stateVersion: 0
+      })
     )
 
     expect((await entry()).operationId).toBe(
       '0193a000-0000-7000-8000-0000000abcde'
     )
+  })
+
+  test('takes the operation of a later generation even when its id sorts below the id of the one before, and then holds it against that one redelivered', async () => {
+    // Ids carry random suffixes and each host's clock: a later request can
+    // have the smaller id.
+    const first = '0193b000-0000-7000-8000-0000000000ff'
+    const later = '0193a000-0000-7000-8000-000000000001'
+
+    await seed([fresh()])
+
+    await projectOperation(
+      db,
+      operationAt('active', [{ ...ADD, generation: 1 }], {
+        _id: first,
+        stateVersion: 6
+      })
+    )
+    await projectOperation(
+      db,
+      operationAt('deploying', [{ ...REMOVE, generation: 2 }], {
+        _id: later,
+        stateVersion: 2
+      })
+    )
+
+    expect(await entry()).toMatchObject({
+      status: 'removing',
+      operationId: later,
+      projectedGeneration: 2,
+      projectedVersion: 2
+    })
+
+    await projectOperation(
+      db,
+      operationAt('active', [{ ...ADD, generation: 1 }], {
+        _id: first,
+        stateVersion: 9
+      })
+    )
+
+    expect(await entry()).toMatchObject({
+      status: 'removing',
+      operationId: later,
+      projectedGeneration: 2
+    })
+  })
+
+  test('still orders the writes of one generation by state version', async () => {
+    await seed([fresh({ projectedGeneration: 3, projectedVersion: 6 })])
+
+    await projectOperation(
+      db,
+      operationAt('deploying', [{ ...ADD, generation: 3 }], { stateVersion: 4 })
+    )
+
+    expect((await entry()).projectedVersion).toBe(6)
   })
 
   describe('an event of an earlier operation, redelivered after a newer one took the application', () => {
@@ -497,13 +555,14 @@ describe('projecting an operation onto the federations of a team document', () =
           status: 'removed',
           operationId: NEWER,
           operation: { id: NEWER, state: 'active' },
+          projectedGeneration: 2,
           projectedVersion: 3
         })
       ])
 
       await projectOperation(
         db,
-        operationAt('active', [ADD], { stateVersion: 9 })
+        operationAt('active', [{ ...ADD, generation: 1 }], { stateVersion: 9 })
       )
 
       expect(await entry()).toMatchObject({
@@ -526,13 +585,16 @@ describe('projecting an operation onto the federations of a team document', () =
           pending,
           operationId: NEWER,
           operation: { id: NEWER, state: 'deploying' },
+          projectedGeneration: 2,
           projectedVersion: 3
         })
       ])
 
       await projectOperation(
         db,
-        operationAt('active', [CHANGE], { stateVersion: 9 })
+        operationAt('active', [{ ...CHANGE, generation: 1 }], {
+          stateVersion: 9
+        })
       )
 
       expect(await entry()).toMatchObject({
