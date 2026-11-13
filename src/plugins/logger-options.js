@@ -22,11 +22,16 @@ const formatters = {
   'pino-pretty': {}
 }
 
+// What a Platform Admin types into the Teams and Audit log filters is a name,
+// so it is never logged, whatever `LOG_REDACT` says: a request's `query` is
+// logged in production, which the configured paths do not cover.
+const PRIVATE_QUERY_PATHS = ['req.query.person', 'req.query.search']
+
 export const loggerOptions = {
   enabled: logConfig.isEnabled,
   ignorePaths: ['/health'],
   redact: {
-    paths: logConfig.redact,
+    paths: [...logConfig.redact, ...PRIVATE_QUERY_PATHS],
     remove: true
   },
   level: logConfig.level,
