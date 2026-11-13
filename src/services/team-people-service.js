@@ -53,7 +53,7 @@ async function findUserById(db, userId) {
 export async function searchTeamPeople(
   db,
   { teamId: teamRef, actor, search, userAssertion },
-  { directory, allowedDomains = config.get('directory.allowedDomains') } = {}
+  deps = {}
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
@@ -62,6 +62,23 @@ export async function searchTeamPeople(
     action: 'add members'
   })
 
+  return findAddablePeople(db, { teamId, search, userAssertion }, deps)
+}
+
+/**
+ * The people a search finds that can be added to the team, once the caller's
+ * right to search has been checked (by a team Admin's route or a Platform
+ * Admin's): eligible, not already active members, sorted by name, capped.
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, search: string, userAssertion?: string}} params - `teamId` is the team's id
+ * @param {{directory?: import('#/adapters/directory.js').Directory, allowedDomains?: string[]}} [deps]
+ * @returns {Promise<{items: {oid: string, displayName: string, email: string}[]}>}
+ */
+export async function findAddablePeople(
+  db,
+  { teamId, search, userAssertion },
+  { directory, allowedDomains = config.get('directory.allowedDomains') } = {}
+) {
   // Use the passed directory for testing, or the current directory from the registry in production
   // (which the directoryPlugin updates after MongoDB is ready to include real user records)
   const dir = directory || getDirectory()
@@ -236,16 +253,17 @@ function originOf({ userId, oid, tid, azp, uti }) {
  */
 async function recordMemberAdded(
   db,
-  { actor, teamId, role, oid, idempotencyKey }
+  { actor, actingRole, teamId, role, oid, idempotencyKey }
 ) {
   try {
     await recordAuditEvent(db, {
       eventId: `team.addMember:${teamId}:${idempotencyKey}`,
       actor,
-      role: TEAM_ADMIN,
+      role: actingRole,
       action: 'team.addMember',
       resource: 'team',
       resourceId: teamId,
+      teamId,
       outcome: 'success',
       code: role,
       subjectOid: oid
@@ -291,10 +309,7 @@ async function auditedReplay(db, { member, added }, audit) {
 export async function addMember(
   db,
   { teamId: teamRef, actor, oid, role, idempotencyKey, userAssertion },
-  {
-    directory = getDirectory(),
-    allowedDomains = config.get('directory.allowedDomains')
-  } = {}
+  deps
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
@@ -303,11 +318,44 @@ export async function addMember(
     action: 'add members'
   })
 
+  return addTeamMember(
+    db,
+    {
+      teamId,
+      actor,
+      actingRole: TEAM_ADMIN,
+      oid,
+      role,
+      idempotencyKey,
+      userAssertion
+    },
+    deps
+  )
+}
+
+/**
+ * The add itself, once the caller's right to make it has been checked (a team
+ * Admin's by {@link addMember}, a Platform Admin's by its own route), as
+ * {@link addMember} describes it. `actingRole` is the right the add used, which
+ * its audit event records (`admin` or `platform-admin`).
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, actor: {userId: string, tid: string}, actingRole: string, oid: string, role: 'admin'|'user', idempotencyKey: string, userAssertion?: string}} params - `teamId` is the team's id, already resolved
+ * @param {{directory?: import('#/adapters/directory.js').Directory, allowedDomains?: string[]}} [deps]
+ */
+export async function addTeamMember(
+  db,
+  { teamId, actor, actingRole, oid, role, idempotencyKey, userAssertion },
+  {
+    directory = getDirectory(),
+    allowedDomains = config.get('directory.allowedDomains')
+  } = {}
+) {
   const replay = await findReplay(db, teamId, idempotencyKey, { oid, role })
 
   if (replay) {
     return auditedReplay(db, replay, {
       actor,
+      actingRole,
       teamId,
       role,
       oid,
@@ -328,7 +376,14 @@ export async function addMember(
   })
   const userId = user._id.toString()
   const request = { oid: person.oid, role }
-  const audit = { actor, teamId, role, oid: person.oid, idempotencyKey }
+  const audit = {
+    actor,
+    actingRole,
+    teamId,
+    role,
+    oid: person.oid,
+    idempotencyKey
+  }
 
   const existingMember = await db
     .collection('teamMembers')

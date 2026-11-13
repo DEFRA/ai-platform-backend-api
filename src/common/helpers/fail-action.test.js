@@ -1,7 +1,7 @@
 import Joi from 'joi'
 
 import { createLogger } from './logging/logger.js'
-import { failAction } from './fail-action.js'
+import { failAction, failActionWithCode } from './fail-action.js'
 
 describe('#fail-action', () => {
   afterEach(() => {
@@ -110,5 +110,33 @@ describe('#fail-action', () => {
       { validation: [{ type: 'object.unknown' }] },
       'Request validation failed'
     )
+  })
+
+  describe('failActionWithCode', () => {
+    test('answers 400 with the stable code, never the refused value, and logs only the rule', () => {
+      const warn = vi.spyOn(createLogger(), 'warn').mockImplementation(() => {})
+      const { error } = Joi.object({ search: Joi.string().min(2) }).validate(
+        { search: 'q' },
+        { abortEarly: false }
+      )
+      const refuse = failActionWithCode('invalid-query', 'The query is invalid')
+
+      let thrown
+
+      try {
+        refuse({}, {}, error)
+      } catch (caught) {
+        thrown = caught
+      }
+
+      expect(thrown.output.statusCode).toBe(400)
+      expect(thrown.data).toEqual({ code: 'invalid-query' })
+      expect(thrown.message).toBe('The query is invalid')
+      expect(JSON.stringify(warn.mock.calls)).not.toContain('"q"')
+      expect(warn).toHaveBeenCalledWith(
+        { validation: [{ type: 'string.min' }] },
+        'Request validation failed'
+      )
+    })
   })
 })

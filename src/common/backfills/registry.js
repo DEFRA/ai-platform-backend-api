@@ -348,5 +348,23 @@ export const backfillRegistry = [
     description:
       'Removes team invitations, keeps one active membership per person and team, unsets teamMembers.email, sets requestedRole on memberships with an idempotencyKey and deletes users with no oid',
     run: makeTeamMembersDirectoryOnly
+  },
+  // The Platform Admin Teams list filters and counts by `teams.status`
+  // (`active`, `disabled`, `pending-removal`), so every team that predates it
+  // gets `active`. Readers still treat an absent status as active
+  // (`team-status.js`), and `createTeam` writes it from now on.
+  {
+    id: '2026-11-12-teams-status-default',
+    description: 'Sets status: "active" on teams docs missing it',
+    async run(db) {
+      const { modifiedCount } = await db
+        .collection('teams')
+        .updateMany(
+          { status: { $exists: false } },
+          { $set: { status: 'active' } }
+        )
+
+      return { modifiedCount }
+    }
   }
 ]

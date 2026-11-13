@@ -52,7 +52,12 @@ const ROUTES = [
     ACCESS.teamAdmin
   ],
   ['POST /v1/admin/team-deployments/{id}/retry', ACCESS.platformAdmin],
-  ['POST /v1/admin/team-deployments/{id}/reconcile', ACCESS.platformAdmin]
+  ['POST /v1/admin/team-deployments/{id}/reconcile', ACCESS.platformAdmin],
+  ['GET /v1/admin/teams', ACCESS.platformAdmin],
+  ['GET /v1/admin/teams/{id}', ACCESS.platformAdmin],
+  ['POST /v1/admin/teams/{id}/people/search', ACCESS.platformAdmin],
+  ['POST /v1/admin/teams/{id}/members', ACCESS.platformAdmin],
+  ['DELETE /v1/admin/teams/{id}/members/{memberId}', ACCESS.platformAdmin]
 ]
 
 describe('#route access', () => {
