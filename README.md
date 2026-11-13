@@ -471,6 +471,29 @@ Platform Admins
 `committed` and `apply` after it (a fresh attempt from `deploy-failed`; a `timed-out` operation resumes from the state it
 left), and `reconcile` asks the worker to report what GitHub holds.
 
+The Platform Admin Teams tab (B31) adds `isPlatformAdmin` to `PUT` and `GET /v1/users/me`, which any signed-in person
+can call: it is read from the person's record on every request. The routes below are `platform-admin` only (403
+`platform-admin-required`, audited): `GET /v1/admin/teams?search&status&page` (25 a page by name; 400 `invalid-query`)
+and `GET /v1/admin/teams/{id}` (id or slug; each environment's team file status and `removeAfter`; 404
+`team-not-found`); and the member routes `POST /v1/admin/teams/{id}/people/search` (`{ search }`), `POST .../members`
+(`Idempotency-Key`, `{ oid, role }`; 403 `self-add-refused` for adding yourself) and `DELETE .../members/{memberId}`,
+which work in any team status and share the team Admin routes' member core, audited with role `platform-admin`.
+
+**Granting Platform Admin locally.** Nothing in the API assigns the role. Sign in once as the mock user (object ID
+`11111111-1111-4111-8111-111111111111`) so `PUT /v1/users/me` creates the record, then add the role in MongoDB:
+
+```js
+db.users.updateOne(
+  { oid: '11111111-1111-4111-8111-111111111111' },
+  { $addToSet: { roles: 'platform-admin' } }
+)
+```
+
+The role is read on every request, so it takes effect on the next call, with no new sign-in.
+
+`teams.status` (`active`, `disabled`, `pending-removal`; absent reads active) is set by the
+`2026-11-12-teams-status-default` backfill and by `createTeam`. `auditEvents` may carry `teamId` and `environment`.
+
 The document itself is built by
 [`team-desired-state.js`](src/services/team-desired-state.js) (WS6), always from the file `main`
 holds now rather than from the portal's own record, since the file is written whole and an engineer

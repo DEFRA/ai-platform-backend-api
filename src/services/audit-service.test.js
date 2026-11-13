@@ -156,6 +156,50 @@ describe('#recordAuditEvent', () => {
     expect(await lastEvent('audit-no-subject')).not.toHaveProperty('subjectOid')
   })
 
+  test('records the team and the environment an event is about when given, and neither when not', async () => {
+    await recordAuditEvent(db, {
+      actor,
+      role: 'platform-admin',
+      action: 'admin.team.delete',
+      resource: 'team',
+      resourceId: 'audit-team-env',
+      outcome: 'failure',
+      teamId: 'team-1',
+      environment: 'infradev'
+    })
+    await recordAuditEvent(db, {
+      actor,
+      role: 'platform-admin',
+      action: 'team.addMember',
+      resource: 'team',
+      resourceId: 'audit-team-only',
+      outcome: 'success',
+      teamId: 'team-2'
+    })
+    await recordAuditEvent(db, {
+      actor,
+      action: 'team.create',
+      resource: 'team',
+      resourceId: 'audit-neither',
+      outcome: 'success'
+    })
+
+    expect(await lastEvent('audit-team-env')).toMatchObject({
+      teamId: 'team-1',
+      environment: 'infradev'
+    })
+
+    const teamOnly = await lastEvent('audit-team-only')
+
+    expect(teamOnly.teamId).toBe('team-2')
+    expect(teamOnly).not.toHaveProperty('environment')
+
+    const neither = await lastEvent('audit-neither')
+
+    expect(neither).not.toHaveProperty('teamId')
+    expect(neither).not.toHaveProperty('environment')
+  })
+
   test('an explicit actorUserId wins over the actor', async () => {
     await recordAuditEvent(db, {
       actor,

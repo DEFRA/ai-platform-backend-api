@@ -3,7 +3,6 @@ import Boom from '@hapi/boom'
 
 import { statusCodes } from '#/common/constants/status-codes.js'
 import { ACCESS } from '#/common/helpers/auth/access.js'
-import { entraIdField } from '#/common/helpers/entra-id.js'
 import {
   createTeam,
   listTeamsForUser,
@@ -13,6 +12,12 @@ import {
   setMemberRole
 } from '#/services/team-service.js'
 import { searchTeamPeople, addMember } from '#/services/team-people-service.js'
+import {
+  addMemberPayload,
+  idempotentHeaders,
+  memberRoleField,
+  personSearchPayload
+} from '#/routes/member-schemas.js'
 
 // Three characters, as the team file's schema requires; entered in any case
 // and stored upper.
@@ -31,22 +36,12 @@ const descriptionField = Joi.string()
 const MIN_NAME_LENGTH = 3
 const MAX_NAME_LENGTH = 60
 
-// What an Admin types to find a person in the directory.
-const MIN_SEARCH_LENGTH = 2
-const MAX_SEARCH_LENGTH = 100
-
-const memberRoleField = Joi.string().valid('admin', 'user')
-
 const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
 
 const memberIdParam = Joi.object({
   id: Joi.string().required(),
   memberId: Joi.string().required()
 }).unknown(false)
-
-const idempotentHeaders = Joi.object({
-  'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
-}).unknown(true)
 
 export const teams = [
   {
@@ -151,13 +146,7 @@ export const teams = [
       app: { access: ACCESS.teamAdmin },
       validate: {
         params: idParam,
-        payload: Joi.object({
-          search: Joi.string()
-            .trim()
-            .min(MIN_SEARCH_LENGTH)
-            .max(MAX_SEARCH_LENGTH)
-            .required()
-        }).unknown(false)
+        payload: personSearchPayload
       }
     },
     handler: async (request, h) => {
@@ -178,10 +167,7 @@ export const teams = [
       validate: {
         headers: idempotentHeaders,
         params: idParam,
-        payload: Joi.object({
-          oid: entraIdField.required(),
-          role: memberRoleField.required()
-        }).unknown(false)
+        payload: addMemberPayload
       }
     },
     handler: async (request, h) => {

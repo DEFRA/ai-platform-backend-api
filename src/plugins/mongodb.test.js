@@ -105,6 +105,25 @@ describe('#mongoDb', () => {
       await client.close()
     })
 
+    test('indexes teams by status and name for the Platform Admin Teams list', async () => {
+      // Dynamic import needed due to config being updated by vitest-mongodb
+      const { config } = await import('#/config.js')
+      const client = await MongoClient.connect(config.get('mongo.mongoUrl'))
+      const db = client.db(config.get('mongo.databaseName'))
+      const { createServer } = await import('#/server.js')
+      const created = await createServer()
+      await created.initialize()
+
+      const names = (await db.collection('teams').indexes()).map(
+        (index) => index.name
+      )
+
+      expect(names).toContain('status_1_normalisedName_1')
+
+      await created.stop({ timeout: 1000 })
+      await client.close()
+    })
+
     test('replaces the adapter/status credentials index with gateway/status', async () => {
       // Dynamic import needed due to config being updated by vitest-mongodb
       const { config } = await import('#/config.js')

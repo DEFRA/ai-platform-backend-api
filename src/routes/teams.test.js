@@ -137,6 +137,7 @@ describe('#teams routes', () => {
     expect(result.team.slug).toBe('flood-risk-team')
     expect(result.team.serviceCode).toBe('ABC')
     expect(result.team.verified).toBe(false)
+    expect(result.team.status).toBe('active')
   })
 
   test('POST /v1/teams stores the service code in upper case', async () => {

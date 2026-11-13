@@ -8,7 +8,9 @@ import {
   PLATFORM_ADMIN_ROLE,
   getActiveTeamIds,
   getTeamRole,
+  isPlatformAdmin,
   refuse,
+  requireNotSelfAdd,
   requirePlatformAdmin,
   requireTeamRole
 } from '#/common/helpers/auth/access.js'
@@ -244,6 +246,62 @@ describe('#access', () => {
 
     test('names the role the same everywhere', () => {
       expect(PLATFORM_ADMIN_ROLE).toBe('platform-admin')
+    })
+  })
+
+  describe('isPlatformAdmin', () => {
+    test('is true only for an actor the token validation marked as a Platform Admin', () => {
+      expect(isPlatformAdmin(actorOf({ isPlatformAdmin: true }))).toBe(true)
+      expect(isPlatformAdmin(actorOf())).toBe(false)
+      expect(isPlatformAdmin(actorOf({ isPlatformAdmin: undefined }))).toBe(
+        false
+      )
+      expect(isPlatformAdmin(systemActor)).toBe(false)
+      expect(isPlatformAdmin(undefined)).toBe(false)
+    })
+  })
+
+  describe('requireNotSelfAdd', () => {
+    test('lets a Platform Admin add someone else', async () => {
+      await expect(
+        requireNotSelfAdd(db, actorOf({ oid: 'oid-1' }), {
+          teamId: TEAM,
+          oid: 'oid-2'
+        })
+      ).resolves.toBeUndefined()
+      expect(await denials()).toEqual([])
+    })
+
+    test('treats the same object ID in another letter case as the actor’s own', async () => {
+      await expect(
+        requireNotSelfAdd(db, actorOf({ oid: 'ABC-def' }), {
+          teamId: TEAM,
+          oid: 'abc-DEF'
+        })
+      ).rejects.toMatchObject({ data: { code: 'self-add-refused' } })
+    })
+
+    test('answers 403 self-add-refused to an actor adding their own object ID, and audits it with the platform-admin role', async () => {
+      const actor = actorOf({ oid: 'oid-1', isPlatformAdmin: true })
+
+      await expect(
+        requireNotSelfAdd(db, actor, { teamId: TEAM, oid: 'oid-1' })
+      ).rejects.toMatchObject({
+        output: { statusCode: 403 },
+        data: { code: 'self-add-refused' }
+      })
+
+      expect(await denials()).toEqual([
+        expect.objectContaining({
+          actorUserId: actor.userId,
+          oid: 'oid-1',
+          role: 'platform-admin',
+          resource: 'team',
+          resourceId: TEAM,
+          code: 'self-add-refused',
+          outcome: 'failure'
+        })
+      ])
     })
   })
 

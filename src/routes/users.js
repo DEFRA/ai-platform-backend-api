@@ -1,6 +1,6 @@
 import Boom from '@hapi/boom'
 
-import { ACCESS } from '#/common/helpers/auth/access.js'
+import { ACCESS, isPlatformAdmin } from '#/common/helpers/auth/access.js'
 import { boomWithCode } from '#/common/helpers/boom-with-code.js'
 import { upsertUser, findCurrentUser } from '#/services/user-service.js'
 
@@ -35,7 +35,11 @@ export const users = [
         actor: request.auth.credentials
       })
 
-      return h.response({ user, team })
+      return h.response({
+        user,
+        team,
+        isPlatformAdmin: isPlatformAdmin(request.auth.credentials)
+      })
     }
   },
   {
@@ -52,7 +56,10 @@ export const users = [
         return Boom.notFound()
       }
 
-      return h.response(result)
+      return h.response({
+        ...result,
+        isPlatformAdmin: isPlatformAdmin(request.auth.credentials)
+      })
     }
   }
 ]

@@ -5,6 +5,7 @@ import { credentials } from '#/routes/credentials.js'
 import { teams } from '#/routes/teams.js'
 import { teamDeployments } from '#/routes/team-deployments.js'
 import { adminTeamDeployments } from '#/routes/admin-team-deployments.js'
+import { adminTeams } from '#/routes/admin-teams.js'
 import { maintenance } from '#/routes/maintenance.js'
 
 export const router = {
@@ -18,7 +19,8 @@ export const router = {
           credentials,
           teams,
           teamDeployments,
-          adminTeamDeployments
+          adminTeamDeployments,
+          adminTeams
         )
       )
     }

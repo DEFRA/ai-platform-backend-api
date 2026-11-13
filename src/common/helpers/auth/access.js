@@ -130,6 +130,18 @@ export async function requireTeamRole(
 }
 
 /**
+ * Whether the actor holds the Platform Admin role, as read from the portal's
+ * database when the token was validated on this request, so a role removed
+ * since the last call is already gone. The one answer the admin routes and
+ * `/v1/users/me` share (design F "Who can use it").
+ * @param {{isPlatformAdmin?: boolean}|undefined} actor
+ * @returns {boolean}
+ */
+export function isPlatformAdmin(actor) {
+  return actor?.isPlatformAdmin === true
+}
+
+/**
  * The actor must hold the Platform Admin role, as read from the portal's
  * database when the token was validated; otherwise `403
  * platform-admin-required`, audited.
@@ -142,7 +154,7 @@ export async function requirePlatformAdmin(
   actor,
   { resource = 'platform', resourceId = 'platform' } = {}
 ) {
-  if (!actor.isPlatformAdmin) {
+  if (!isPlatformAdmin(actor)) {
     throw await refuse(db, actor, {
       resource,
       resourceId,
@@ -154,4 +166,30 @@ export async function requirePlatformAdmin(
       )
     })
   }
+}
+
+/**
+ * A Platform Admin may not add themselves to a team (B31 "No self-add"): the
+ * add would give them a team role they could then use as a member. Refused as
+ * `403 self-add-refused`, audited, and nothing is written.
+ * @param {import('mongodb').Db} db
+ * @param {{oid?: string}} actor
+ * @param {{teamId: string, oid: string}} target - the team and the Entra object ID being added
+ */
+export async function requireNotSelfAdd(db, actor, { teamId, oid }) {
+  if (actor.oid?.toLowerCase() !== oid.toLowerCase()) {
+    return
+  }
+
+  throw await refuse(db, actor, {
+    resource: 'team',
+    resourceId: teamId,
+    code: 'self-add-refused',
+    role: PLATFORM_ADMIN_ROLE,
+    error: boomWithCode(
+      Boom.forbidden,
+      'A Platform Admin cannot add themselves to a team',
+      'self-add-refused'
+    )
+  })
 }

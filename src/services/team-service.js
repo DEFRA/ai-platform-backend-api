@@ -12,6 +12,7 @@ import { serviceCodeVerifier } from '#/adapters/service-code-verifier-registry.j
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { readTeamEnvironments } from '#/services/team-desired-state.js'
+import { TEAM_STATUS } from '#/services/team-status.js'
 import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
 
 // Two names that differ only in punctuation ("Data Team" and "Data Team!")
@@ -89,7 +90,7 @@ function normaliseServiceCode(serviceCode) {
  * team-by-name upsert previously used in user-service.js before Route 1.
  * @param {string} name
  */
-function normaliseName(name) {
+export function normaliseName(name) {
   return name.toLowerCase().trim().replace(/\s+/g, '-')
 }
 
@@ -170,6 +171,7 @@ export async function createTeam(
     serviceCode: code,
     verified,
     description: description || null,
+    status: TEAM_STATUS.active,
     createdBy,
     idempotencyKey,
     createdAt: now
@@ -376,7 +378,7 @@ export async function findTeamById(
  * @param {import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry} registry
  * @param {string} slug
  */
-async function readTeamFiles(registry, slug) {
+export async function readTeamFiles(registry, slug) {
   try {
     return await readTeamEnvironments(registry, slug)
   } catch {
@@ -396,7 +398,7 @@ async function readTeamFiles(registry, slug) {
  * @param {import('mongodb').Db} db
  * @param {object[]} members
  */
-async function withMemberDisplayNames(db, members) {
+export async function withMemberDisplayNames(db, members) {
   const userIds = members
     .filter((member) => member.userId && ObjectId.isValid(member.userId))
     .map((member) => new ObjectId(member.userId))
@@ -428,13 +430,14 @@ async function withMemberDisplayNames(db, members) {
 }
 
 /**
- * A member of this team an admin may act on: an active one.
+ * A member of this team an admin may act on: an active one. Anyone else is
+ * `404 member-not-found`.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, memberId: string}} params
  */
 async function findManageableMember(db, { teamId, memberId }) {
   if (!ObjectId.isValid(memberId)) {
-    throw Boom.notFound()
+    throw memberNotFound()
   }
 
   const member = await db
@@ -442,10 +445,18 @@ async function findManageableMember(db, { teamId, memberId }) {
     .findOne({ _id: new ObjectId(memberId), teamId, status: 'active' })
 
   if (!member) {
-    throw Boom.notFound()
+    throw memberNotFound()
   }
 
   return member
+}
+
+function memberNotFound() {
+  return boomWithCode(
+    Boom.notFound,
+    'This person is not a member of the team',
+    'member-not-found'
+  )
 }
 
 /**
@@ -489,12 +500,36 @@ export async function removeMember(
     action: 'remove members'
   })
 
+  await removeTeamMember(db, locker, {
+    teamId,
+    actor,
+    actingRole: TEAM_ADMIN,
+    memberId
+  })
+}
+
+/**
+ * The removal itself, once the caller's right to make it has been checked (a
+ * team Admin's by {@link removeMember}, a Platform Admin's by its own route),
+ * as {@link removeMember} describes it. `actingRole` is the right the removal
+ * used, which its audit event records (`admin` or `platform-admin`). A member
+ * who is not in the team, or is already removed, is `404 member-not-found`.
+ * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
+ * @param {{teamId: string, actor: {userId: string}, actingRole: string, memberId: string}} params - `teamId` is the team's id, already resolved
+ */
+export async function removeTeamMember(
+  db,
+  locker,
+  { teamId, actor, actingRole, memberId }
+) {
   // Counting the admins and then writing is not atomic, so two admins
   // removing or demoting each other at once could leave the team with none.
   const lock = await acquireLockWithRetry(locker, membershipLock(teamId))
+  let member
 
   try {
-    const member = await findManageableMember(db, { teamId, memberId })
+    member = await findManageableMember(db, { teamId, memberId })
 
     if (member.role === 'admin') {
       await refuseIfLastAdmin(db, teamId)
@@ -514,13 +549,24 @@ export async function removeMember(
     await lock.free()
   }
 
+  const removed = ObjectId.isValid(member.userId)
+    ? await db
+        .collection('users')
+        .findOne(
+          { _id: new ObjectId(member.userId) },
+          { projection: { oid: 1 } }
+        )
+    : null
+
   await recordAuditEvent(db, {
     actor,
-    role: TEAM_ADMIN,
+    role: actingRole,
     action: 'team.removeMember',
     resource: 'team',
     resourceId: teamId,
-    outcome: 'success'
+    teamId,
+    outcome: 'success',
+    ...(removed?.oid && { subjectOid: removed.oid })
   })
 }
 
