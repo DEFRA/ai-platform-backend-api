@@ -13,6 +13,9 @@ const ADD = {
 }
 const CHANGE = { ...ADD, change: 'change' }
 const REMOVE = { ...ADD, change: 'remove' }
+// Operation ids are version 7 UUIDs, which sort by the time they were made.
+const OLDER = '0193a000-0000-7000-8000-000000000001'
+const NEWER = '0193b000-0000-7000-8000-000000000001'
 
 function operationAt(state, items, overrides = {}) {
   return {
@@ -207,6 +210,163 @@ describe('projecting an operation onto the federations of a team document', () =
       })
     })
 
+    test.each([['checks-failed'], ['timed-out']])(
+      'of a failed addition that never committed stays failed in the state %s, not ready',
+      async (state) => {
+        await seed([changing({ statusBefore: 'failed' })])
+
+        await projectOperation(db, operationAt(state, [CHANGE]))
+
+        expect(await entry()).toMatchObject({
+          name: 'beta-api',
+          status: 'failed',
+          pending
+        })
+      }
+    )
+
+    test('of a ready application restores it to ready when its checks fail', async () => {
+      await seed([changing({ statusBefore: 'ready' })])
+
+      await projectOperation(db, operationAt('checks-failed', [CHANGE]))
+
+      expect((await entry()).status).toBe('ready')
+    })
+
+    test.each([['committed'], ['deploying'], ['deployed'], ['verified']])(
+      'that timed out after it committed (it left %s) shows the new definition, failed, with nothing pending',
+      async (leftState) => {
+        await seed([changing()])
+
+        await projectOperation(
+          db,
+          operationAt('timed-out', [CHANGE], { leftState })
+        )
+
+        expect(await entry()).toMatchObject({
+          name: 'new-api',
+          service: 'new-api',
+          trustKey: 'CDP service new-api',
+          status: 'failed',
+          pending: null
+        })
+      }
+    )
+
+    test('that timed out with a commit recorded shows the new definition, failed', async () => {
+      await seed([changing()])
+
+      await projectOperation(
+        db,
+        operationAt('timed-out', [CHANGE], {
+          leftState: 'requested',
+          gitops: { commitSha: 'a'.repeat(40) }
+        })
+      )
+
+      expect(await entry()).toMatchObject({ name: 'new-api', status: 'failed' })
+    })
+
+    test.each([['queued'], ['requested']])(
+      'that timed out before it committed (it left %s) keeps the old definition and the pending one',
+      async (leftState) => {
+        await seed([changing()])
+
+        await projectOperation(
+          db,
+          operationAt('timed-out', [CHANGE], { leftState })
+        )
+
+        expect(await entry()).toMatchObject({
+          name: 'beta-api',
+          status: 'ready',
+          pending
+        })
+      }
+    )
+
+    test('that timed out after it committed and then recovered is ready with the new definition', async () => {
+      await seed([changing()])
+
+      await projectOperation(
+        db,
+        operationAt('timed-out', [CHANGE], { leftState: 'deploying' })
+      )
+      await projectOperation(
+        db,
+        operationAt('active', [CHANGE], { stateVersion: 7 })
+      )
+
+      expect(await entry()).toMatchObject({ name: 'new-api', status: 'ready' })
+    })
+
+    test('whose deploy failed and was then reverted brings back the old name and trust key, ready, with the reason', async () => {
+      await seed([changing()])
+
+      await projectOperation(db, operationAt('deploy-failed', [CHANGE]))
+
+      expect(await entry()).toMatchObject({ name: 'new-api', status: 'failed' })
+
+      await projectOperation(
+        db,
+        operationAt('deploy-failed', [CHANGE], {
+          stateVersion: 6,
+          error: { code: 'operation-reverted', message: 'reverted' }
+        })
+      )
+
+      expect(await entry()).toMatchObject({
+        name: 'beta-api',
+        service: 'beta-api',
+        trustKey: 'CDP service beta-api',
+        status: 'ready',
+        failureReason: expect.stringContaining('reverted')
+      })
+    })
+
+    test('whose deploy failed and was then reverted brings back an Azure application’s principal ID', async () => {
+      await seed([
+        {
+          id: 'fed-1',
+          name: 'old-app',
+          host: 'azure',
+          principalId: 'a',
+          trustKey: 'issuer a',
+          status: 'setting-up',
+          statusTimes: {},
+          pending: { name: 'new-app', principalId: 'b', trustKey: 'issuer b' }
+        }
+      ])
+
+      await projectOperation(db, operationAt('deploy-failed', [CHANGE]))
+      await projectOperation(
+        db,
+        operationAt('deploy-failed', [CHANGE], {
+          stateVersion: 6,
+          error: { code: 'operation-reverted', message: 'reverted' }
+        })
+      )
+
+      expect(await entry()).toMatchObject({
+        name: 'old-app',
+        principalId: 'a',
+        trustKey: 'issuer a',
+        status: 'ready'
+      })
+    })
+
+    test('whose deploy failed and recovered keeps the new definition', async () => {
+      await seed([changing()])
+
+      await projectOperation(db, operationAt('deploy-failed', [CHANGE]))
+      await projectOperation(
+        db,
+        operationAt('active', [CHANGE], { stateVersion: 7 })
+      )
+
+      expect(await entry()).toMatchObject({ name: 'new-api', status: 'ready' })
+    })
+
     test('with nothing pending changes only the status', async () => {
       await seed([fresh({ status: 'setting-up' })])
 
@@ -312,7 +472,13 @@ describe('projecting an operation onto the federations of a team document', () =
   })
 
   test('takes a newer operation at once, whatever the version of the last', async () => {
-    await seed([fresh({ operationId: 'older', operation: { id: 'older' } })])
+    await seed([
+      fresh({
+        operationId: OLDER,
+        operation: { id: OLDER },
+        projectedVersion: 9
+      })
+    ])
 
     await projectOperation(
       db,
@@ -322,6 +488,60 @@ describe('projecting an operation onto the federations of a team document', () =
     expect((await entry()).operationId).toBe(
       '0193a000-0000-7000-8000-0000000abcde'
     )
+  })
+
+  describe('an event of an earlier operation, redelivered after a newer one took the application', () => {
+    test('does not mark a removed application ready again', async () => {
+      await seed([
+        fresh({
+          status: 'removed',
+          operationId: NEWER,
+          operation: { id: NEWER, state: 'active' },
+          projectedVersion: 3
+        })
+      ])
+
+      await projectOperation(
+        db,
+        operationAt('active', [ADD], { stateVersion: 9 })
+      )
+
+      expect(await entry()).toMatchObject({
+        status: 'removed',
+        operationId: NEWER,
+        projectedVersion: 3
+      })
+    })
+
+    test('does not consume the pending definition of the newer change', async () => {
+      const pending = {
+        name: 'new-api',
+        service: 'new-api',
+        trustKey: 'CDP service new-api'
+      }
+
+      await seed([
+        fresh({
+          trustKey: 'CDP service beta-api',
+          pending,
+          operationId: NEWER,
+          operation: { id: NEWER, state: 'deploying' },
+          projectedVersion: 3
+        })
+      ])
+
+      await projectOperation(
+        db,
+        operationAt('active', [CHANGE], { stateVersion: 9 })
+      )
+
+      expect(await entry()).toMatchObject({
+        name: 'beta-api',
+        status: 'setting-up',
+        pending,
+        operationId: NEWER
+      })
+    })
   })
 
   test('leaves other applications, the models and an item with no entry alone', async () => {
