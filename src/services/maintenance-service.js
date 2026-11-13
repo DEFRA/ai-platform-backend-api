@@ -4,6 +4,7 @@ import { config } from '#/config.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { AZURE_APIM } from '#/adapters/gateway-keys.js'
+import { ADMIN_ADDED } from '#/services/credential-common.js'
 import {
   writeSecretToVault,
   externalGatewaySubscriptionIdOf,
@@ -225,6 +226,19 @@ async function reconcileUnwrittenVaultSecret(
   }
 }
 
+// What a secret an Admin added was issued as: its own credential, expiring
+// when it does. Reissued without them it would be made, and stored, as
+// another credential. The first model's, and a research key, were made
+// with neither.
+function issuedAsOf(credential) {
+  return credential.origin === ADMIN_ADDED
+    ? {
+        credentialId: credential._id.toString(),
+        expiresAt: credential.expiresAt
+      }
+    : {}
+}
+
 async function reissueToVault({ db, registry, vault }, found) {
   // Read again under the lock: a revocation that finished first leaves
   // the marker in place, and a revoked credential is never reissued.
@@ -244,7 +258,8 @@ async function reissueToVault({ db, registry, vault }, found) {
     modelSlug: credential.modelSlug,
     tier: credential.tier,
     teamId: credential.teamId,
-    environment: environmentOf(credential)
+    environment: environmentOf(credential),
+    ...issuedAsOf(credential)
   })
 
   return Boolean(

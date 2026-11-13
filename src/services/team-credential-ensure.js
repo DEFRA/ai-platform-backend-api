@@ -3,6 +3,7 @@ import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import {
+  NOT_AN_UNFINISHED_ADDITION,
   SUBSCRIPTION_TYPE,
   TEAM_CREDENTIAL_FILTER,
   TEAM_CREDENTIAL_TYPE,
@@ -42,7 +43,12 @@ export async function teamCredentialNeedsRetry(
 
   const attempts = await credentialsCollection(db)
     .find(
-      { teamId, environment, ...TEAM_CREDENTIAL_FILTER },
+      {
+        teamId,
+        environment,
+        ...TEAM_CREDENTIAL_FILTER,
+        ...NOT_AN_UNFINISHED_ADDITION
+      },
       { projection: { status: 1, createdAt: 1, revokedAt: 1 } }
     )
     .sort({ createdAt: -1 })
@@ -86,7 +92,7 @@ async function teamCredentialOwed(
 
   const [latest] = await credentialsCollection(db)
     .find(
-      { ...team, ...TEAM_CREDENTIAL_FILTER },
+      { ...team, ...TEAM_CREDENTIAL_FILTER, ...NOT_AN_UNFINISHED_ADDITION },
       { projection: { status: 1, revokedAt: 1 } }
     )
     .sort({ createdAt: -1 })
@@ -259,9 +265,14 @@ export async function ensureTeamCredential(
       return { credential: active, created: false }
     }
 
-    // The newest attempt that did not finish, if any.
+    // The newest attempt that did not finish, if any: never an Admin's
+    // addition, which would come out of here with no expiry.
     const unfinished = await credentialsCollection(db).findOne(
-      { ...scope, status: { $in: UNFINISHED_STATUSES } },
+      {
+        ...scope,
+        ...NOT_AN_UNFINISHED_ADDITION,
+        status: { $in: UNFINISHED_STATUSES }
+      },
       { sort: { createdAt: -1 } }
     )
 

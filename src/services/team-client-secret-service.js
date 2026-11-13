@@ -1,12 +1,14 @@
 import { config } from '#/config.js'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { TEAM_ADMIN } from '#/common/helpers/auth/access.js'
+import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import {
+  ADMIN_ADDED,
   SUBSCRIPTION_TYPE,
   TEAM_CREDENTIAL_FILTER,
   TEAM_CREDENTIAL_TYPE,
@@ -59,7 +61,7 @@ const REFUSALS = {
   }
 }
 
-async function refuse(db, context, { make, message, code }) {
+async function auditRefusal(db, context, code) {
   await recordAuditEvent(db, {
     actor: context.actor,
     role: context.role,
@@ -70,8 +72,25 @@ async function refuse(db, context, { make, message, code }) {
     code,
     reason: context.environment
   })
+}
+
+async function refuse(db, context, { make, message, code }) {
+  await auditRefusal(db, context, code)
 
   return boomWithCode(make, message, code)
+}
+
+// An environment this instance does not offer is refused as the team's
+// environments read refuse it (`404 environment-not-available`), and, as every
+// other refusal here, audited first.
+async function requireOfferedEnvironment(db, context) {
+  try {
+    requireAvailableEnvironment(context.environment)
+  } catch (error) {
+    await auditRefusal(db, context, error.data.code)
+
+    throw error
+  }
 }
 
 // What is shown of a secret that was made: never the value.
@@ -103,6 +122,7 @@ function buildPending(
     modelSlug: null,
     credentialType: TEAM_CREDENTIAL_TYPE,
     tier: TEAM_TIER,
+    origin: ADMIN_ADDED,
     environment,
     purpose: null,
     type: SUBSCRIPTION_TYPE,
@@ -119,22 +139,36 @@ function buildPending(
   }
 }
 
-// What the key was used for already: a replay answers with that secret, a key
-// made for another environment is not this request's, and an attempt that did
-// not finish is made again on the same record.
-async function earlierRequest(db, context) {
-  const { teamId, environment, idempotencyKey } = context
-  const earlier = await credentialsCollection(db).findOne({
-    teamId,
-    ...TEAM_CREDENTIAL_FILTER,
-    idempotencyKey
-  })
+// Whether an earlier record is this very request: the team's secret in this
+// environment, whoever asked.
+function isSameRequest(earlier, { teamId, environment }) {
+  return (
+    earlier.teamId === teamId &&
+    earlier.tier === TEAM_TIER &&
+    earlier.credentialType === TEAM_CREDENTIAL_TYPE &&
+    earlier.environment === environment
+  )
+}
 
-  if (earlier && earlier.environment !== environment) {
+// What the key was used for already: a replay answers with that secret, a key
+// made for anything else is not this request's (another environment, another
+// team, or a research credential: the unique index holds one per person and
+// key, whatever it was for), and an attempt that did not finish is made again
+// on the same record.
+async function earlierRequest(db, context) {
+  const { actor, teamId, idempotencyKey } = context
+  const found = await credentialsCollection(db)
+    .find({
+      idempotencyKey,
+      $or: [{ teamId, ...TEAM_CREDENTIAL_FILTER }, { userId: actor.userId }]
+    })
+    .toArray()
+
+  if (!found.every((earlier) => isSameRequest(earlier, context))) {
     throw await refuse(db, context, REFUSALS.keyReused)
   }
 
-  return earlier
+  return found[0] ?? null
 }
 
 async function issue(db, locker, context, earlier, { issuerRegistry, vault }) {
@@ -199,9 +233,11 @@ async function addUnderLock(db, locker, context, deps) {
  * client-secrets-not-allowed`: there applications federate, and no
  * exception is recorded yet) and where the team has a file (`409
  * environment-not-set-up`). Replaying an `Idempotency-Key` answers with the
- * credential and no value; a key made for another environment is `409
- * idempotency-key-reused`. A Member is refused with a `403` and a
- * non-member `404`; every refusal and the addition are audited.
+ * credential and no value; a key made for another environment, team or kind
+ * of credential is `409 idempotency-key-reused`. A Member is refused with a
+ * `403` and a non-member `404`; every refusal (an environment the instance
+ * does not offer, `404 environment-not-available`, included) and the
+ * addition are audited.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{teamId: string, environment: string, actor: {userId: string}, idempotencyKey: string}} params - `teamId` is the team's id or slug
@@ -223,9 +259,9 @@ export async function addTeamClientSecret(
     action: 'add a client secret'
   })
 
-  requireAvailableEnvironment(environment)
-
   const context = { actor, role, teamId, environment, idempotencyKey }
+
+  await requireOfferedEnvironment(db, context)
 
   if (!clientSecretsAllowedIn(environment)) {
     throw await refuse(db, context, REFUSALS.notAllowed)
@@ -235,13 +271,40 @@ export async function addTeamClientSecret(
     throw await refuse(db, context, REFUSALS.notSetUp)
   }
 
-  const lock = await acquireLockWithRetry(
+  // The key is reserved for the team across its environments before the
+  // environment's own lock is taken (always in this order), so two requests
+  // with one key meet one another's record whichever environment each is for.
+  const keyLock = await acquireLockWithRetry(
     locker,
-    `team-credential:${teamId}:${environment}`
+    `team-credential-key:${teamId}:${idempotencyKey}`
   )
 
   try {
-    return await addUnderLock(db, locker, context, { issuerRegistry, vault })
+    return await addUnderEnvironmentLock(db, locker, context, {
+      issuerRegistry,
+      vault
+    })
+  } finally {
+    await keyLock.free()
+  }
+}
+
+async function addUnderEnvironmentLock(db, locker, context, deps) {
+  const lock = await acquireLockWithRetry(
+    locker,
+    `team-credential:${context.teamId}:${context.environment}`
+  )
+
+  try {
+    return await addUnderLock(db, locker, context, deps)
+  } catch (error) {
+    // The key is also held by the same person elsewhere (another team): the
+    // unique index decides it, before anything was issued.
+    if (isDuplicateKeyError(error)) {
+      throw await refuse(db, context, REFUSALS.keyReused)
+    }
+
+    throw error
   } finally {
     await lock.free()
   }

@@ -233,6 +233,53 @@ describe('#team-client-secrets routes', () => {
       expect(await secretsOf(team, 'infradev')).toHaveLength(0)
     })
 
+    test('the same key for two environments at once makes one secret and refuses the other 409 idempotency-key-reused, never a server error', async () => {
+      const team = await deployedTeam('cs-replay-3')
+
+      withInfradev(team)
+
+      const key = randomUUID()
+      const results = await Promise.all([
+        add(team, 'cs-replay-3', { key, environment: 'sandbox' }),
+        add(team, 'cs-replay-3', { key, environment: 'infradev' })
+      ])
+      const made = results.filter(({ statusCode }) => statusCode === 201)
+      const refused = results.filter(({ statusCode }) => statusCode === 409)
+
+      expect(made).toHaveLength(1)
+      expect(refused).toHaveLength(1)
+      expect(refused[0].result.code).toBe('idempotency-key-reused')
+      expect(
+        await server.db.collection('credentials').countDocuments({
+          teamId: team.teamId,
+          tier: 'team',
+          idempotencyKey: key
+        })
+      ).toBe(1)
+    })
+
+    test('a key one Admin used in another team is 409 idempotency-key-reused, never a server error', async () => {
+      const team = await deployedTeam('cs-replay-4')
+      const other = await deployedTeam('cs-replay-4-other')
+
+      await server.db.collection('teamMembers').insertOne({
+        teamId: other.teamId,
+        userId: fixtures.as('cs-replay-4')['x-user-id'],
+        role: 'admin',
+        status: 'active'
+      })
+
+      const key = randomUUID()
+
+      expect((await add(team, 'cs-replay-4', { key })).statusCode).toBe(201)
+
+      const { statusCode, result } = await add(other, 'cs-replay-4', { key })
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('idempotency-key-reused')
+      expect(await secretsOf(other)).toHaveLength(1)
+    })
+
     test('the team credential made with its first model counts in the three', async () => {
       const team = await deployedTeam('cs-limit-1')
 
@@ -349,6 +396,45 @@ describe('#team-client-secrets routes', () => {
 
       expect(statusCode).toBe(404)
       expect(result.code).toBe('environment-not-available')
+    })
+
+    test('audits the refusal of an environment this instance does not offer: actor, admin role, team, environment and code', async () => {
+      const team = await deployedTeam('cs-env-2')
+
+      await add(team, 'cs-env-2', { environment: 'prod' })
+
+      const events = await auditOf({
+        action: 'credential.issue',
+        resourceId: team.teamId,
+        code: 'environment-not-available'
+      })
+
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({
+        outcome: 'failure',
+        role: 'admin',
+        resource: 'team',
+        reason: 'prod',
+        actorUserId: expect.any(String)
+      })
+    })
+
+    test('a Member asking for an environment this instance does not offer is refused 403 first, with no environment audit', async () => {
+      const team = await deployedTeam('cs-env-3')
+
+      await fixtures.addMember(team, 'cs-env-3-member')
+
+      const { statusCode } = await add(team, 'cs-env-3-member', {
+        environment: 'prod'
+      })
+
+      expect(statusCode).toBe(403)
+      expect(
+        await auditOf({
+          resourceId: team.teamId,
+          code: 'environment-not-available'
+        })
+      ).toHaveLength(0)
     })
 
     test('a Member is refused 403 admin-required, audited, and nothing is made', async () => {
@@ -503,6 +589,179 @@ describe('#team-client-secrets routes', () => {
       })
 
       expect(response.statusCode).toBe(404)
+    })
+  })
+
+  describe('recovery beside the secrets an Admin adds', () => {
+    let mockIssuer
+    let service
+    let maintenance
+    let adapters
+
+    beforeAll(async () => {
+      ;({ mockCredentialIssuer: mockIssuer } =
+        await import('#/adapters/mock-credential-issuer.js'))
+      service = await import('#/services/credential-service.js')
+      maintenance = await import('#/services/maintenance-service.js')
+      adapters = {
+        registry: (await import('#/adapters/credential-issuer-registry.js'))
+          .credentialIssuerRegistry,
+        vault: (await import('#/adapters/credential-vault-registry.js'))
+          .credentialVault
+      }
+    })
+
+    function revoke(credentialId, label) {
+      return server.inject({
+        method: 'DELETE',
+        url: `/v1/credentials/${credentialId}`,
+        headers: fixtures.as(label)
+      })
+    }
+
+    // The team's first-model credential, revoked, then an addition that fails.
+    async function revokedThenFailedAddition(label, key) {
+      const team = await deployedTeam(label)
+      const [automatic] = await secretsOf(team)
+
+      expect((await revoke(automatic._id, label)).statusCode).toBe(204)
+
+      vi.spyOn(mockIssuer, 'issue').mockRejectedValueOnce(new Error('down'))
+
+      expect((await add(team, label, { key })).statusCode).toBe(502)
+
+      return team
+    }
+
+    function recover(team, activatedAt) {
+      return service.ensureTeamCredential(
+        server.db,
+        server.locker,
+        {
+          teamId: team.teamId,
+          environment: 'sandbox',
+          modelSlug: 'gpt-4o',
+          requestedBy: 'recovery-user',
+          operationId: randomUUID(),
+          activatedAt
+        },
+        adapters.registry,
+        adapters.vault
+      )
+    }
+
+    test("a failed addition after the team's credential was revoked is not taken for the first model's: its own replay still expires", async () => {
+      const key = randomUUID()
+      const team = await revokedThenFailedAddition('cs-rec-1', key)
+      const [, failed] = await secretsOf(team)
+
+      const recovered = await recover(
+        team,
+        new Date(Date.now() + A_MINUTE_MS).toISOString()
+      )
+
+      expect(recovered.created).toBe(true)
+      expect(recovered.credential._id.toString()).not.toBe(
+        failed._id.toString()
+      )
+      expect(recovered.credential.expiresAt).toBeNull()
+
+      const replay = await add(team, 'cs-rec-1', { key })
+
+      expect(replay.statusCode).toBe(201)
+      expect(replay.result.credential.id).toBe(failed._id.toString())
+      expect(replay.result.credential.expiresAt).toEqual(expect.any(String))
+    })
+
+    test('a failed addition does not owe the team a credential an Admin revoked on purpose', async () => {
+      const key = randomUUID()
+      const team = await revokedThenFailedAddition('cs-rec-2', key)
+      const [, failed] = await secretsOf(team)
+      const activatedAt = new Date(Date.now() - A_MINUTE_MS).toISOString()
+
+      expect(
+        await service.teamCredentialNeedsRetry(
+          server.db,
+          { teamId: team.teamId, environment: 'sandbox' },
+          { activatedAt }
+        )
+      ).toBe(false)
+      expect(await recover(team, activatedAt)).toEqual({
+        credential: null,
+        created: false
+      })
+      expect(
+        (await server.db.collection('credentials').findOne({ _id: failed._id }))
+          .status
+      ).toBe('failed')
+    })
+
+    function reissuesOf(team) {
+      return mockIssuer.issue.mock.calls
+        .map(([params]) => params)
+        .filter(({ teamId }) => teamId === team.teamId)
+    }
+
+    test("recovering a secret's vault write reissues it as the same credential with its own expiry", async () => {
+      const team = await deployedTeam('cs-rec-3')
+      const { result } = await add(team, 'cs-rec-3')
+      const { id } = result.credential
+
+      await server.db
+        .collection('credentials')
+        .updateOne(
+          { _id: new ObjectId(id) },
+          { $set: { vaultState: 'unwritten' } }
+        )
+      vi.spyOn(mockIssuer, 'issue')
+
+      await maintenance.reconcilePendingCredentials(
+        server.db,
+        server.locker,
+        adapters.registry,
+        adapters.vault
+      )
+
+      expect(reissuesOf(team)).toEqual([
+        expect.objectContaining({
+          tier: 'team',
+          credentialId: id,
+          expiresAt: result.credential.expiresAt
+        })
+      ])
+      expect(
+        (
+          await server.db
+            .collection('credentials')
+            .findOne({ _id: new ObjectId(id) })
+        ).vaultState
+      ).toBeUndefined()
+    })
+
+    test("recovering the first model's credential reissues it as it was made: no credential id, no expiry", async () => {
+      const team = await deployedTeam('cs-rec-4')
+      const [automatic] = await secretsOf(team)
+
+      await server.db
+        .collection('credentials')
+        .updateOne(
+          { _id: automatic._id },
+          { $set: { vaultState: 'unwritten' } }
+        )
+      vi.spyOn(mockIssuer, 'issue')
+
+      await maintenance.reconcilePendingCredentials(
+        server.db,
+        server.locker,
+        adapters.registry,
+        adapters.vault
+      )
+
+      const [reissue] = reissuesOf(team)
+
+      expect(reissue).toMatchObject({ tier: 'team' })
+      expect(reissue.credentialId).toBeUndefined()
+      expect(reissue.expiresAt).toBeUndefined()
     })
   })
 
