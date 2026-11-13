@@ -10,6 +10,7 @@ import { findByIdempotencyKey } from '#/operations/operation-repository.js'
 import { projectOperation } from '#/operations/operation-projection.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { teamEnvironments } from '#/services/team-deployment-service.js'
+import { withStatusTime } from '#/services/team-deployment-entries.js'
 import { refusalOf, traceOf } from '#/services/team-deployment-submission.js'
 import { resolveTeamTarget } from '#/services/team-desired-state.js'
 import {
@@ -22,6 +23,7 @@ import {
   definitionOf,
   federationFingerprintOf,
   federationViewOf,
+  isOccupying,
   trustKeyOf
 } from '#/services/team-federation-entries.js'
 import {
@@ -79,6 +81,18 @@ async function withLock(locker, name, work) {
 
 function underLock(locker, teamId, environment, work) {
   return withLock(locker, lockNameOf(teamId, environment), work)
+}
+
+// One lock for a workload in an environment, across teams, taken last: the
+// check that no other team trusts it and the recording of the application
+// that reserves it are one step, so two teams asking for the same workload
+// together cannot both pass the check.
+function underTrustLock(locker, environment, trustKey, work) {
+  return withLock(
+    locker,
+    `team-federation-trust:${environment}:${trustKey}`,
+    work
+  )
 }
 
 // One lock for a team's additions and changes, taken before any
@@ -219,8 +233,16 @@ async function viewOfEntry(db, scope, id) {
   return entry ? federationViewOf(entry) : null
 }
 
-function federationItemOf(operation) {
-  return operation.items.find(isFederationItem)
+// Whether an operation of the key took this application: its item is on the
+// operation (a request merged into a waiting operation adds its own).
+async function isAcceptedFor(db, { teamId, key }, entry) {
+  const operation = await findByIdempotencyKey(db, { teamId, key })
+
+  return (
+    operation?.items?.some(
+      (item) => isFederationItem(item) && item.entryId === entry.id
+    ) ?? false
+  )
 }
 
 function operationRequestOf(context, environment, item, extra) {
@@ -312,13 +334,32 @@ async function replayIn(db, context, environment) {
   return operation
 }
 
+// The application a key made in an environment: the one recorded under the
+// key, among those on the operation (a request merged into a waiting
+// operation has its own application there, beside the others). The
+// operation is projected again, so a replay restores what a failure after
+// the save left unprojected.
 async function existingResult(db, context, environment, operation) {
-  const { entryId } = federationItemOf(operation)
-  const entry = await findEntry(db, { ...context, environment }, entryId)
+  const { teamId, idempotencyKey } = context
+  const key = `${idempotencyKey}:${environment}`
+  const items = operation.items.filter(isFederationItem)
+
+  await projectOperation(db, operation)
+
+  const doc = await db
+    .collection('teamDeployments')
+    .findOne({ teamId, environment })
+  const entries = doc?.federations ?? []
+  const entry =
+    entries.find(
+      (found) =>
+        found.idempotencyKey === key &&
+        items.some(({ entryId }) => entryId === found.id)
+    ) ?? entries.find(({ id }) => id === items[0]?.entryId)
 
   return {
     environment,
-    id: entryId,
+    id: entry?.id ?? items[0].entryId,
     status: entry?.status ?? FEDERATION_STATUS.SETTING_UP,
     operationId: operation._id
   }
@@ -381,14 +422,44 @@ async function queueApplication(db, context, environment) {
       operationId: operation._id
     }
   } catch (error) {
-    await dropEntry(db, scope, entry)
+    // Dropped only if no operation took it: one that was saved before this
+    // failed (its projection or audit) still commits the application, and a
+    // replay of the key must find it.
+    if (!(await isAcceptedFor(db, { teamId, key }, entry))) {
+      await dropEntry(db, scope, entry)
+    }
 
     throw error
   }
 }
 
+// What follows the checks of one environment, under the trust lock: the
+// checks again, so that a request of another team that was ahead is seen, and
+// the application queued.
+async function checkedAndQueued(db, context, environment) {
+  const registrations = await readRegistrations(db, {
+    ...context,
+    environments: [environment]
+  })
+  const code = await refusalFor(db, {
+    teamId: context.teamId,
+    environment,
+    registration: registrations.get(environment),
+    definition: context.definition
+  })
+
+  if (code) {
+    throw federationRefused([{ environment, code }])
+  }
+
+  return {
+    ...(await queueApplication(db, context, environment)),
+    replay: false
+  }
+}
+
 // One environment of a request: a key already used answers with its
-// operation; otherwise the checks are made again under the lock, so two
+// operation; otherwise the checks are made again under the locks, so two
 // requests together see each other, and the application is queued.
 async function federateIn(db, context, environment) {
   return underLock(context.locker, context.teamId, environment, async () => {
@@ -401,25 +472,12 @@ async function federateIn(db, context, environment) {
       }
     }
 
-    const registrations = await readRegistrations(db, {
-      ...context,
-      environments: [environment]
-    })
-    const code = await refusalFor(db, {
-      teamId: context.teamId,
+    return underTrustLock(
+      context.locker,
       environment,
-      registration: registrations.get(environment),
-      definition: context.definition
-    })
-
-    if (code) {
-      throw federationRefused([{ environment, code }])
-    }
-
-    return {
-      ...(await queueApplication(db, context, environment)),
-      replay: false
-    }
+      trustKeyOf(context.definition),
+      () => checkedAndQueued(db, context, environment)
+    )
   })
 }
 
@@ -637,24 +695,43 @@ function pendingOf(definition) {
   }
 }
 
-function setPending(db, { teamId, environment }, entryId, pending) {
-  return db
-    .collection('teamDeployments')
-    .updateOne(
-      { teamId, environment },
-      pending
-        ? { $set: { 'federations.$[f].pending': pending } }
-        : { $unset: { 'federations.$[f].pending': '' } },
-      { arrayFilters: [{ 'f.id': entryId }] }
-    )
+// The pending definition goes on the entry with the status it had, which a
+// change that fails before it commits, or is reverted, leaves it with (an
+// addition that failed stays failed, not ready).
+function setPending(db, { teamId, environment }, entry, pending) {
+  return db.collection('teamDeployments').updateOne(
+    { teamId, environment },
+    {
+      $set: {
+        'federations.$[f].pending': pending,
+        'federations.$[f].statusBefore': entry.status
+      }
+    },
+    { arrayFilters: [{ 'f.id': entry.id }] }
+  )
+}
+
+function clearPending(db, { teamId, environment }, entry) {
+  return db.collection('teamDeployments').updateOne(
+    { teamId, environment },
+    {
+      $unset: {
+        'federations.$[f].pending': '',
+        'federations.$[f].statusBefore': ''
+      }
+    },
+    { arrayFilters: [{ 'f.id': entry.id }] }
+  )
 }
 
 // Queues the change with its pending definition recorded first, so the
-// projection finds it; a request that is refused leaves nothing pending.
+// projection finds it; a request that is refused leaves nothing pending. One
+// that failed after an operation took it (a merge into a waiting operation
+// is saved before it is projected) keeps it, for the operation to apply.
 async function queueChange(db, context, { entry, definition, fingerprint }) {
   const { teamId, environment, idempotencyKey, operations } = context
 
-  await setPending(db, context, entry.id, pendingOf(definition))
+  await setPending(db, context, entry, pendingOf(definition))
 
   try {
     const { operation } = await operations.request(
@@ -673,7 +750,10 @@ async function queueChange(db, context, { entry, definition, fingerprint }) {
 
     return operation
   } catch (error) {
-    await setPending(db, { teamId, environment }, entry.id, null)
+    if (!(await isAcceptedFor(db, { teamId, key: idempotencyKey }, entry))) {
+      await clearPending(db, { teamId, environment }, entry)
+    }
+
     throw error
   }
 }
@@ -689,6 +769,9 @@ async function changeUnderLock(db, context, { entry, request, federationId }) {
 
   if (replayed) {
     requireSameRequest(replayed, idempotencyKey, fingerprint)
+    // Projected again, so a failure after the save that left it unprojected
+    // is restored.
+    await projectOperation(db, replayed)
 
     return {
       federation: await viewOfEntry(db, { teamId, environment }, federationId),
@@ -697,13 +780,18 @@ async function changeUnderLock(db, context, { entry, request, federationId }) {
     }
   }
 
-  await requireChangeable(db, context, entry, definition)
+  // The check against other teams and the pending definition that reserves
+  // the workload are one step, as for an addition.
+  const operation = await underTrustLock(
+    context.locker,
+    environment,
+    trustKeyOf(definition),
+    async () => {
+      await requireChangeable(db, context, entry, definition)
 
-  const operation = await queueChange(db, context, {
-    entry,
-    definition,
-    fingerprint
-  })
+      return queueChange(db, context, { entry, definition, fingerprint })
+    }
+  )
 
   await projectOperation(db, operation)
   await auditSuccess(db, context, ACTIONS.CHANGE, entry, environment)
@@ -808,6 +896,48 @@ export async function changeFederation(
   )
 }
 
+// A failed application that another one has replaced in the file holds
+// nothing of its own there: an addition that failed, before it committed or
+// was reverted, released its name, and a new application may have taken it.
+// Removing the failed one by name would remove the replacement.
+async function hasBeenReplaced(db, scope, entry) {
+  if (entry.status !== FEDERATION_STATUS.FAILED) {
+    return false
+  }
+
+  const doc = await db.collection('teamDeployments').findOne(scope)
+
+  return (doc?.federations ?? []).some(
+    (other) =>
+      other.id !== entry.id &&
+      other.name === entry.name &&
+      isOccupying(other.status)
+  )
+}
+
+// Clears such an application from the registration's record, with no
+// operation: there is nothing in the file to take out.
+async function clearReplaced(db, scope, entry) {
+  const at = new Date().toISOString()
+
+  await db.collection('teamDeployments').updateOne(
+    scope,
+    {
+      $set: {
+        'federations.$[f].status': FEDERATION_STATUS.REMOVED,
+        'federations.$[f].statusTimes': withStatusTime(
+          entry.statusTimes,
+          FEDERATION_STATUS.REMOVED,
+          at
+        ),
+        'federations.$[f].removedAt': at,
+        updatedAt: at
+      }
+    },
+    { arrayFilters: [{ 'f.id': entry.id }] }
+  )
+}
+
 async function removeUnderLock(db, context, federationId) {
   const { teamId, environment, operations } = context
   const scope = { teamId, environment }
@@ -826,6 +956,13 @@ async function removeUnderLock(db, context, federationId) {
       'The application is being set up; try again when it is done',
       'federation-in-progress'
     )
+  }
+
+  if (await hasBeenReplaced(db, scope, entry)) {
+    await clearReplaced(db, scope, entry)
+    await auditSuccess(db, context, ACTIONS.REMOVE, entry, environment)
+
+    return { federation: await viewOfEntry(db, scope, entry.id), done: true }
   }
 
   const { operation } = await operations.request(
