@@ -169,6 +169,8 @@ async function requestRemoval(db, doc, entry, context, operations) {
       action: REMOVE_ACTION,
       actor: context.actor,
       role: context.role,
+      teamId: doc.teamId,
+      environment: doc.environment,
       outcome: 'failure',
       code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
     })
@@ -188,6 +190,8 @@ async function submitRemoval(db, doc, entry, context, operations) {
     action: REMOVE_ACTION,
     actor: context.actor,
     role: context.role,
+    teamId: doc.teamId,
+    environment: doc.environment,
     reason: `remove operation ${operation._id}`
   })
 

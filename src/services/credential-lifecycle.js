@@ -5,6 +5,7 @@ import { requireLock } from '#/common/helpers/mongo-lock.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { grantedModelSlugs } from '#/services/team-deployment-gateway.js'
+import { isEnvironmentBlocked } from '#/services/credential-block.js'
 import {
   ROLE_OWNER,
   assertNotRevoked,
@@ -35,6 +36,8 @@ const MS_PER_SECOND = 1000
 const MS_PER_DAY =
   HOURS_PER_DAY * MINUTES_PER_HOUR * SECONDS_PER_MINUTE * MS_PER_SECOND
 
+const CREDENTIALS_DISABLED = 'credentials-disabled'
+
 function auditAction(db, { actor, role, action, id, ...extra }) {
   return recordAuditEvent(db, {
     actor,
@@ -45,6 +48,43 @@ function auditAction(db, { actor, role, action, id, ...extra }) {
     outcome: 'success',
     ...extra
   })
+}
+
+// A team credential cannot be rotated or revealed while a Platform Admin has
+// disabled the team's credentials in its environment: refused as `409
+// credentials-disabled`, and audited as the action that was refused. The
+// response and the event say nothing of why; the block's reason is only in
+// its own audit event. Research credentials are personal and never blocked.
+async function assertCredentialsEnabled(
+  db,
+  { credential, actor, role, action, id }
+) {
+  const { teamId } = credential
+  const environment = environmentOf(credential)
+
+  if (
+    credential.tier !== 'team' ||
+    !(await isEnvironmentBlocked(db, { teamId, environment }))
+  ) {
+    return
+  }
+
+  await auditAction(db, {
+    actor,
+    role,
+    action,
+    id,
+    outcome: 'failure',
+    code: CREDENTIALS_DISABLED,
+    teamId,
+    environment
+  })
+
+  throw boomWithCode(
+    Boom.conflict,
+    'Credentials are disabled for this team in this environment',
+    CREDENTIALS_DISABLED
+  )
 }
 
 // A renewal is refused for a team credential (it never expires), a revoked one
@@ -189,6 +229,13 @@ export async function rotateCredential(
     const { credential, role } = loaded
 
     assertNotRevoked(credential)
+    await assertCredentialsEnabled(db, {
+      credential,
+      actor,
+      role,
+      action: 'credential.rotate',
+      id
+    })
 
     const { issuer } = registry.forCredential(credential)
     const rotated = await issuer.rotate({
@@ -234,9 +281,71 @@ async function removeSecretFromVault(vault, credential) {
 }
 
 /**
+ * Revokes one credential record: deletes its gateway subscription, removes
+ * its secret from the vault (best effort) and marks it `revoked`. The one
+ * path a team Admin's revoke and a Platform Admin's revoke both take;
+ * authorisation, the credential lock and, for a Platform Admin, the audit
+ * event (one per environment, not per record) are the caller's. An issuer
+ * failure throws and leaves the record active.
+ * @param {import('mongodb').Db} db
+ * @param {object} credential - the stored, not yet revoked, credential
+ * @param {{actor: object, role: string, revokedReason?: string, audit?: boolean}} options - `revokedReason` is what the record keeps (`user-requested` unless a Platform Admin revokes); `audit` false leaves the `credential.revoke` event to the caller
+ * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
+ * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
+ * @returns {Promise<object>} the revoked record
+ */
+export async function revokeCredentialRecord(
+  db,
+  credential,
+  { actor, role, revokedReason = 'user-requested', audit = true },
+  registry = credentialIssuerRegistry,
+  vault = credentialVault
+) {
+  const { issuer } = registry.forCredential(credential)
+  await issuer.revoke({
+    externalId: externalGatewaySubscriptionIdOf(credential),
+    environment: environmentOf(credential)
+  })
+
+  await removeSecretFromVault(vault, credential)
+
+  const now = new Date().toISOString()
+  // The record keeps what the credential covered when it was revoked,
+  // since a revoked credential no longer follows the team's grants.
+  const covered =
+    credential.tier === 'team'
+      ? { allowedDeployments: await grantedModelSlugs(db, credential) }
+      : {}
+  const updated = await credentialsCollection(db).findOneAndUpdate(
+    { _id: credential._id },
+    {
+      $set: {
+        status: 'revoked',
+        revokedAt: now,
+        revokedReason,
+        ...covered
+      }
+    },
+    { returnDocument: 'after' }
+  )
+
+  if (audit) {
+    await auditAction(db, {
+      actor,
+      role,
+      action: 'credential.revoke',
+      id: credential._id.toString()
+    })
+  }
+
+  return updated
+}
+
+/**
  * Revokes a credential, deleting its APIM subscription. A team credential
  * may be revoked by any admin member of that team, not only whoever
- * originally requested it.
+ * originally requested it. Revoking is allowed while a Platform Admin has
+ * disabled the team's credentials: it only reduces access.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{id: string, actor: {userId: string}}} params
@@ -265,35 +374,13 @@ export async function revokeCredential(
       return credential
     }
 
-    const { issuer } = registry.forCredential(credential)
-    await issuer.revoke({
-      externalId: externalGatewaySubscriptionIdOf(credential),
-      environment: environmentOf(credential)
-    })
-
-    await removeSecretFromVault(vault, credential)
-
-    const now = new Date().toISOString()
-    // The record keeps what the credential covered when it was revoked,
-    // since a revoked credential no longer follows the team's grants.
-    const covered =
-      credential.tier === 'team'
-        ? { allowedDeployments: await grantedModelSlugs(db, credential) }
-        : {}
-    const updated = await credentialsCollection(db).findOneAndUpdate(
-      { _id: credential._id },
-      {
-        $set: {
-          status: 'revoked',
-          revokedAt: now,
-          revokedReason: 'user-requested',
-          ...covered
-        }
-      },
-      { returnDocument: 'after' }
+    const updated = await revokeCredentialRecord(
+      db,
+      credential,
+      { actor, role },
+      registry,
+      vault
     )
-
-    await auditAction(db, { actor, role, action: 'credential.revoke', id })
 
     return withRenewalsRemaining(updated)
   } finally {
@@ -328,6 +415,13 @@ export async function revealCredential(
   const { credential, role } = loaded
 
   assertNotRevoked(credential)
+  await assertCredentialsEnabled(db, {
+    credential,
+    actor,
+    role,
+    action: 'credential.reveal',
+    id
+  })
 
   if (
     credential.status === 'failed' ||

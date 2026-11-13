@@ -66,12 +66,39 @@ export function withStatusTime(statusTimes, status, at) {
 }
 
 /**
+ * The team and environment whose file holds the entry, for an event whose
+ * caller knows only the entry's id. Nothing is returned when no file holds it
+ * (an entry pulled after a refused request) or the read fails: the audit
+ * write that follows must never fail because of a lookup.
+ * @param {import('mongodb').Db} db
+ * @param {string} entryId
+ * @returns {Promise<{teamId?: string, environment?: string}>}
+ */
+async function locateEntry(db, entryId) {
+  try {
+    const file = await db
+      .collection('teamDeployments')
+      .findOne(
+        { 'deployments.id': entryId },
+        { projection: { teamId: 1, environment: 1 } }
+      )
+
+    return file ? { teamId: file.teamId, environment: file.environment } : {}
+  } catch {
+    return {}
+  }
+}
+
+/**
  * Records an audit event against one deployment entry, as the backend
  * itself unless an actor is given. A request's change passes the `actor`
- * (the token's credentials) and the `role` it used.
+ * (the token's credentials) and the `role` it used. The event names the
+ * team and environment of the entry's file: a caller that knows them passes
+ * `teamId` and `environment`, otherwise they are read from the file holding
+ * the entry.
  * @param {import('mongodb').Db} db
  * @param {{id: string}} entry
- * @param {{action: string, outcome?: string, actor?: object, role?: string, actorUserId?: string, code?: string, reason?: string, eventId?: string}} event
+ * @param {{action: string, outcome?: string, actor?: object, role?: string, actorUserId?: string, code?: string, reason?: string, eventId?: string, teamId?: string, environment?: string}} event
  */
 export async function auditDeployment(
   db,
@@ -84,11 +111,17 @@ export async function auditDeployment(
     actorUserId,
     code,
     reason,
-    eventId
+    eventId,
+    teamId,
+    environment
   }
 ) {
   const isSystemStep =
     !actor && (actorUserId === undefined || actorUserId === SYSTEM_PRINCIPAL_ID)
+  const where =
+    teamId && environment
+      ? { teamId, environment }
+      : await locateEntry(db, entry.id)
 
   await recordAuditEvent(db, {
     actor: isSystemStep ? systemActor : actor,
@@ -100,6 +133,7 @@ export async function auditDeployment(
     outcome,
     code,
     reason,
-    eventId
+    eventId,
+    ...where
   })
 }

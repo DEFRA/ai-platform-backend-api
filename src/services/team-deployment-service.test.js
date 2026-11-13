@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
+import { onTestFinished } from 'vitest'
 import { ObjectId } from 'mongodb'
 
 import { createInMemoryCommandPublisher } from '#/adapters/in-memory-command-publisher.js'
@@ -301,6 +302,27 @@ describe('team-deployment-service (operations)', () => {
       .toArray()
   }
 
+  // Counts the reads of a team file, so a test can show an audit event did not
+  // look the file up again. Restored when the test ends.
+  function spyOnFileReads() {
+    const spy = vi.spyOn(
+      db.collection('teamDeployments').constructor.prototype,
+      'findOne'
+    )
+
+    onTestFinished(() => spy.mockRestore())
+
+    return spy
+  }
+
+  // The reads that find a file only by the id of one of its entries: what the
+  // audit of an entry does when its caller did not say the team.
+  function entryLookups(findOne) {
+    return findOne.mock.calls.filter(
+      ([filter]) => Object.keys(filter ?? {}).join() === 'deployments.id'
+    ).length
+  }
+
   describe('requestDeployments', () => {
     test('fails with desired-state-unavailable and records nothing when the team has no file to build', async () => {
       const member = await signedInMember({}, { slug: '' })
@@ -396,7 +418,9 @@ describe('team-deployment-service (operations)', () => {
         expect.objectContaining({
           action: 'teamDeployment.request',
           actorUserId: member.userId,
-          outcome: 'success'
+          outcome: 'success',
+          teamId: member.teamId,
+          environment: SANDBOX
         })
       ])
     })
@@ -502,7 +526,11 @@ describe('team-deployment-service (operations)', () => {
           outcome: 'failure',
           actorUserId: member.userId
         })
-      ).toMatchObject({ code: 'upstream-unavailable' })
+      ).toMatchObject({
+        code: 'upstream-unavailable',
+        teamId: member.teamId,
+        environment: SANDBOX
+      })
     })
 
     test('queues nothing for a policy refusal: no operation, no outbox entry, no entry', async () => {
@@ -1438,6 +1466,32 @@ describe('team-deployment-service (operations)', () => {
       expect(await operationsOf(admin.teamId)).toEqual([])
     })
 
+    test('names the team and environment of a removal, a failed one too, without looking the file up by entry again', async () => {
+      const member = await signedInMember()
+      const other = await signedInMember()
+      const refused = await seededActive(member)
+      const accepted = await seededActive(other, 'svc-b')
+      const findOne = spyOnFileReads()
+
+      buildDesiredState.mockRejectedValueOnce(new Error('GitHub is down'))
+      await expect(remove(member, refused)).rejects.toMatchObject({
+        output: { statusCode: 502 }
+      })
+      await remove(other, accepted)
+
+      expect(entryLookups(findOne)).toBe(0)
+      for (const [owner, id] of [
+        [member, refused],
+        [other, accepted]
+      ]) {
+        expect(
+          (await auditOf(id)).find(
+            ({ action }) => action === 'teamDeployment.remove'
+          )
+        ).toMatchObject({ teamId: owner.teamId, environment: SANDBOX })
+      }
+    })
+
     test('leaves the deployment active when the removal cannot be submitted', async () => {
       const member = await signedInMember()
       const id = await seededActive(member)
@@ -1455,7 +1509,12 @@ describe('team-deployment-service (operations)', () => {
         (await auditOf(id)).find(
           ({ action }) => action === 'teamDeployment.remove'
         )
-      ).toMatchObject({ outcome: 'failure', code: 'upstream-unavailable' })
+      ).toMatchObject({
+        outcome: 'failure',
+        code: 'upstream-unavailable',
+        teamId: member.teamId,
+        environment: SANDBOX
+      })
     })
 
     test('passes a policy refusal on as it is', async () => {
@@ -1535,6 +1594,44 @@ describe('team-deployment-service (operations)', () => {
       return { deployment, operation }
     }
 
+    test.each(['retry', 'reconcile'])(
+      'names the team and environment of a %s, a failed one too, with no read of the file beyond the one that found the entry',
+      async (kind) => {
+        const member = await signedInMember()
+        const { deployment } = await failedDeployment(member)
+        const admin = await adminActor()
+        const findOne = spyOnFileReads()
+        const unchanged = vi.fn().mockResolvedValue(null)
+        const failing = vi.fn().mockRejectedValue(new Error('mongo down'))
+
+        await redispatch(deployment._id, kind, admin, {
+          operations: { [kind]: unchanged }
+        })
+        await expect(
+          redispatch(deployment._id, kind, admin, {
+            operations: { [kind]: failing }
+          })
+        ).rejects.toMatchObject({ output: { statusCode: 502 } })
+
+        // One read per call: the one that locates the deployment.
+        expect(entryLookups(findOne)).toBe(2)
+        expect(
+          (await auditOf(deployment._id)).filter(
+            ({ action }) => action === `teamDeployment.${kind}`
+          )
+        ).toEqual([
+          expect.objectContaining({
+            teamId: member.teamId,
+            environment: SANDBOX
+          }),
+          expect.objectContaining({
+            teamId: member.teamId,
+            environment: SANDBOX
+          })
+        ])
+      }
+    )
+
     test('refuses anyone who is not a Platform Admin', async () => {
       const member = await signedInMember()
       const { deployment } = await failedDeployment(member)
@@ -1611,7 +1708,9 @@ describe('team-deployment-service (operations)', () => {
         azp: admin.azp,
         uti: admin.uti,
         outcome: 'success',
-        reason: 'deploy-failed -> deploying'
+        reason: 'deploy-failed -> deploying',
+        teamId: member.teamId,
+        environment: SANDBOX
       })
     })
 

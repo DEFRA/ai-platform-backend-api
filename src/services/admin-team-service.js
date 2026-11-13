@@ -71,7 +71,13 @@ function listFilter({ search, status }) {
   }
 }
 
-function environmentRank(environment) {
+/**
+ * Where an environment sits in the configured order, after every configured
+ * one for an environment the instance no longer lists.
+ * @param {string} environment
+ * @returns {number}
+ */
+export function environmentRank(environment) {
   const rank = config.get('teamDeployment.environments').indexOf(environment)
 
   return rank === -1 ? Number.MAX_SAFE_INTEGER : rank

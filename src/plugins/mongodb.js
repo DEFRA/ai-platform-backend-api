@@ -176,6 +176,10 @@ async function createIndexes(db) {
   await db
     .collection('teamDeployments')
     .createIndex({ teamId: 1, environment: 1 }, { unique: true })
+  // The Platform Admin Deployments list reads one environment's documents.
+  await db
+    .collection('teamDeployments')
+    .createIndex({ environment: 1, teamId: 1 })
   // Superseded by the index above once `deployments[]` consolidated every
   // legacy one-row-per-model document (see the backfill registry) - the
   // migration itself runs before this, so these are always safe to drop.
@@ -196,6 +200,11 @@ async function createIndexes(db) {
       partialFilterExpression: { idempotencyKey: { $type: 'string' } }
     }
   )
+  // The Platform Admin Deployments pages read a team's credential records in
+  // one environment (the list reads a page of teams at once).
+  await db
+    .collection('credentials')
+    .createIndex({ teamId: 1, environment: 1, tier: 1 })
   await db.collection('credentials').createIndex({ userId: 1, status: 1 })
   await db.collection('credentials').createIndex({ status: 1, expiresAt: 1 })
   // Per-gateway work (reconcile, bulk revoke) selects by gateway and status.
@@ -204,6 +213,11 @@ async function createIndexes(db) {
   await dropIndexIfExists(db.collection('credentials'), 'adapter_1_status_1')
 
   await db.collection('auditEvents').createIndex({ actorUserId: 1, at: 1 })
+  // The Platform Admin Audit log lists newest first, then by `_id`, with or
+  // without a team: both indexes match that order, so a page is read in index
+  // order and never sorted in memory.
+  await db.collection('auditEvents').createIndex({ at: -1, _id: -1 })
+  await db.collection('auditEvents').createIndex({ teamId: 1, at: -1, _id: -1 })
   await createOperationIndexes(db)
   // `at` must be a BSON Date (not an ISO string) for this TTL index to expire documents
   await db

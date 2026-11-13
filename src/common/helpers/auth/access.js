@@ -1,4 +1,5 @@
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
+import { existingTeamId } from '#/common/helpers/team-id.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 
 // Design F: Platform Admin is a portal role held in the portal's database,
@@ -64,12 +65,12 @@ export async function getActiveTeamIds(db, actor) {
  * right, a 404 that hides a resource included, goes through here.
  * @param {import('mongodb').Db} db
  * @param {object} actor
- * @param {{resource: string, resourceId: string, code: string, role?: string|null, error: Error}} refusal
+ * @param {{resource: string, resourceId: string, code: string, role?: string|null, teamId?: string, error: Error}} refusal - `teamId` is the id of the team the refusal is about, for a refusal of a team's right
  */
 export async function refuse(
   db,
   actor,
-  { resource, resourceId, code, role = null, error }
+  { resource, resourceId, code, role = null, teamId, error }
 ) {
   await recordAuditEvent(db, {
     actor,
@@ -77,6 +78,7 @@ export async function refuse(
     action: 'access.denied',
     resource,
     resourceId: String(resourceId),
+    teamId,
     outcome: 'failure',
     code
   })
@@ -104,9 +106,13 @@ export async function requireTeamRole(
   const held = await getTeamRole(db, actor, teamId)
 
   if (!held) {
+    // A refusal of someone who is not a member says nothing of whether the
+    // team exists, so it names the team only when there is one: a made-up id
+    // or a slug must never reach the audit log as a team.
     throw await refuse(db, actor, {
       resource: 'team',
       resourceId: teamId,
+      teamId: await existingTeamId(db, teamId),
       code: 'not-a-member',
       error: Boom.notFound()
     })
@@ -116,6 +122,7 @@ export async function requireTeamRole(
     throw await refuse(db, actor, {
       resource: 'team',
       resourceId: teamId,
+      teamId,
       code: 'admin-required',
       role: held,
       error: boomWithCode(
@@ -184,6 +191,7 @@ export async function requireNotSelfAdd(db, actor, { teamId, oid }) {
   throw await refuse(db, actor, {
     resource: 'team',
     resourceId: teamId,
+    teamId,
     code: 'self-add-refused',
     role: PLATFORM_ADMIN_ROLE,
     error: boomWithCode(
