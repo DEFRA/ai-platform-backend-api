@@ -420,6 +420,29 @@ describe('operation-writer', () => {
         })
       })
 
+      test('name the team and environment of the file holding each entry', async () => {
+        await db.collection('teamDeployments').insertOne({
+          teamId: 'team-1',
+          environment: 'infradev',
+          deployments: ITEMS.map(({ entryId, modelSlug }) => ({
+            id: entryId,
+            modelSlug,
+            status: 'requested'
+          }))
+        })
+        const operation = await seedOperation()
+
+        await writeOperation(ctx(), operation, { state: 'committed' })
+
+        expect(await auditEvents()).toEqual([
+          expect.objectContaining({
+            teamId: 'team-1',
+            environment: 'infradev'
+          }),
+          expect.objectContaining({ teamId: 'team-1', environment: 'infradev' })
+        ])
+      })
+
       test.each(['checks-failed', 'deploy-failed', 'timed-out'])(
         'record a failure outcome for the state %s',
         async (state) => {

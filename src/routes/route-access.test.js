@@ -31,7 +31,25 @@ const ROUTES = [
   ['DELETE /v1/teams/{teamId}/deployments/{id}', ACCESS.teamAdmin],
   ['POST /v1/admin/team-deployments/{id}/retry', ACCESS.platformAdmin],
   ['POST /v1/admin/team-deployments/{id}/reconcile', ACCESS.platformAdmin],
+  ['GET /v1/admin/team-deployments', ACCESS.platformAdmin],
+  [
+    'GET /v1/admin/team-deployments/{teamId}/{environment}',
+    ACCESS.platformAdmin
+  ],
+  [
+    'POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/disable',
+    ACCESS.platformAdmin
+  ],
+  [
+    'POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/enable',
+    ACCESS.platformAdmin
+  ],
+  [
+    'POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/revoke',
+    ACCESS.platformAdmin
+  ],
   ['GET /v1/admin/teams', ACCESS.platformAdmin],
+  ['GET /v1/admin/audit', ACCESS.platformAdmin],
   ['GET /v1/admin/teams/{id}', ACCESS.platformAdmin],
   ['POST /v1/admin/teams/{id}/people/search', ACCESS.platformAdmin],
   ['POST /v1/admin/teams/{id}/members', ACCESS.platformAdmin],

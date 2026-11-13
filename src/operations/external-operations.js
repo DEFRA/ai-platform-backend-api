@@ -8,6 +8,7 @@ import {
 import { decideEvent, factsOf } from '#/operations/operation-state-machine.js'
 import { writeOperation } from '#/operations/operation-writer.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
+import { resolveTeamId } from '#/services/team-service.js'
 
 // External operations (plan 5, DD22): a run the portal did not start - a
 // manual `submit`, a promote, a release `autoPin`, a manual apply,
@@ -101,11 +102,18 @@ export function createExternalOperations({
   logger
 }) {
   async function audit(operation, event) {
+    // The operation names its team by slug (or, for a commit that names no
+    // team, by environment), so the team's id is looked up; a team no one
+    // holds is not named.
+    const teamId = event.team ? await resolveTeamId(db, event.team) : null
+
     await recordAuditEvent(db, {
       actorUserId: event.requestedBy,
       action: 'operation.external',
       resource: 'operation',
       resourceId: operation._id,
+      ...(teamId && { teamId }),
+      environment: event.environment,
       outcome: 'success',
       code: operation.type,
       reason: `${event.source} ${event.status}`

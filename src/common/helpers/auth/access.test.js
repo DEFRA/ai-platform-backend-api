@@ -210,6 +210,63 @@ describe('#access', () => {
         requireTeamRole(db, actor, TEAM, { role: 'admin' })
       ).rejects.toMatchObject({ output: { statusCode: 404 } })
     })
+
+    describe('the team the refusal names', () => {
+      async function insertTeam() {
+        const slug = `named-${new ObjectId().toString().slice(-10)}`
+        const { insertedId } = await db
+          .collection('teams')
+          .insertOne({ name: slug, normalisedName: slug, slug })
+
+        return { teamId: insertedId.toString(), slug }
+      }
+
+      test('names the team on admin-required', async () => {
+        const actor = actorOf()
+        const { teamId } = await insertTeam()
+
+        await join(teamId, actor.userId, 'user')
+        await expect(
+          requireTeamRole(db, actor, teamId, { role: 'admin' })
+        ).rejects.toMatchObject({ data: { code: 'admin-required' } })
+
+        expect(await denials()).toEqual([
+          expect.objectContaining({ code: 'admin-required', teamId })
+        ])
+      })
+
+      test('names the team on not-a-member when the team exists', async () => {
+        const { teamId } = await insertTeam()
+
+        await expect(
+          requireTeamRole(db, actorOf(), teamId)
+        ).rejects.toMatchObject({ output: { statusCode: 404 } })
+
+        expect(await denials()).toEqual([
+          expect.objectContaining({ code: 'not-a-member', teamId })
+        ])
+      })
+
+      test.each([
+        ['an id no team has', () => new ObjectId().toString()],
+        ['a slug', (team) => team.slug],
+        ['text that is no id at all', () => 'x'.repeat(200)]
+      ])(
+        'does not name %s on not-a-member, so no made-up team ever reaches the log',
+        async (_name, refOf) => {
+          const ref = refOf(await insertTeam())
+
+          await expect(
+            requireTeamRole(db, actorOf(), ref)
+          ).rejects.toMatchObject({ output: { statusCode: 404 } })
+
+          const [event] = await denials()
+
+          expect(event).toMatchObject({ code: 'not-a-member', resourceId: ref })
+          expect(event).not.toHaveProperty('teamId')
+        }
+      )
+    })
   })
 
   describe('requirePlatformAdmin', () => {
@@ -298,6 +355,7 @@ describe('#access', () => {
           role: 'platform-admin',
           resource: 'team',
           resourceId: TEAM,
+          teamId: TEAM,
           code: 'self-add-refused',
           outcome: 'failure'
         })
@@ -331,6 +389,31 @@ describe('#access', () => {
   })
 
   describe('refuse', () => {
+    test('names the team an event is about when it is given one', async () => {
+      const teamId = new ObjectId().toString()
+
+      await refuse(db, actorOf(), {
+        resource: 'team',
+        resourceId: teamId,
+        teamId,
+        code: 'some-refusal',
+        error: Boom.notFound()
+      })
+
+      expect(await denials()).toEqual([expect.objectContaining({ teamId })])
+    })
+
+    test('leaves the team out when it is not given one', async () => {
+      await refuse(db, actorOf(), {
+        resource: 'credential',
+        resourceId: 'c-1',
+        code: 'not-owner',
+        error: Boom.notFound()
+      })
+
+      expect((await denials())[0]).not.toHaveProperty('teamId')
+    })
+
     test('audits a refusal and returns the error to throw', async () => {
       const error = Boom.notFound()
       const actor = actorOf()

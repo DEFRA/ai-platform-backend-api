@@ -113,6 +113,7 @@ describe('operation-verifier', () => {
   beforeEach(async () => {
     await db.collection('operations').deleteMany({})
     await db.collection('auditEvents').deleteMany({})
+    await db.collection('teamDeployments').deleteMany({})
     logger = { warn: vi.fn(), error: vi.fn() }
     verifier = { verify: vi.fn().mockResolvedValue({ verified: true }) }
     operations = { finish: vi.fn().mockResolvedValue(undefined) }
@@ -313,6 +314,29 @@ describe('operation-verifier', () => {
         const written = await build().verify(operation._id)
 
         expect(written.verify.reason).toBe('unknown')
+      })
+
+      test('names the team and environment of the file holding each item in the audit event', async () => {
+        await db.collection('teamDeployments').insertOne({
+          teamId: 'team-of-miss',
+          environment: 'infradev',
+          deployments: [{ id: 'entry-1' }, { id: 'entry-2' }]
+        })
+        const operation = await seedDeployed({ items: [ADD, REMOVE] })
+        verifier.verify.mockResolvedValue({ verified: false, reason: 'x' })
+
+        await build().verify(operation._id)
+
+        expect(await auditEvents()).toEqual([
+          expect.objectContaining({
+            teamId: 'team-of-miss',
+            environment: 'infradev'
+          }),
+          expect.objectContaining({
+            teamId: 'team-of-miss',
+            environment: 'infradev'
+          })
+        ])
       })
 
       test('audits the miss against each item and warns, without the resource IDs', async () => {
@@ -562,9 +586,13 @@ describe('operation-verifier', () => {
               const original = collection.findOne.bind(collection)
 
               collection.findOne = async (...args) => {
-                reads += 1
+                // Only the projection reads the file by team and environment;
+                // an audit event finds it by the entry it names.
+                if (args[0]?.teamId !== undefined) {
+                  reads += 1
+                }
 
-                if (reads === 2) {
+                if (reads === 2 && args[0]?.teamId !== undefined) {
                   throw new Error('projection down')
                 }
 

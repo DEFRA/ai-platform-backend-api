@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
+import { existingTeamId } from '#/common/helpers/team-id.js'
 import {
   TEAM_SLUG_PATTERN,
   deriveTeamSlug,
@@ -19,11 +20,9 @@ import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
 // pass the name check but derive one slug, so a clash needs a numbered retry.
 const MAX_SLUG_ATTEMPTS = 10
 
-// A team id as `ObjectId#toString` writes it. A slug must start with a letter
-// and may in theory be 24 hex characters, so an id-shaped value is an id only
-// when a team has it, and is otherwise looked up as a slug.
-const TEAM_ID_PATTERN = /^[0-9a-f]{24}$/
-
+// An id-shaped value is a team's id only when a team has it (`existingTeamId`),
+// since a slug may in theory be 24 hex characters; it is otherwise looked up
+// as a slug.
 function membershipLock(teamId) {
   return `team-members:${teamId}`
 }
@@ -40,13 +39,10 @@ function membershipLock(teamId) {
  * @returns {Promise<string|null>}
  */
 export async function resolveTeamId(db, idOrSlug) {
-  if (
-    TEAM_ID_PATTERN.test(idOrSlug) &&
-    (await db
-      .collection('teams')
-      .findOne({ _id: new ObjectId(idOrSlug) }, { projection: { _id: 1 } }))
-  ) {
-    return idOrSlug
+  const id = await existingTeamId(db, idOrSlug)
+
+  if (id) {
+    return id
   }
 
   if (!TEAM_SLUG_PATTERN.test(idOrSlug)) {
@@ -209,6 +205,7 @@ export async function createTeam(
     action: 'team.create',
     resource: 'team',
     resourceId: insertedId.toString(),
+    teamId: insertedId.toString(),
     outcome: 'success'
   })
 
@@ -302,6 +299,7 @@ export async function updateTeam(
       action: 'team.setServiceCode',
       resource: 'team',
       resourceId: teamId,
+      teamId,
       outcome: 'success',
       code: changes.serviceCode
     })
@@ -314,6 +312,7 @@ export async function updateTeam(
       action: 'team.setDescription',
       resource: 'team',
       resourceId: teamId,
+      teamId,
       outcome: 'success'
     })
   }
@@ -621,6 +620,7 @@ export async function setMemberRole(
     action: 'team.setMemberRole',
     resource: 'team',
     resourceId: teamId,
+    teamId,
     outcome: 'success',
     code: role
   })

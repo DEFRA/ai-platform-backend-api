@@ -234,6 +234,8 @@ async function addDeployments(db, params, operations) {
       action: REQUEST_ACTION,
       actor: params.actor,
       role: params.role,
+      teamId,
+      environment,
       ...(operation.state === QUEUED ? { code: QUEUED } : {})
     })
   )
@@ -347,6 +349,8 @@ async function submitOperation(
           action: REQUEST_ACTION,
           actor,
           role,
+          teamId,
+          environment,
           outcome: 'failure',
           code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
         })
@@ -460,6 +464,8 @@ export async function redispatchApply(db, { id, actor, kind }, { operations }) {
       action: `teamDeployment.${kind}`,
       actor,
       role: PLATFORM_ADMIN_ROLE,
+      teamId: located.teamId,
+      environment: located.environment,
       outcome: 'failure',
       code: UPSTREAM_UNAVAILABLE
     })
@@ -475,6 +481,8 @@ export async function redispatchApply(db, { id, actor, kind }, { operations }) {
     action: `teamDeployment.${kind}`,
     actor,
     role: PLATFORM_ADMIN_ROLE,
+    teamId: located.teamId,
+    environment: located.environment,
     reason:
       written && written.state !== operation.state
         ? `${operation.state} -> ${written.state}`

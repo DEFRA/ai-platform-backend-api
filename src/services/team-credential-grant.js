@@ -6,6 +6,10 @@ import {
   auditDeployment,
   findEntry
 } from '#/services/team-deployment-entries.js'
+import {
+  credentialsBlockLockName,
+  isEnvironmentBlocked
+} from '#/services/credential-block.js'
 
 // Stable codes a team credential failure is audited under.
 const VAULT_WRITE_FAILED = 'vault-write-failed'
@@ -48,8 +52,26 @@ export async function grantTeamCredential(
 ) {
   const { ensureCredential, locker, logger, retryAfterMs } =
     settingsOf(settings)
+  let lock = null
 
   try {
+    // Holding the block's lock from the last look at the block to the issue,
+    // a Platform Admin's Disable cannot land in between: it waits for this
+    // grant, or this grant sees it. A grant that cannot get the lock leaves
+    // the credential to the next recovery sweep.
+    lock = await locker.lock(
+      credentialsBlockLockName(doc.teamId, doc.environment)
+    )
+
+    if (!lock || (await isEnvironmentBlocked(db, doc))) {
+      logger?.debug(
+        { operationId: entry.operationId },
+        'No team credential is created: credentials are disabled or being changed for the environment'
+      )
+
+      return false
+    }
+
     const { created, vaultWritten } = await ensureCredential(db, locker, {
       teamId: doc.teamId,
       environment: doc.environment,
@@ -80,6 +102,8 @@ export async function grantTeamCredential(
     })
 
     return false
+  } finally {
+    await lock?.free()
   }
 }
 
