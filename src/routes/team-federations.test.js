@@ -2117,6 +2117,49 @@ describe('#team-federations routes', () => {
         )
       })
 
+      test('gives the generation back when no operation took the change, so the operation the application holds is not refused', async () => {
+        const { team, id } = await readyApplicationOf('fed-hold-5')
+
+        expect((await entriesOf(team))[0].generation).toBe(1)
+
+        vi.spyOn(server.app.operations.operations, 'request').mockRejectedValue(
+          new Error('the database is down')
+        )
+        await patch(team, 'fed-hold-5', id, { service: 'shared-api' })
+        vi.restoreAllMocks()
+
+        expect((await entriesOf(team))[0]).toMatchObject({
+          generation: 1,
+          projectedGeneration: 1
+        })
+      })
+
+      test('keeps the generation of a change an operation took, for the replay', async () => {
+        const { team, id } = await readyApplicationOf('fed-hold-6')
+        const key = randomUUID()
+
+        await holdTheFile(team)
+        failAfterSave()
+        await patch(team, 'fed-hold-6', id, { service: 'shared-api' }, { key })
+
+        expect((await entriesOf(team))[0].generation).toBe(2)
+      })
+
+      test('gives the generation back when no operation took a removal', async () => {
+        const { team, id } = await readyApplicationOf('fed-hold-7')
+
+        vi.spyOn(server.app.operations.operations, 'request').mockRejectedValue(
+          new Error('the database is down')
+        )
+        await remove(team, 'fed-hold-7', id)
+        vi.restoreAllMocks()
+
+        expect((await entriesOf(team))[0]).toMatchObject({
+          status: 'ready',
+          generation: 1
+        })
+      })
+
       test('holds the workload for a failed application that is changed, remembering it was failed', async () => {
         const team = await deployedTeam('fed-hold-4')
         const other = await deployedTeam('fed-hold-4-other')

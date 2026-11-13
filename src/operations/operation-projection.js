@@ -294,6 +294,13 @@ function versionGuardOf(key, operation, entryId) {
 // redelivered after a later change or removal took the application is not
 // projected over it; within one generation (one operation) state versions
 // order the writes.
+//
+// A change takes its generation when it reserves the application, before its
+// operation is first projected, so the generation last projected can be behind
+// the one reserved. The guard also compares with the entry's own (reserved)
+// generation, in the same update: an operation older than the reservation is
+// superseded, and never consumes the pending definition that reservation
+// holds. An entry from before generations were kept has none, and takes any.
 function federationGuardOf(key, item, operation) {
   const generation = generationOf(item)
   const recorded = `${key}.projectedGeneration`
@@ -301,6 +308,7 @@ function federationGuardOf(key, item, operation) {
 
   return {
     [`${key}.id`]: item.entryId,
+    [`${key}.generation`]: { $not: { $gt: generation } },
     $or: [
       { [version]: { $exists: false } },
       { [recorded]: { $lt: generation } },

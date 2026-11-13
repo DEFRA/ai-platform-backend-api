@@ -606,6 +606,99 @@ describe('projecting an operation onto the federations of a team document', () =
     })
   })
 
+  describe('an older change recovering after a newer one reserved the application, before the newer one was first projected', () => {
+    const pending = {
+      name: 'new-api',
+      service: 'new-api',
+      trustKey: 'CDP service new-api'
+    }
+    // The entry as the newer change's reservation left it: generation 2 taken
+    // and its definition pending, the older change (generation 1) the last
+    // to have projected, from a timeout before its commit.
+    const reserved = (extra = {}) =>
+      fresh({
+        trustKey: 'CDP service beta-api',
+        pending,
+        statusBefore: 'ready',
+        status: 'setting-up',
+        generation: 2,
+        projectedGeneration: 1,
+        projectedVersion: 4,
+        operationId: OLDER,
+        operation: { id: OLDER, state: 'timed-out' },
+        ...extra
+      })
+
+    test.each(['active', 'deploy-failed', 'timed-out'])(
+      'is not projected over the reservation when it is %s',
+      async (state) => {
+        await seed([reserved()])
+
+        await projectOperation(
+          db,
+          operationAt(state, [{ ...CHANGE, generation: 1 }], {
+            stateVersion: 9,
+            gitops: { commitSha: 'abc123' }
+          })
+        )
+
+        expect(await entry()).toMatchObject({
+          name: 'beta-api',
+          service: 'beta-api',
+          status: 'setting-up',
+          pending,
+          statusBefore: 'ready',
+          operationId: OLDER,
+          projectedVersion: 4
+        })
+      }
+    )
+
+    test('leaves the newer change to be projected when it is first taken', async () => {
+      await seed([reserved()])
+
+      await projectOperation(
+        db,
+        operationAt('active', [{ ...CHANGE, generation: 1 }], {
+          stateVersion: 9
+        })
+      )
+      await projectOperation(
+        db,
+        operationAt('requested', [{ ...CHANGE, generation: 2 }], {
+          _id: NEWER,
+          stateVersion: 1
+        })
+      )
+
+      expect(await entry()).toMatchObject({
+        status: 'setting-up',
+        pending,
+        operationId: NEWER,
+        projectedGeneration: 2
+      })
+    })
+
+    test('still takes the operation of the generation the entry holds', async () => {
+      await seed([reserved({ operationId: NEWER })])
+
+      await projectOperation(
+        db,
+        operationAt('active', [{ ...CHANGE, generation: 2 }], {
+          _id: NEWER,
+          stateVersion: 1
+        })
+      )
+
+      expect(await entry()).toMatchObject({
+        name: 'new-api',
+        status: 'ready',
+        pending: null,
+        projectedGeneration: 2
+      })
+    })
+  })
+
   test('leaves other applications, the models and an item with no entry alone', async () => {
     await seed(
       [fresh(), fresh({ id: 'fed-2', name: 'other', service: 'other' })],
