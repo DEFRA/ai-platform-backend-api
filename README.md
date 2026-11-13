@@ -422,7 +422,9 @@ automatic writes, retries and reverts (they keep their slot and show as Waiting)
 
 **Local and mock mode.** `TENANT_ORCHESTRATOR=mock` (the default; prod refuses it) uses an in-memory publisher and a mock
 worker that sends the events one stage at a time, `TEAM_DEPLOYMENT_MOCK_STAGE_DURATION_MS` apart, and a mock team file
-reader (it serves a `research.json` with only `gpt-4o` deployed, as in infradev). It forces a failure for a requester whose
+reader (it serves a `research.json` with only `gpt-4o` deployed, as in infradev, and for any other file the document of the
+newest operation on that path that reached `committed`, so a team's second change builds on its first as it does against
+`main`; a change refused by the checks is never served). It forces a failure for a requester whose
 Entra object ID starts `entra:00000000-0000-0000-0001-` (`checks-failed`, nothing committed) or
 `entra:00000000-0000-0000-0002-` (`deploy-failed`, not attributable, so final; an admin retry's second attempt succeeds),
 and, for journey tests that sign in as real users, a request whose `purpose` contains `[mock:checks-failed]` or
@@ -489,6 +491,30 @@ that apply has run, then `removed` with the grant withdrawn, or `active` again w
 if the removal failed. Only an `active` model can be removed: one still being set up, failed or timed out
 is refused with `409 deployment-not-removable`, and one whose team file another operation holds with
 `409 team-file-busy`.
+
+**A team's environments, changes and limits.** Three reads and one change, for the environments section of the portal.
+Every one is for a team member (a non-member is `404`, audited, and nothing is read for them), takes the team's id or
+slug, and carries the team in every query.
+`GET /v1/teams/{teamId}/environments` lists each environment in `TEAM_ENVIRONMENTS` order and `.../environments/{environment}`
+shows one (`404 environment-not-available` for one this instance does not offer): whether the team has a file there
+(`setUp`), whether the environment is paused, its models (`models.count` counts the ready ones, `items` every one not removed), the
+limits its file holds (the same read as `GET /v1/teams/{id}`, so `502 upstream-unavailable` when GitHub cannot be read), `applications`
+(`used` is 0 until federation, B18), the latest change and whether one is in progress. The one environment also returns `models` as
+`GET /deployments` gives them, `limitBounds` and `pendingLimits`.
+`GET /v1/teams/{teamId}/operations` (`?environment=&status=open|recent&limit=1..50`, ten by default, newest first) and
+`.../operations/{operationId}` show the team's changes to its files as `{id, environment, kind, changes, state, open, steps,
+requestedBy, createdAt, updatedAt, failureReason, runUrl, supportReference}`: `steps` are Request received, Checks passed, Deploying,
+Deployed and Ready to use with `done`, `current`, `failed` or `todo` and the time each was reached, from the operation's history
+([`operation-view.js`](src/operations/operation-view.js)); an item with no `kind` reads as a model change, so nothing is backfilled.
+`PUT /v1/teams/{teamId}/environments/{environment}/limits` (team admin; `Idempotency-Key`; `{tokensPerMinute, requestsPerMinute}`)
+is one `limits` operation: the builder sets `gateway.limits` and nothing else in the file. The limits must sit within the bounds of
+[`team-limit-bounds.js`](src/services/team-limit-bounds.js), taken from the catalogue's `capacityPolicy` for the models the team holds
+there (1,000 tokens and 6 requests a minute to a capacity unit): tokens from 1 to 1,000 for each capacity unit the models allow together, requests from 1 to
+the larger of the models' default requests added up and 6 per unit. Beyond them is `400 limits-out-of-bounds` with `limitBounds`,
+an environment with no file `409 environment-not-set-up`, limits equal to what the team has or is about to have
+`409 limits-unchanged`; it answers `202` with the operation and its `Location` (`200` for a replayed key, `409 idempotency-key-reused`
+for a key made for another request). While another change holds the file the request waits and merges into the next operation.
+A limits change creates no resources, so it is not read back through ARM.
 
 A failed entry's page quotes a support reference, `AIP-` and the last five characters of its operation id (the
 frontend builds it the same way, from `operationId`). When an operation moves into `checks-failed`, `deploy-failed` or `timed-out` the backend logs one error

@@ -1,3 +1,5 @@
+import { isModelItem } from '#/operations/operation-items.js'
+
 const REFERENCE_PREFIX = 'AIP-'
 const REFERENCE_LENGTH = 5
 
@@ -18,11 +20,13 @@ export function supportReferenceOf(operationId) {
 }
 
 function entriesOf(operation) {
-  return (operation.items ?? []).map(({ entryId, modelSlug, change }) => ({
-    entryId,
-    modelSlug,
-    change
-  }))
+  return (operation.items ?? [])
+    .filter(isModelItem)
+    .map(({ entryId, modelSlug, change }) => ({
+      entryId,
+      modelSlug,
+      change
+    }))
 }
 
 function errorFieldsOf({ error }) {

@@ -16,6 +16,7 @@ const RESOURCES = [
 ]
 const ADD = { entryId: 'entry-1', modelSlug: 'gpt-4o', change: 'add' }
 const REMOVE = { entryId: 'entry-2', modelSlug: 'phi-4', change: 'remove' }
+const LIMITS = { tokensPerMinute: 2000, requestsPerMinute: 30 }
 
 describe('operation-verifier', () => {
   const settings = gitopsSettings({ verifyMaxAttempts: MAX_ATTEMPTS })
@@ -222,6 +223,29 @@ describe('operation-verifier', () => {
         expect(ended.state).toBe('removed')
         expect(operations.finish).toHaveBeenCalledWith(ended)
         expect(grantCredentials).not.toHaveBeenCalled()
+      })
+
+      test('ends a limits change as active without asking ARM: it creates nothing to confirm, and audits no deployment', async () => {
+        const operation = await seedDeployed({
+          items: [{ kind: 'limits', change: 'set', limits: LIMITS }]
+        })
+
+        const ended = await build().verify(operation._id)
+
+        expect(verifier.verify).not.toHaveBeenCalled()
+        expect(ended.state).toBe('active')
+        expect(operations.finish).toHaveBeenCalledWith(ended)
+        expect(await auditEvents()).toEqual([])
+      })
+
+      test('reads back a waiting write that merged a limits change with a new model', async () => {
+        const operation = await seedDeployed({
+          items: [ADD, { kind: 'limits', change: 'set', limits: LIMITS }]
+        })
+
+        await build().verify(operation._id)
+
+        expect(verifier.verify).toHaveBeenCalledTimes(1)
       })
 
       test.each([

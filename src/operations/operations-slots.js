@@ -90,7 +90,8 @@ async function insertActive(ctx, base, held) {
 
 async function queueBehind(ctx, base) {
   const { db } = ctx
-  const { teamId, environment, items, idempotencyKeys } = base
+  const { teamId, environment, items, idempotencyKeys, requestFingerprints } =
+    base
   const waiting = await findSlotHolder(db, {
     environment,
     teamId,
@@ -108,7 +109,13 @@ async function queueBehind(ctx, base) {
 
   const merged = await writeOperation(ctx, waiting, {
     push: { items: { $each: items } },
-    addToSet: { idempotencyKeys: { $each: idempotencyKeys } }
+    addToSet: { idempotencyKeys: { $each: idempotencyKeys } },
+    set: Object.fromEntries(
+      Object.entries(requestFingerprints ?? {}).map(([key, fingerprint]) => [
+        `requestFingerprints.${key}`,
+        fingerprint
+      ])
+    )
   })
 
   return merged ? { operation: merged, replay: false, waiting: true } : null
@@ -155,15 +162,18 @@ async function tryRequest(ctx, base, paused) {
  * request's too) finds its operation. Nothing is written when the document
  * cannot be built.
  * @param {object} ctx
- * @param {{teamId: string, environment: string, target: object, items: Array<{entryId: string, modelSlug: string, change: 'add'|'remove'}>, requestedBy: string, requestedByUserId: string, idempotencyKey: string, traceparent?: string|null, cdpRequestId?: string|null}} params
+ * @param {{teamId: string, environment: string, target: object, items: Array<{entryId: string, modelSlug: string, change: 'add'|'remove'}|{kind: 'limits', change: 'set', limits: {tokensPerMinute: number, requestsPerMinute: number}}>, requestedBy: string, requestedByUserId: string, idempotencyKey: string, requestFingerprint?: string, traceparent?: string|null, cdpRequestId?: string|null}} params
  * @returns {Promise<{operation: object, replay: boolean, waiting: boolean}>}
  */
 export async function requestOperation(ctx, params) {
-  const { teamId, environment, idempotencyKey } = params
+  const { teamId, environment, idempotencyKey, requestFingerprint } = params
   const base = {
     ...params,
     type: OPERATION_TYPES.WRITE,
-    idempotencyKeys: [idempotencyKey]
+    idempotencyKeys: [idempotencyKey],
+    ...(requestFingerprint
+      ? { requestFingerprints: { [idempotencyKey]: requestFingerprint } }
+      : {})
   }
   const paused = await ctx.controls.isPaused(environment)
 

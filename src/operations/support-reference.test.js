@@ -61,6 +61,24 @@ describe('failureLogFields', () => {
     })
   })
 
+  test('lists only the model changes as entries, not a limits change', () => {
+    const fields = failureLogFields(
+      {
+        _id: 'op-1',
+        state: 'deploy-failed',
+        items: [
+          { entryId: 'e1', modelSlug: 'gpt-4o', change: 'add' },
+          { kind: 'limits', change: 'set', limits: {} }
+        ]
+      },
+      'deploying'
+    )
+
+    expect(fields.entries).toEqual([
+      { entryId: 'e1', modelSlug: 'gpt-4o', change: 'add' }
+    ])
+  })
+
   test('has null for what the operation does not have', () => {
     expect(
       failureLogFields({ _id: 'op-1', state: 'timed-out' }, 'committed')

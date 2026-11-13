@@ -11,12 +11,14 @@ import {
 export const MAX_TRIES = 3
 
 // Requests that can never be submitted as they stand: their document cannot
-// be built (no builder, no team SKU for the model, no service code) or is too
+// be built (no builder, no team SKU for the model, no service code, limits
+// beyond what the remaining models allow) or is too
 // large. They end refused so the file moves on; any other failure is retried.
 const UNSUBMITTABLE = new Set([
   'desired-state-unavailable',
   'desired-state-too-large',
   'invalid-path',
+  'limits-out-of-bounds',
   'model-not-eligible',
   'service-code-required'
 ])

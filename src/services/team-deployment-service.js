@@ -56,9 +56,15 @@ function requireTeamEnvironment(environment) {
   }
 }
 
-// The deployment as the API returns it, its step labels naming the model by
-// its display name (the catalogue read is cached).
-async function viewOf(db, doc, entry) {
+/**
+ * One deployment entry as the API returns it, its step labels naming the
+ * model by its display name (the catalogue read is cached).
+ * @param {import('mongodb').Db} db
+ * @param {{teamId: string, environment: string}} doc - the team's document for the environment
+ * @param {object} entry - one of its `deployments[]`
+ * @returns {Promise<object>}
+ */
+export async function viewOf(db, doc, entry) {
   const model = await findModelBySlug(db, entry.modelSlug)
 
   return toDeploymentView(doc, entry, undefined, model?.displayName)

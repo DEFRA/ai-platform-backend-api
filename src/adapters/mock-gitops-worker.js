@@ -2,6 +2,7 @@ import { createHash } from 'node:crypto'
 
 import { config } from '#/config.js'
 import { createInMemoryCommandPublisher } from '#/adapters/in-memory-command-publisher.js'
+import { attachMockTeamFileDatabase } from '#/adapters/mock-team-file-reader.js'
 import { findOperation } from '#/operations/operation-repository.js'
 
 // The mock stands in for the GitOps worker and the workflows in local
@@ -365,6 +366,11 @@ export function createMockTransport(
   { stageDurationMs = config.get('teamDeployment.mockStageDurationMs') } = {}
 ) {
   const runReader = createMockRunReader()
+
+  // The mock keeps no team files: its reader serves what its operations
+  // committed, from the same database.
+  attachMockTeamFileDatabase(db)
+
   const worker = createMockGitopsWorker({
     db,
     handle,

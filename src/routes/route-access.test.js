@@ -29,6 +29,14 @@ const ROUTES = [
   ['GET /v1/teams/{teamId}/deployments', ACCESS.teamMember],
   ['GET /v1/teams/{teamId}/deployments/{id}', ACCESS.teamMember],
   ['DELETE /v1/teams/{teamId}/deployments/{id}', ACCESS.teamAdmin],
+  ['GET /v1/teams/{teamId}/operations', ACCESS.teamMember],
+  ['GET /v1/teams/{teamId}/operations/{operationId}', ACCESS.teamMember],
+  ['GET /v1/teams/{teamId}/environments', ACCESS.teamMember],
+  ['GET /v1/teams/{teamId}/environments/{environment}', ACCESS.teamMember],
+  [
+    'PUT /v1/teams/{teamId}/environments/{environment}/limits',
+    ACCESS.teamAdmin
+  ],
   ['POST /v1/admin/team-deployments/{id}/retry', ACCESS.platformAdmin],
   ['POST /v1/admin/team-deployments/{id}/reconcile', ACCESS.platformAdmin]
 ]

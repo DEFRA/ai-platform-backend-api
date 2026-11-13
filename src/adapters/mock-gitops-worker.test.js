@@ -1,9 +1,15 @@
+import { MongoClient } from 'mongodb'
+
 import {
   createMockGitopsWorker,
   createMockRunReader,
   createMockTransport,
   mockOutcomeOfPurpose
 } from '#/adapters/mock-gitops-worker.js'
+import {
+  attachMockTeamFileDatabase,
+  mockTeamFileReader
+} from '#/adapters/mock-team-file-reader.js'
 import { validateEvent } from '#/contracts/message-validators.js'
 import { exampleCommand } from '#/common/test-helpers/gitops-messages.js'
 import { uuidv7 } from '#/common/helpers/uuid-v7.js'
@@ -362,6 +368,41 @@ describe('mock-gitops-worker', () => {
 
       expect(transport.publisher.publish).toEqual(expect.any(Function))
       await transport.stop()
+    })
+
+    test('has the shared mock team file reader serve what its operations committed, from its database', async () => {
+      const client = await MongoClient.connect(process.env.MONGO_URI)
+      const db = client.db('mock-gitops-worker-test')
+      const transport = createMockTransport({ db, handle })
+
+      try {
+        await db.collection('operations').insertOne({
+          _id: uuidv7(),
+          type: 'team-file.write',
+          state: 'active',
+          target: { path: 'environments/infradev/alpha.json' },
+          document: JSON.stringify({ revision: 3 }),
+          gitops: {
+            commitSha: 'c'.repeat(40),
+            committedAt: '2026-11-12T10:00:00.000Z'
+          },
+          createdAt: '2026-11-12T09:59:00.000Z'
+        })
+
+        await expect(
+          mockTeamFileReader.getCurrentDocument({
+            path: 'environments/infradev/alpha.json'
+          })
+        ).resolves.toEqual({
+          document: { revision: 3 },
+          sha: 'c'.repeat(40)
+        })
+      } finally {
+        await transport.stop()
+        attachMockTeamFileDatabase(null)
+        await db.dropDatabase()
+        await client.close()
+      }
     })
   })
 
