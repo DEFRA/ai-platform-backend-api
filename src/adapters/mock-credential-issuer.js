@@ -28,9 +28,10 @@ function mockApiKey() {
 // rotate and revoke.
 function teamCredential({ teamId, environment, credentialId }, expiresAt) {
   const secret = mockOauthSecret()
+  const suffix = credentialId ? `-${credentialId}` : ''
 
   return {
-    externalId: `team-${teamId}-${environment}${credentialId ? `-${credentialId}` : ''}`,
+    externalId: `team-${teamId}-${environment}${suffix}`,
     secret,
     keyHint: keyHintFor(secret),
     expiresAt
