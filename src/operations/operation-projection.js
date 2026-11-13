@@ -286,26 +286,41 @@ function versionGuardOf(key, operation, entryId) {
 }
 
 // The guard for an application: as for a model, except that another operation
-// takes the entry only if it is newer than the one that last projected onto
-// it. Operation ids are version 7 UUIDs, which sort by the time they were
-// made, so an event of an earlier operation redelivered after a later change
-// or removal took the application is not projected over it.
-function federationGuardOf(key, operation, entryId) {
-  const recorded = `${key}.operation.id`
+// takes the entry only if it was asked for after the one that last projected
+// onto it. Operation ids do not tell that (their random suffixes and each
+// host's clock do not follow the order the requests were made in), so each
+// request takes the application's next generation under the environment's
+// lock and carries it on its item. An event of an earlier operation
+// redelivered after a later change or removal took the application is not
+// projected over it; within one generation (one operation) state versions
+// order the writes.
+function federationGuardOf(key, item, operation) {
+  const generation = generationOf(item)
+  const recorded = `${key}.projectedGeneration`
   const version = `${key}.projectedVersion`
 
   return {
-    [`${key}.id`]: entryId,
+    [`${key}.id`]: item.entryId,
     $or: [
       { [version]: { $exists: false } },
-      { [recorded]: { $lt: operation._id } },
-      { [recorded]: operation._id, [version]: { $lt: operation.stateVersion } },
+      { [recorded]: { $lt: generation } },
+      {
+        [recorded]: generation,
+        [version]: { $lt: operation.stateVersion }
+      },
+      // Projected before generations were kept.
       {
         [recorded]: { $exists: false },
         [version]: { $lt: operation.stateVersion }
       }
     ]
   }
+}
+
+// The generation an item was requested in: the one its request took under
+// the environment's lock (an item from before generations are kept is 0).
+function generationOf(item) {
+  return item.generation ?? 0
 }
 
 async function projectDeployments(db, doc, operation) {
@@ -506,6 +521,7 @@ function federationFieldsOf(operation, item, entry, at) {
     statusTimes: withStatusTime(entry.statusTimes, status, at),
     failureReason: federationFailureReasonOf(operation, item),
     projectedVersion: operation.stateVersion,
+    projectedGeneration: generationOf(item),
     operationId: operation._id,
     operation: operationSummaryOf(operation, operation.gitops ?? {}),
     ...appliedFieldsOf(operation, item, entry)
@@ -529,7 +545,7 @@ async function projectFederations(db, doc, operation) {
 
     const key = `f${index}`
 
-    arrayFilters.push(federationGuardOf(key, operation, item.entryId))
+    arrayFilters.push(federationGuardOf(key, item, operation))
 
     for (const [field, value] of Object.entries(
       federationFieldsOf(operation, item, entry, at)

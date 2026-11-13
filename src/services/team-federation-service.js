@@ -173,6 +173,17 @@ function federationRefused(environments) {
   )
 }
 
+// The order an application's requests were made in, which operation ids do
+// not tell (their random suffixes and each host's clock do not follow it).
+// Each request takes the application's next generation under the
+// environment's lock and carries it on its item; the projection takes an
+// operation only if its generation is not behind the last it projected.
+const FIRST_GENERATION = 1
+
+function nextGenerationOf(entry) {
+  return (entry.generation ?? 0) + 1
+}
+
 // The entry recorded for an application asked for, before its operation.
 function newEntry(definition, { actor, idempotencyKey }) {
   return {
@@ -184,6 +195,7 @@ function newEntry(definition, { actor, idempotencyKey }) {
     trustKey: trustKeyOf(definition),
     status: FEDERATION_STATUS.SETTING_UP,
     statusTimes: {},
+    generation: FIRST_GENERATION,
     operationId: null,
     requestedBy: actor.userId,
     idempotencyKey,
@@ -387,6 +399,7 @@ async function queueApplication(db, context, environment) {
         {
           entryId: entry.id,
           change: 'add',
+          generation: entry.generation,
           name: definition.name,
           federation: definition
         },
@@ -697,24 +710,41 @@ function pendingOf(definition) {
 
 // The pending definition goes on the entry with the status it had, which a
 // change that fails before it commits, or is reverted, leaves it with (an
-// addition that failed stays failed, not ready).
-function setPending(db, { teamId, environment }, entry, pending) {
+// addition that failed stays failed, not ready). The entry shows setting up
+// from this save: it is the reservation of what it is changing to, kept
+// whatever follows the save (a failure before the projection, the
+// projection itself) and after the operation has accepted it, so the trust
+// lock can be released and another team asking for the workload meanwhile
+// still finds it held. The change also takes its generation here, under the
+// environment's lock.
+function reserveChange(
+  db,
+  { teamId, environment },
+  entry,
+  pending,
+  generation
+) {
   return db.collection('teamDeployments').updateOne(
     { teamId, environment },
     {
       $set: {
         'federations.$[f].pending': pending,
-        'federations.$[f].statusBefore': entry.status
+        'federations.$[f].statusBefore': entry.status,
+        'federations.$[f].status': FEDERATION_STATUS.SETTING_UP,
+        'federations.$[f].generation': generation
       }
     },
     { arrayFilters: [{ 'f.id': entry.id }] }
   )
 }
 
-function clearPending(db, { teamId, environment }, entry) {
+// Gives the reservation back: no operation took the change, so the
+// application is as it was.
+function releaseChange(db, { teamId, environment }, entry) {
   return db.collection('teamDeployments').updateOne(
     { teamId, environment },
     {
+      $set: { 'federations.$[f].status': entry.status },
       $unset: {
         'federations.$[f].pending': '',
         'federations.$[f].statusBefore': ''
@@ -724,14 +754,15 @@ function clearPending(db, { teamId, environment }, entry) {
   )
 }
 
-// Queues the change with its pending definition recorded first, so the
-// projection finds it; a request that is refused leaves nothing pending. One
-// that failed after an operation took it (a merge into a waiting operation
-// is saved before it is projected) keeps it, for the operation to apply.
+// Queues the change with its reservation recorded first, so the projection
+// finds it; a request that is refused releases it. One that failed after an
+// operation took it (a merge into a waiting operation is saved before it is
+// projected) keeps it, for the operation to apply.
 async function queueChange(db, context, { entry, definition, fingerprint }) {
   const { teamId, environment, idempotencyKey, operations } = context
+  const generation = nextGenerationOf(entry)
 
-  await setPending(db, context, entry, pendingOf(definition))
+  await reserveChange(db, context, entry, pendingOf(definition), generation)
 
   try {
     const { operation } = await operations.request(
@@ -741,6 +772,7 @@ async function queueChange(db, context, { entry, definition, fingerprint }) {
         {
           entryId: entry.id,
           change: 'change',
+          generation,
           name: entry.name,
           federation: definition
         },
@@ -751,7 +783,7 @@ async function queueChange(db, context, { entry, definition, fingerprint }) {
     return operation
   } catch (error) {
     if (!(await isAcceptedFor(db, { teamId, key: idempotencyKey }, entry))) {
-      await clearPending(db, { teamId, environment }, entry)
+      await releaseChange(db, { teamId, environment }, entry)
     }
 
     throw error
@@ -778,6 +810,16 @@ async function changeUnderLock(db, context, { entry, request, federationId }) {
       operationId: replayed._id,
       replay: true
     }
+  }
+
+  // A failed application that another has replaced in the file holds nothing
+  // of its own there: a change of it would replace the replacement's entry by
+  // name, as removing it would remove it.
+  if (await hasBeenReplaced(db, { teamId, environment }, entry)) {
+    throw conflict(
+      'The application has been replaced by another of the same name; it can only be removed',
+      'federation-replaced'
+    )
   }
 
   // The check against other teams and the pending definition that reserves
@@ -857,6 +899,8 @@ async function requireLiveEntry(db, context, federationId) {
  * is compared with every other (never itself) for `409 federation-exists`
  * and `409 federation-trusted-elsewhere`; a full registration does not
  * refuse a change. `409 federation-unchanged` when nothing would change,
+ * `409 federation-replaced` for a failed application that another of the same
+ * name has replaced,
  * `409 federation-in-progress` while it is being set up or removed.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
@@ -938,6 +982,22 @@ async function clearReplaced(db, scope, entry) {
   )
 }
 
+// A removal takes the application's next generation, under the lock, before
+// its operation is asked for.
+async function takeGeneration(db, { teamId, environment }, entry) {
+  const generation = nextGenerationOf(entry)
+
+  await db
+    .collection('teamDeployments')
+    .updateOne(
+      { teamId, environment },
+      { $set: { 'federations.$[f].generation': generation } },
+      { arrayFilters: [{ 'f.id': entry.id }] }
+    )
+
+  return generation
+}
+
 async function removeUnderLock(db, context, federationId) {
   const { teamId, environment, operations } = context
   const scope = { teamId, environment }
@@ -965,6 +1025,7 @@ async function removeUnderLock(db, context, federationId) {
     return { federation: await viewOfEntry(db, scope, entry.id), done: true }
   }
 
+  const generation = await takeGeneration(db, scope, entry)
   const { operation } = await operations.request(
     operationRequestOf(
       context,
@@ -972,6 +1033,7 @@ async function removeUnderLock(db, context, federationId) {
       {
         entryId: entry.id,
         change: 'remove',
+        generation,
         name: entry.name,
         federation: definitionOf(entry)
       },

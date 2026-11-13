@@ -1922,6 +1922,244 @@ describe('#team-federations routes', () => {
       expect(await operationsOf(team)).toHaveLength(1)
     })
 
+    // Runs `work` once the operation of the next request is saved and its
+    // lock released, as its projection begins: the window in which only what
+    // the request recorded stands between another team and the workload.
+    function duringProjection(work) {
+      const operations = server.app.operations.operations
+      const original = operations.request.bind(operations)
+      const collection = server.db.collection.bind(server.db)
+      let armed = false
+
+      vi.spyOn(operations, 'request').mockImplementationOnce(async (params) => {
+        const saved = await original(params)
+
+        armed = true
+
+        return saved
+      })
+      vi.spyOn(server.db, 'collection').mockImplementation((name, ...rest) => {
+        const found = collection(name, ...rest)
+
+        if (name !== 'teamDeployments') {
+          return found
+        }
+
+        return new Proxy(found, {
+          get(target, property) {
+            if (property === 'findOne') {
+              return async (...args) => {
+                if (armed) {
+                  armed = false
+                  await work()
+                }
+
+                return target.findOne(...args)
+              }
+            }
+
+            const value = target[property]
+
+            return typeof value === 'function' ? value.bind(target) : value
+          }
+        })
+      })
+    }
+
+    test('does not change a failed application that a successful addition of the same name replaced, leaving the replacement in the file', async () => {
+      const team = await deployedTeam('fed-owner-2')
+      const failedId = `seed-${team.teamId}-sandbox-0`
+
+      await seedEntries(team, 'sandbox', [
+        { name: 'beta-api', service: 'beta-api', status: 'failed' }
+      ])
+
+      const added = await post(team, 'fed-owner-2', CDP)
+
+      expect(added.statusCode).toBe(202)
+      await settleEvents()
+
+      const { statusCode, result } = await patch(
+        team,
+        'fed-owner-2',
+        failedId,
+        { service: 'gamma-api' }
+      )
+
+      await settleEvents()
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('federation-replaced')
+      expect((await fileOf(team)).oauth.federations).toEqual([
+        { name: 'beta-api', host: 'cdp', service: 'beta-api' }
+      ])
+      expect(await entriesOf(team)).toMatchObject([
+        { id: failedId, status: 'failed', name: 'beta-api' },
+        { id: added.result.federations[0].id, status: 'ready' }
+      ])
+      expect((await entriesOf(team))[0].pending).toBeUndefined()
+      expect(await operationsOf(team)).toHaveLength(1)
+    })
+
+    test('still changes a failed application nothing has replaced', async () => {
+      const team = await deployedTeam('fed-owner-3')
+      const failedId = `seed-${team.teamId}-sandbox-0`
+
+      await seedEntries(team, 'sandbox', [
+        { name: 'beta-api', service: 'beta-api', status: 'failed' }
+      ])
+
+      const { statusCode } = await patch(team, 'fed-owner-3', failedId, {
+        service: 'gamma-api'
+      })
+
+      await settleEvents()
+
+      expect(statusCode).toBe(202)
+      expect((await fileOf(team)).oauth.federations).toEqual([
+        { name: 'gamma-api', host: 'cdp', service: 'gamma-api' }
+      ])
+    })
+
+    describe('what a change reserves before it releases the lock on the workload', () => {
+      const SHARED = { ...CDP, service: 'shared-api' }
+
+      async function readyApplicationOf(label) {
+        const team = await deployedTeam(label)
+        const { result } = await post(team, label, {
+          ...CDP,
+          service: `${label}-api`
+        })
+
+        await settleEvents()
+
+        return { team, id: result.federations[0].id }
+      }
+
+      function expectRefused({ statusCode, result }) {
+        expect(statusCode).toBe(409)
+        expect(result).toMatchObject({
+          code: 'federation-refused',
+          environments: [
+            { environment: 'sandbox', code: 'federation-trusted-elsewhere' }
+          ]
+        })
+      }
+
+      test('holds the workload against another team while the operation is saved and not yet projected', async () => {
+        const { team, id } = await readyApplicationOf('fed-hold-1')
+        const other = await deployedTeam('fed-hold-1-other')
+        let answer
+
+        await holdTheFile(team)
+        duringProjection(async () => {
+          answer = await post(other, 'fed-hold-1-other', SHARED)
+        })
+
+        const changed = await patch(team, 'fed-hold-1', id, {
+          service: 'shared-api'
+        })
+
+        expect(changed.statusCode).toBe(202)
+        expectRefused(answer)
+        expect(await entriesOf(other)).toEqual([])
+      })
+
+      test('holds the workload after a failure that follows the save, and keeps it once the replay accepts it', async () => {
+        const { team, id } = await readyApplicationOf('fed-hold-2')
+        const other = await deployedTeam('fed-hold-2-other')
+        const key = randomUUID()
+
+        await holdTheFile(team)
+        failAfterSave()
+
+        const failed = await patch(
+          team,
+          'fed-hold-2',
+          id,
+          { service: 'shared-api' },
+          { key }
+        )
+
+        expect(failed.statusCode).toBeGreaterThanOrEqual(500)
+        expect((await entriesOf(team))[0]).toMatchObject({
+          status: 'setting-up',
+          pending: { service: 'shared-api' }
+        })
+        expectRefused(await post(other, 'fed-hold-2-other', SHARED))
+
+        const again = await patch(
+          team,
+          'fed-hold-2',
+          id,
+          { service: 'shared-api' },
+          { key }
+        )
+
+        expect(again.statusCode).toBe(200)
+        expectRefused(await post(other, 'fed-hold-2-other', SHARED))
+      })
+
+      test('gives the workload back, and the status the application had, when no operation took the change', async () => {
+        const { team, id } = await readyApplicationOf('fed-hold-3')
+        const other = await deployedTeam('fed-hold-3-other')
+
+        vi.spyOn(server.app.operations.operations, 'request').mockRejectedValue(
+          new Error('the database is down')
+        )
+        await patch(team, 'fed-hold-3', id, { service: 'shared-api' })
+        vi.restoreAllMocks()
+
+        expect((await entriesOf(team))[0]).toMatchObject({ status: 'ready' })
+        expect((await entriesOf(team))[0].pending).toBeUndefined()
+        expect((await post(other, 'fed-hold-3-other', SHARED)).statusCode).toBe(
+          202
+        )
+      })
+
+      test('holds the workload for a failed application that is changed, remembering it was failed', async () => {
+        const team = await deployedTeam('fed-hold-4')
+        const other = await deployedTeam('fed-hold-4-other')
+        const id = `seed-${team.teamId}-sandbox-0`
+
+        await seedEntries(team, 'sandbox', [
+          { name: 'one-api', service: 'one-api', status: 'failed' }
+        ])
+        await holdTheFile(team)
+        failAfterSave()
+        await patch(team, 'fed-hold-4', id, { service: 'shared-api' })
+
+        expect((await entriesOf(team))[0]).toMatchObject({
+          status: 'setting-up',
+          statusBefore: 'failed'
+        })
+        expectRefused(await post(other, 'fed-hold-4-other', SHARED))
+      })
+    })
+
+    test('gives each request on an application the next generation, and the application the one it last took', async () => {
+      const team = await deployedTeam('fed-gen-1')
+      const { result } = await post(team, 'fed-gen-1', CDP)
+      const id = result.federations[0].id
+
+      await settleEvents()
+      await patch(team, 'fed-gen-1', id, { service: 'gamma-api' })
+      await settleEvents()
+      await remove(team, 'fed-gen-1', id)
+      await settleEvents()
+
+      const generations = (await operationsOf(team)).map(
+        ({ items }) => items[0].generation
+      )
+
+      expect(generations).toEqual([1, 2, 3])
+      expect((await entriesOf(team))[0]).toMatchObject({
+        status: 'removed',
+        generation: 3,
+        projectedGeneration: 3
+      })
+    })
+
     describe('an environment whose team file has status removed', () => {
       function withRemovedFile(team) {
         const original =
