@@ -54,6 +54,12 @@ export async function createOperationIndexes(db) {
     }
   )
   await operations.createIndex({ teamId: 1, environment: 1, state: 1 })
+  // The applications of a team's document are projected from its operations;
+  // whether another team's registration trusts a workload is asked by trust
+  // key within an environment.
+  await db
+    .collection('teamDeployments')
+    .createIndex({ environment: 1, 'federations.trustKey': 1 })
   // A team's operations, newest first (the environments section's reads).
   await operations.createIndex({ teamId: 1, createdAt: -1 })
   // The sweeps.

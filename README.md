@@ -516,6 +516,33 @@ an environment with no file `409 environment-not-set-up`, limits equal to what t
 for a key made for another request). While another change holds the file the request waits and merges into the next operation.
 A limits change creates no resources, so it is not read back through ARM.
 
+**Federated applications.** A team federates a CDP service or an Azure managed identity to its registration in each
+environment, so the application calls its models with no stored secret. Each environment is one operation on that
+environment's team file (the builder writes `oauth.federations[]` and `secretsAllowed`, from `CLIENT_SECRET_ENVIRONMENTS`,
+and nothing else), recorded from the moment it is asked for in the team's `teamDeployments` document as `federations[]`
+`{id, name, host, service | principalId, trustKey, status, statusTimes, operation, requestedBy, createdAt}`, projected from the
+operation like a model entry: `setting-up`, `ready`, `failed`, `removing`, then `removed` (kept as a record, holding no place).
+`POST /v1/teams/{teamId}/federations` (any member; `Idempotency-Key`; `{host: 'cdp', service, environments}` or
+`{host: 'azure', principalId, name, environments}`, 1 to 5 environments) makes one operation per environment under the key
+`{Idempotency-Key}:{environment}`, in `TEAM_ENVIRONMENTS` order, and answers `202 {federations: [{environment, id, status,
+operationId}]}` (`200` when every environment replayed; a retry makes only the environments the key has not). It is all or
+nothing up front: if any environment would refuse it, `409 federation-refused` with `environments: [{environment, code}]` for
+the refused ones, and nothing is queued. The codes are `environment-not-available`, `environment-not-set-up`,
+`federation-exists` (this team already has the workload or the name there), `federation-trusted-elsewhere` (another team's
+registration trusts the workload; the team is never named) and `federation-limit-reached` (20 applications held, counting
+those asked for and those the team file holds, not failed or removed ones). `POST .../federations/check` is the same checks
+as a dry run: `{environments: [{environment, code | null}]}`, no side effects. `PATCH
+/v1/teams/{teamId}/environments/{environment}/federations/{id}` (team admin; `{service}` or `{principalId, name}`) changes an
+application, comparing it with every other one but itself (a full registration does not refuse a change), `409
+federation-unchanged`, `federation-in-progress` and `federation-replaced` (a failed application another of the same name has replaced; only a removal clears it) besides the codes above, `400 federation-host-mismatch`; `DELETE` on the
+same path (team admin) removes it, `202` while removing, `200` once removed. Every request, change, removal and refusal is
+audited (`teamFederation.*`, refusals against the team with the environment and the code). Under the mock orchestrator a CDP
+service or Azure application name containing `mock-checks-failed` or `mock-deploy-failed` forces that outcome of making or
+changing it (`mockOutcomeOfName`; nothing outside the mock reads it). The environment page also returns `applications`
+(`used`, `limit`, `items`) and `connection`: the gateway URL, token endpoint, client ID, tenant, scope and CDP audience, from
+the `TeamConnectionDetails` port, whose only adapter is a fixture flagged `placeholder: true` while the team's credentials are
+mocked (`null` otherwise).
+
 A failed entry's page quotes a support reference, `AIP-` and the last five characters of its operation id (the
 frontend builds it the same way, from `operationId`). When an operation moves into `checks-failed`, `deploy-failed` or `timed-out` the backend logs one error
 line, `Deployment failed, support reference AIP-XXXXX`, with the same `supportReference` field and the
@@ -564,6 +591,7 @@ credential keeps what it covered when it was revoked; a later model activation c
 | `GITOPS_DEADLINE_HELD_MS`              | `1800000`                       | Deadline of an operation held while its environment is paused, doubling up to 4 hours                                                                                                                             |
 | `GITOPS_HELD_ALARM_MS`                 | `3600000`                       | How long an operation may stay held or deferred before the alarm                                                                                                                                                  |
 | `TEAM_DEFAULT_TOKENS_PER_MINUTE`       | `1000`                          | Gateway token limit a **new** team file starts with, until B17 agrees per-environment bounds                                                                                                                      |
+| `CLIENT_SECRET_ENVIRONMENTS`           | `infradev,sandbox,dev`          | Comma-separated environments where a team may hold client secrets: the builder writes `secretsAllowed` in each team file true there and false elsewhere (a QA secret needs a recorded exception, not built)       |
 | `TEAM_DEFAULT_REQUESTS_PER_MINUTE`     | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                                                                                    |
 | `AIP_ENVIRONMENTS`                     | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group, and research keys are issued into the entry named by `RESEARCH_ENVIRONMENT`        |
 | `RESEARCH_ENVIRONMENT`                 | `infradev`                      | The `AIP_ENVIRONMENTS` entry research keys are issued into; live mode refuses to start when it is missing or lacks `apimName` or `tenantsVault`                                                                   |

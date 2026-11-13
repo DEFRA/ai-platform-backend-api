@@ -1,5 +1,8 @@
 import { supportReferenceOf } from '#/operations/support-reference.js'
+import { isFederationItem } from '#/operations/operation-items.js'
+import { RANK as STATE_RANK } from '#/operations/operation-state-machine.js'
 import { REMOVED, withStatusTime } from '#/services/team-deployment-entries.js'
+import { FEDERATION_STATUS } from '#/services/team-federation-constants.js'
 
 // The projection of an operation onto the `teamDeployments` entries of its
 // items (plan 5, "Projection to teamDeployments entries"; contract C6): the
@@ -7,7 +10,8 @@ import { REMOVED, withStatusTime } from '#/services/team-deployment-entries.js'
 // and `operation {id, state, attempt, runUrl, commitSha, failureReason}`. The
 // operation is the truth; this is recomputed from it, so a repeat is harmless.
 
-const FAILED_STATES = new Set(['checks-failed', 'deploy-failed'])
+const DEPLOY_FAILED = 'deploy-failed'
+const FAILED_STATES = new Set(['checks-failed', DEPLOY_FAILED])
 
 /**
  * The stable failure codes an operation records (plan 5, C6).
@@ -112,7 +116,7 @@ export function entryFailureReasonOf(operation, item) {
       : null
   }
 
-  if (operation.state === 'deploy-failed' && operation.revertFailed) {
+  if (operation.state === DEPLOY_FAILED && operation.revertFailed) {
     return REVERT_FAILED_TEXT
   }
 
@@ -263,6 +267,72 @@ export async function projectOperation(db, operation) {
     return
   }
 
+  await projectDeployments(db, doc, operation)
+  await projectFederations(db, doc, operation)
+}
+
+// A version guard per entry: a slower projection of the same operation never
+// overwrites a newer one. An entry last projected from another operation (a
+// removal of an added model) takes this one at once, since state versions
+// only order the writes of one operation.
+function versionGuardOf(key, operation, entryId) {
+  return {
+    [`${key}.id`]: entryId,
+    $or: [
+      { [`${key}.projectedVersion`]: { $exists: false } },
+      { [`${key}.operation.id`]: { $exists: true, $ne: operation._id } },
+      { [`${key}.projectedVersion`]: { $lt: operation.stateVersion } }
+    ]
+  }
+}
+
+// The guard for an application: as for a model, except that another operation
+// takes the entry only if it was asked for after the one that last projected
+// onto it. Operation ids do not tell that (their random suffixes and each
+// host's clock do not follow the order the requests were made in), so each
+// request takes the application's next generation under the environment's
+// lock and carries it on its item. An event of an earlier operation
+// redelivered after a later change or removal took the application is not
+// projected over it; within one generation (one operation) state versions
+// order the writes.
+//
+// A change takes its generation when it reserves the application, before its
+// operation is first projected, so the generation last projected can be behind
+// the one reserved. The guard also compares with the entry's own (reserved)
+// generation, in the same update: an operation older than the reservation is
+// superseded, and never consumes the pending definition that reservation
+// holds. An entry from before generations were kept has none, and takes any.
+function federationGuardOf(key, item, operation) {
+  const generation = generationOf(item)
+  const recorded = `${key}.projectedGeneration`
+  const version = `${key}.projectedVersion`
+
+  return {
+    [`${key}.id`]: item.entryId,
+    [`${key}.generation`]: { $not: { $gt: generation } },
+    $or: [
+      { [version]: { $exists: false } },
+      { [recorded]: { $lt: generation } },
+      {
+        [recorded]: generation,
+        [version]: { $lt: operation.stateVersion }
+      },
+      // Projected before generations were kept.
+      {
+        [recorded]: { $exists: false },
+        [version]: { $lt: operation.stateVersion }
+      }
+    ]
+  }
+}
+
+// The generation an item was requested in: the one its request took under
+// the environment's lock (an item from before generations are kept is 0).
+function generationOf(item) {
+  return item.generation ?? 0
+}
+
+async function projectDeployments(db, doc, operation) {
   const at = new Date().toISOString()
   const set = {}
   const addToSet = []
@@ -279,20 +349,7 @@ export async function projectOperation(db, operation) {
     const key = `e${index}`
     const fields = entryFieldsOf(operation, item, entry, at)
 
-    // A version guard per entry: a slower projection of the same operation
-    // never overwrites a newer one. An entry last projected from another
-    // operation (a removal of an added model) takes this one at once, since
-    // state versions only order the writes of one operation.
-    arrayFilters.push({
-      [`${key}.id`]: item.entryId,
-      $or: [
-        { [`${key}.projectedVersion`]: { $exists: false } },
-        {
-          [`${key}.operation.id`]: { $exists: true, $ne: operation._id }
-        },
-        { [`${key}.projectedVersion`]: { $lt: operation.stateVersion } }
-      ]
-    })
+    arrayFilters.push(versionGuardOf(key, operation, item.entryId))
 
     for (const [field, value] of Object.entries(fields)) {
       set[`deployments.$[${key}].${field}`] = value
@@ -330,4 +387,189 @@ export async function projectOperation(db, operation) {
   await db
     .collection('teamDeployments')
     .updateOne({ _id: doc._id }, update, { arrayFilters })
+}
+
+const ACTIVE_STATES = new Set(['active', REMOVED])
+const FEDERATION_FAILED_STATES = new Set([
+  'checks-failed',
+  DEPLOY_FAILED,
+  'timed-out'
+])
+
+/**
+ * The status an application shows for its operation: an addition or a change
+ * is setting up until the operation is active, then ready, or failed; a
+ * removal is removing until it is done, then removed, and ready again with a
+ * reason if it failed (the application is still federated).
+ * @param {{state: string, leftState?: string, error?: {code: string}, gitops?: {commitSha?: string}}} operation
+ * @param {{change: string}} item
+ * @param {{statusBefore?: string}} [entry] - the application as stored
+ * @returns {string}
+ */
+export function federationStatusOf(operation, item, entry = {}) {
+  const done = ACTIVE_STATES.has(operation.state)
+  const failed = FEDERATION_FAILED_STATES.has(operation.state)
+
+  if (item.change === 'remove') {
+    if (done) {
+      return FEDERATION_STATUS.REMOVED
+    }
+
+    return failed ? FEDERATION_STATUS.READY : FEDERATION_STATUS.REMOVING
+  }
+
+  if (done) {
+    return FEDERATION_STATUS.READY
+  }
+
+  if (!failed) {
+    return FEDERATION_STATUS.SETTING_UP
+  }
+
+  // A change that failed before it committed, or was reverted, leaves the
+  // application as it was: whatever it was before the change (still
+  // federated, or an addition that failed), with the reason. One that failed
+  // after it committed holds the new definition in the file, so it shows as
+  // failed, as an addition does.
+  if (
+    item.change === 'change' &&
+    (isReverted(operation) || !hasCommitted(operation))
+  ) {
+    return entry.statusBefore ?? FEDERATION_STATUS.READY
+  }
+
+  return FEDERATION_STATUS.FAILED
+}
+
+function isReverted(operation) {
+  return operation.error?.code === FAILURE_CODES.REVERTED
+}
+
+// What a person is told when an application could not be removed.
+function removeFederationFailedText(operation) {
+  return `The application could not be removed, so it is still federated. Contact AI Platform Support, quoting reference ${supportReferenceOf(operation._id)}`
+}
+
+function federationFailureReasonOf(operation, item) {
+  if (item.change === 'remove') {
+    return FEDERATION_FAILED_STATES.has(operation.state)
+      ? removeFederationFailedText(operation)
+      : null
+  }
+
+  return entryFailureReasonOf(operation, { change: item.change })
+}
+
+// A change is applied to the entry once it has committed: it is active, its
+// deploy failed after the commit, or it timed out after one (it left a state
+// at or past `committed`, or a commit is recorded). Until then the entry
+// keeps the definition the team file still holds, and what it is changing to
+// waits in `pending` (also through a failure before the commit, or a timeout
+// before it, in case it recovers).
+const COMMITTED_CHANGE_STATES = new Set(['active', DEPLOY_FAILED])
+
+function hasCommitted(operation) {
+  if (COMMITTED_CHANGE_STATES.has(operation.state)) {
+    return true
+  }
+
+  return (
+    operation.state === 'timed-out' &&
+    ((STATE_RANK[operation.leftState] ?? 0) >= STATE_RANK.committed ||
+      operation.gitops?.commitSha != null)
+  )
+}
+
+function definitionFieldsOf({ name, service, principalId, trustKey }) {
+  return {
+    name,
+    trustKey,
+    ...(service ? { service } : {}),
+    ...(principalId ? { principalId } : {})
+  }
+}
+
+function pendingAppliedOf(entry) {
+  return entry.pending
+    ? { ...definitionFieldsOf(entry.pending), pending: null }
+    : {}
+}
+
+// The definition a revert brings back: the one the entry held before the
+// change that failed in its deploy was applied to it.
+function revertedFieldsOf(entry) {
+  return entry.previous
+    ? { ...definitionFieldsOf(entry.previous), previous: null }
+    : {}
+}
+
+function appliedFieldsOf(operation, item, entry) {
+  if (item.change !== 'change') {
+    return {}
+  }
+
+  if (isReverted(operation)) {
+    return revertedFieldsOf(entry)
+  }
+
+  // Once active the change stands: nothing is left to restore.
+  if (operation.state === 'active') {
+    return { ...pendingAppliedOf(entry), previous: null, statusBefore: null }
+  }
+
+  return hasCommitted(operation) && entry.pending
+    ? { ...pendingAppliedOf(entry), previous: definitionFieldsOf(entry) }
+    : {}
+}
+
+function federationFieldsOf(operation, item, entry, at) {
+  const status = federationStatusOf(operation, item, entry)
+
+  return {
+    status,
+    statusTimes: withStatusTime(entry.statusTimes, status, at),
+    failureReason: federationFailureReasonOf(operation, item),
+    projectedVersion: operation.stateVersion,
+    projectedGeneration: generationOf(item),
+    operationId: operation._id,
+    operation: operationSummaryOf(operation, operation.gitops ?? {}),
+    ...appliedFieldsOf(operation, item, entry)
+  }
+}
+
+// Writes an operation's state onto the applications its federation items
+// name, in the team's document. A removed application stays as a record, so a
+// removal repeated is answered, and holds no place in the registration.
+async function projectFederations(db, doc, operation) {
+  const at = new Date().toISOString()
+  const set = {}
+  const arrayFilters = []
+
+  operation.items.filter(isFederationItem).forEach((item, index) => {
+    const entry = doc.federations?.find(({ id }) => id === item.entryId)
+
+    if (!entry) {
+      return
+    }
+
+    const key = `f${index}`
+
+    arrayFilters.push(federationGuardOf(key, item, operation))
+
+    for (const [field, value] of Object.entries(
+      federationFieldsOf(operation, item, entry, at)
+    )) {
+      set[`federations.$[${key}].${field}`] = value
+    }
+  })
+
+  if (arrayFilters.length > 0) {
+    await db
+      .collection('teamDeployments')
+      .updateOne(
+        { _id: doc._id },
+        { $set: { ...set, updatedAt: at } },
+        { arrayFilters }
+      )
+  }
 }

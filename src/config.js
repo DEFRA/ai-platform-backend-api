@@ -173,6 +173,12 @@ export const config = convict({
       default: ['infradev'],
       env: 'TEAM_ENVIRONMENTS'
     },
+    clientSecretEnvironments: {
+      doc: 'The environments where a team may hold client secrets (design E choice A): the builder writes `secretsAllowed` in each team file from this list, true in these and false elsewhere. Comma separated. A QA secret needs a recorded exception for a host that cannot federate, which is not built, so QA is not listed',
+      format: Array,
+      default: ['infradev', 'sandbox', 'dev'],
+      env: 'CLIENT_SECRET_ENVIRONMENTS'
+    },
     mockStageDurationMs: {
       doc: 'Duration in ms of each mocked GitOps stage for team deployment provisioning',
       format: 'nat',

@@ -60,6 +60,15 @@ describe('#operation-repository', () => {
   })
 
   describe('indexes', () => {
+    test('index the applications of a team document by environment and trust key', async () => {
+      const indexes = await db.collection('teamDeployments').indexes()
+
+      expect(indexes.map(({ key }) => key)).toContainEqual({
+        environment: 1,
+        'federations.trustKey': 1
+      })
+    })
+
     test('are safe to create twice', async () => {
       await expect(createOperationIndexes(db)).resolves.toBeUndefined()
     })

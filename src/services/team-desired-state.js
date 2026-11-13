@@ -5,11 +5,8 @@ import { config } from '#/config.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { findModelBySlug } from '#/services/models-service.js'
 import { isTeamEligible, teamSkuOf } from '#/services/catalogue-service.js'
-import {
-  isLimitsItem,
-  isModelItem,
-  requestedLimitsOf
-} from '#/operations/operation-items.js'
+import { isModelItem, requestedLimitsOf } from '#/operations/operation-items.js'
+import { oauthBlockOf } from '#/services/team-oauth-block.js'
 import { limitBoundsFor, withinBounds } from '#/services/team-limit-bounds.js'
 
 // WS6: builds the whole team file the submit workflow writes
@@ -136,13 +133,13 @@ function carriedOver(current) {
 }
 
 // The file's lifecycle: a change to its models makes it active (a file with a
-// scheduled removal is wanted again), but a change that only sets limits
-// leaves it as it is, including its `removeAfter`, so it never cancels a
-// scheduled removal.
+// scheduled removal is wanted again), but a change that touches no model (the
+// limits, an application) leaves it as it is, including its `removeAfter`, so
+// it never cancels a scheduled removal.
 function lifecycleOf(current, items) {
-  const limitsOnly = items.length > 0 && items.every(isLimitsItem)
+  const touchesModels = items.some(isModelItem)
 
-  if (!limitsOnly || !current?.status) {
+  if (touchesModels || !current?.status) {
     return { status: 'active' }
   }
 
@@ -334,11 +331,7 @@ export function createTeamDesiredStateBuilder({
           ? { ...current?.gateway?.limits, ...requestedLimits }
           : await limitsFor({ current, registry, team, environment, model })
       },
-      oauth: current?.oauth ?? {
-        federations: [],
-        externalClients: [],
-        secretsAllowed: true
-      },
+      oauth: oauthBlockOf(current, items, environment),
       operationId,
       updatedAt: new Date().toISOString()
     }

@@ -30,12 +30,24 @@ const FORCED_BY_PURPOSE = [
   ['[mock:deploy-failed]', MOCK_DEPLOY_FAILED]
 ]
 
+// A federation has no free text, only a name in its allowed form, so the
+// journey tests carry the outcome in the CDP service or Azure application
+// name. Only the mock orchestrator ever reads it.
+const FORCED_BY_NAME = [
+  ['mock-checks-failed', MOCK_CHECKS_FAILED],
+  ['mock-deploy-failed', MOCK_DEPLOY_FAILED]
+]
+
 const SUBMIT_WORKFLOW = '.github/workflows/submit.yml'
 const APPLY_WORKFLOW = '.github/workflows/apply.yml'
 const APPLY_STATES = new Set(['committed', 'deploying', 'deployed'])
 const SUBMIT_STATUSES = new Set(['requested', 'committed', MOCK_CHECKS_FAILED])
 // A fake commit SHA is as long as a Git object name in hex.
 const SHA_HEX_LENGTH = 40
+
+function markedBy(markers, text) {
+  return markers.find(([marker]) => text?.includes(marker))?.[1] ?? null
+}
 
 /**
  * The outcome a request's purpose forces in the mock orchestrator, or null.
@@ -45,9 +57,19 @@ const SHA_HEX_LENGTH = 40
  * @returns {'checks-failed'|'deploy-failed'|null}
  */
 export function mockOutcomeOfPurpose(purpose) {
-  return (
-    FORCED_BY_PURPOSE.find(([marker]) => purpose?.includes(marker))?.[1] ?? null
-  )
+  return markedBy(FORCED_BY_PURPOSE, purpose)
+}
+
+/**
+ * The outcome the name of a federated application forces in the mock
+ * orchestrator, or null: `mock-checks-failed` or `mock-deploy-failed` in the
+ * CDP service or Azure application name. As for a purpose, the caller records
+ * it only in mock mode.
+ * @param {string|undefined} name
+ * @returns {'checks-failed'|'deploy-failed'|null}
+ */
+export function mockOutcomeOfName(name) {
+  return markedBy(FORCED_BY_NAME, name)
 }
 
 function forcedOutcomeOf(command, operation) {

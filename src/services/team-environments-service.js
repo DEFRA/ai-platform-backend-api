@@ -3,10 +3,17 @@ import { ObjectId } from 'mongodb'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { requireTeamRole } from '#/common/helpers/auth/access.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
+import { connectionDetailsOf } from '#/adapters/team-connection-details-registry.js'
 import { requestedLimitsOf } from '#/operations/operation-items.js'
 import { findTeamOperations } from '#/operations/operation-repository.js'
 import { REMOVED } from '#/services/team-deployment-entries.js'
 import { teamEnvironments, viewOf } from '#/services/team-deployment-service.js'
+import {
+  MAX_FEDERATIONS,
+  federationViewOf,
+  heldTrustKeys,
+  liveFederationsOf
+} from '#/services/team-federation-entries.js'
 import { limitBoundsFor } from '#/services/team-limit-bounds.js'
 import {
   MAX_OPERATIONS_LIMIT,
@@ -19,11 +26,6 @@ import { readTeamFiles, requireTeamId } from '#/services/team-service.js'
 // and the latest change. Every read carries the team's id; the team files
 // come from `main` (the same read the Teams page uses), a failed read is
 // `502 upstream-unavailable`, never "not set up".
-
-/**
- * The most applications a team can federate in one environment (design E).
- */
-export const MAX_APPLICATIONS = 20
 
 /**
  * Refuses an environment this portal instance does not offer, as `404
@@ -41,17 +43,19 @@ export function requireAvailableEnvironment(environment) {
 }
 
 /**
- * The team a member reads, with its id. A team nobody has, or one the actor
- * is not a member of (refused and audited), is `404`.
+ * The team a member acts in, with its id and the role the actor holds. A team
+ * nobody has, or one the actor is not a member of (refused and audited), is
+ * `404`; `roleOptions` asks for more (an admin, with the action a refusal
+ * names).
  * @param {import('mongodb').Db} db
  * @param {string} teamRef - the team's id or slug
  * @param {{userId: string}} actor
- * @returns {Promise<{teamId: string, team: {slug: string, name: string}}>}
+ * @param {{role?: 'member'|'admin', action?: string}} [roleOptions]
+ * @returns {Promise<{teamId: string, role: string, team: {slug: string, name: string}}>}
  */
-export async function findMemberTeam(db, teamRef, actor) {
+export async function findMemberTeam(db, teamRef, actor, roleOptions = {}) {
   const teamId = await requireTeamId(db, teamRef)
-
-  await requireTeamRole(db, actor, teamId)
+  const role = await requireTeamRole(db, actor, teamId, roleOptions)
 
   // The team exists: `requireTeamId` has just found it.
   const team = await db
@@ -61,7 +65,7 @@ export async function findMemberTeam(db, teamRef, actor) {
       { projection: { slug: 1, name: 1 } }
     )
 
-  return { teamId, team }
+  return { teamId, role, team }
 }
 
 // Everything a read of some of a team's environments needs, fetched together:
@@ -151,8 +155,12 @@ function summaryOf({ environment, file, doc, paused, latest, open, views }) {
     paused,
     models: modelsOf(doc).summary,
     limits: limitsOf(file),
-    // Applications arrive with federation (B18); none can exist yet.
-    applications: { used: 0, limit: MAX_APPLICATIONS },
+    // The places the team's registration holds: applications asked for and
+    // not failed or removed, and any the team file holds already.
+    applications: {
+      used: heldTrustKeys(doc, file?.document).size,
+      limit: MAX_FEDERATIONS
+    },
     latestOperation: latest ? views.get(latest._id) : null,
     inProgress: open.length > 0
   }
@@ -211,9 +219,14 @@ export async function getTeamEnvironment(
     { registry, controls }
   )
   const { entries } = modelsOf(read.doc)
+  const summary = summaryOf(read)
 
   return {
-    ...summaryOf(read),
+    ...summary,
+    applications: {
+      ...summary.applications,
+      items: liveFederationsOf(read.doc).map(federationViewOf)
+    },
     models: await Promise.all(
       entries.map((entry) => viewOf(db, read.doc, entry))
     ),
@@ -224,6 +237,11 @@ export async function getTeamEnvironment(
     pendingLimits:
       read.open
         .map(({ items }) => requestedLimitsOf(items ?? []))
-        .find(Boolean) ?? null
+        .find(Boolean) ?? null,
+    // What an application needs to call the team's models, once there is a
+    // registration to call them as.
+    connection: read.file
+      ? await connectionDetailsOf({ team, environment })
+      : null
   }
 }

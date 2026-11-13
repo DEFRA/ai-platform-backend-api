@@ -118,6 +118,27 @@ describe('#team-environments routes', () => {
     })
   }
 
+  // A team's applications in an environment, as the projection keeps them
+  // (the document may already exist from a model request).
+  async function federationsIn(team, environment, entries) {
+    await server.db.collection('teamDeployments').updateOne(
+      { teamId: team.teamId, environment },
+      {
+        $set: {
+          federations: entries.map((entry, index) => ({
+            id: `fed-${environment}-${index}`,
+            host: 'cdp',
+            statusTimes: {},
+            operationId: null,
+            failureReason: null,
+            ...entry
+          }))
+        }
+      },
+      { upsert: true }
+    )
+  }
+
   function getAll(team, label) {
     return server.inject({
       method: 'GET',
@@ -302,6 +323,34 @@ describe('#team-environments routes', () => {
       })
     })
 
+    test('counts the applications that hold a place in the registration, the team file’s and the asked-for, not the failed or removed', async () => {
+      const team = await fixtures.newTeam('env-list-9')
+      const file = teamFile(team.slug, 'infradev')
+
+      file.oauth.federations = [{ name: 'one', host: 'cdp', service: 'one' }]
+      filesOf(team, { infradev: file })
+      await federationsIn(team, 'infradev', [
+        { name: 'one', service: 'one', status: 'ready' },
+        { name: 'two', service: 'two', status: 'ready' },
+        { name: 'three', service: 'three', status: 'setting-up' },
+        { name: 'four', service: 'four', status: 'failed' },
+        { name: 'five', service: 'five', status: 'removed' },
+        { name: 'six', service: 'six', status: 'removing' }
+      ])
+
+      const { result } = await getAll(team, 'env-list-9')
+
+      // one (in the file and recorded, once), two, three and six.
+      expect(result.environments[0].applications).toEqual({
+        used: 4,
+        limit: 20
+      })
+      expect(result.environments[1].applications).toEqual({
+        used: 0,
+        limit: 20
+      })
+    })
+
     test('reads only this team’s files and every database read carries the team', async () => {
       const team = await fixtures.newTeam('env-list-7')
       const other = await fixtures.newTeam('env-list-7-other')
@@ -394,6 +443,62 @@ describe('#team-environments routes', () => {
         progressSteps: expect.any(Array)
       })
       expect(result.models[0].progressSteps[0].label).toBeTruthy()
+    })
+
+    test('lists the applications not removed, and the connection details flagged a placeholder', async () => {
+      const team = await fixtures.newTeam('env-one-10')
+
+      filesOf(team, { infradev: teamFile(team.slug, 'infradev') })
+      await federationsIn(team, 'infradev', [
+        { name: 'two', service: 'two', status: 'ready' },
+        {
+          name: 'data-app',
+          host: 'azure',
+          principalId: '6f504113-6b64-43f2-ade9-242e05780007',
+          status: 'failed',
+          failureReason: 'Checks failed'
+        },
+        { name: 'five', service: 'five', status: 'removed' }
+      ])
+
+      const { result } = await getOne(team, 'infradev', 'env-one-10')
+
+      expect(result.applications).toEqual({
+        used: 1,
+        limit: 20,
+        items: [
+          expect.objectContaining({
+            name: 'two',
+            host: 'cdp',
+            service: 'two',
+            status: 'ready'
+          }),
+          expect.objectContaining({
+            name: 'data-app',
+            host: 'azure',
+            principalId: '6f504113-6b64-43f2-ade9-242e05780007',
+            status: 'failed',
+            failureReason: 'Checks failed'
+          })
+        ]
+      })
+      expect(result.connection).toMatchObject({
+        placeholder: true,
+        gatewayUrl: expect.stringContaining(team.slug),
+        clientId: expect.any(String),
+        scope: expect.stringContaining('/.default')
+      })
+    })
+
+    test('has no connection details for an environment the team has not set up', async () => {
+      const team = await fixtures.newTeam('env-one-11')
+
+      filesOf(team, {})
+
+      const { result } = await getOne(team, 'qa', 'env-one-11')
+
+      expect(result.connection).toBeNull()
+      expect(result.applications).toEqual({ used: 0, limit: 20, items: [] })
     })
 
     test('reads only that environment’s file', async () => {

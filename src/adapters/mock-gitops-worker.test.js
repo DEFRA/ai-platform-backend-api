@@ -4,6 +4,7 @@ import {
   createMockGitopsWorker,
   createMockRunReader,
   createMockTransport,
+  mockOutcomeOfName,
   mockOutcomeOfPurpose
 } from '#/adapters/mock-gitops-worker.js'
 import {
@@ -64,6 +65,20 @@ describe('mock-gitops-worker', () => {
       [undefined, null]
     ])('reads %j as %j', (purpose, outcome) => {
       expect(mockOutcomeOfPurpose(purpose)).toBe(outcome)
+    })
+  })
+
+  describe('mockOutcomeOfName', () => {
+    test.each([
+      ['mock-checks-failed', 'checks-failed'],
+      ['team-mock-deploy-failed', 'deploy-failed'],
+      ['mock-deploy-failed-2', 'deploy-failed'],
+      ['beta-api', null],
+      ['mock-failed', null],
+      ['[mock:checks-failed]', null],
+      [undefined, null]
+    ])('reads the application name %j as %j', (name, outcome) => {
+      expect(mockOutcomeOfName(name)).toBe(outcome)
     })
   })
 
