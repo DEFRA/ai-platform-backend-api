@@ -199,6 +199,42 @@ describe('#team-client-secrets routes', () => {
       expect(JSON.stringify(events)).not.toContain(result.secret)
     })
 
+    test('gives each secret its own issuer identity, apart from the one made with the first model', async () => {
+      const team = await deployedTeam('cs-ident-1')
+      const first = await add(team, 'cs-ident-1')
+      const second = await add(team, 'cs-ident-1')
+
+      const identities = (await secretsOf(team)).map(
+        ({ externalGatewaySubscriptionId }) => externalGatewaySubscriptionId
+      )
+
+      expect(identities).toHaveLength(3)
+      expect(new Set(identities).size).toBe(3)
+      expect(identities).toEqual(
+        expect.arrayContaining([
+          `team-${team.teamId}-sandbox`,
+          `team-${team.teamId}-sandbox-${first.result.credential.id}`,
+          `team-${team.teamId}-sandbox-${second.result.credential.id}`
+        ])
+      )
+    })
+
+    test('points at the secret in Location: the credential, which an Admin can read there', async () => {
+      const team = await deployedTeam('cs-loc-1')
+      const { statusCode, headers, result } = await add(team, 'cs-loc-1')
+
+      expect(statusCode).toBe(201)
+      expect(headers.location).toBe(`/v1/credentials/${result.credential.id}`)
+
+      const read = await server.inject({
+        method: 'GET',
+        url: headers.location,
+        headers: fixtures.as('cs-loc-1')
+      })
+
+      expect(read.statusCode).toBe(200)
+    })
+
     test('a replayed Idempotency-Key answers 200 with the credential, no secret, and adds nothing', async () => {
       const team = await deployedTeam('cs-replay-1')
       const key = randomUUID()
@@ -209,6 +245,7 @@ describe('#team-client-secrets routes', () => {
 
       expect(replay.statusCode).toBe(200)
       expect(replay.headers['cache-control']).toBe('no-store')
+      expect(replay.headers.location).toBeUndefined()
       expect(replay.result.credential).toEqual(first.result.credential)
       expect(replay.result.secret).toBeUndefined()
       expect(await secretsOf(team)).toHaveLength(count)

@@ -12,7 +12,7 @@ export const teamClientSecrets = [
     options: {
       app: { access: ACCESS.teamAdmin },
       description:
-        "Adds a client secret to the team's registration in one environment (team admin): it expires in 90 days, is shown once with no-store and the team holds at most three that have not expired. 201 with the credential and the secret; 200 with the credential only for a replayed Idempotency-Key. Only where client secrets are allowed (409 client-secrets-not-allowed).",
+        "Adds a client secret to the team's registration in one environment (team admin): it expires in 90 days, is shown once with no-store and the team holds at most three that have not expired. 201 with the credential and the secret and a Location header of the credential (/v1/credentials/{id}); 200 with the credential only, and no Location, for a replayed Idempotency-Key. Only where client secrets are allowed (409 client-secrets-not-allowed).",
       validate: {
         headers: Joi.object({
           'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()
@@ -38,11 +38,18 @@ export const teamClientSecrets = [
         }
       )
 
-      return h
+      const response = h
         .response(replay ? { credential } : { credential, secret })
         .header('Cache-Control', 'no-store')
         .header('Pragma', 'no-cache')
-        .code(replay ? statusCodes.ok : statusCodes.created)
+
+      // The secret is a credential: it is read, rotated and revoked at
+      // /v1/credentials/{id}, as one issued for a model is.
+      if (!replay) {
+        response.header('Location', `/v1/credentials/${credential.id}`)
+      }
+
+      return response.code(replay ? statusCodes.ok : statusCodes.created)
     }
   }
 ]
