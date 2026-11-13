@@ -139,7 +139,10 @@ export const credentials = [
         }
       )
 
-      return h.response({ credential, secret })
+      return h
+        .response({ credential, secret })
+        .header('Cache-Control', 'no-store')
+        .header('Pragma', 'no-cache')
     }
   },
   {

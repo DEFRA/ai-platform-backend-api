@@ -16,6 +16,11 @@ import {
 } from '#/services/team-federation-entries.js'
 import { limitBoundsFor } from '#/services/team-limit-bounds.js'
 import {
+  clientSecretViewOf,
+  clientSecretsOf,
+  clientSecretsSummaryOf
+} from '#/services/team-client-secrets.js'
+import {
   MAX_OPERATIONS_LIMIT,
   viewsOf
 } from '#/services/team-operations-service.js'
@@ -70,13 +75,14 @@ export async function findMemberTeam(db, teamRef, actor, roleOptions = {}) {
 
 // Everything a read of some of a team's environments needs, fetched together:
 // the team files, the deployment documents, whether each environment is
-// paused, each one's latest operation, and the team's open operations.
+// paused, each one's latest operation, the team's open operations and its
+// client secrets.
 async function gather(
   db,
   { teamId, team, environments },
   { registry, controls }
 ) {
-  const [files, docs, paused, latest, open] = await Promise.all([
+  const [files, docs, paused, latest, open, secrets] = await Promise.all([
     readTeamFiles(
       registry,
       team.slug,
@@ -100,7 +106,8 @@ async function gather(
       teamId,
       status: 'open',
       limit: MAX_OPERATIONS_LIMIT
-    })
+    }),
+    clientSecretsOf(db, { teamId, environments })
   ])
   const operations = [...latest.flat(), ...open]
   const views = new Map(
@@ -114,6 +121,7 @@ async function gather(
     paused: paused[index],
     latest: latest[index][0] ?? null,
     open: open.filter((operation) => operation.environment === environment),
+    secrets: secrets.get(environment),
     views
   }))
 }
@@ -148,7 +156,16 @@ function modelsOf(doc) {
   }
 }
 
-function summaryOf({ environment, file, doc, paused, latest, open, views }) {
+function summaryOf({
+  environment,
+  file,
+  doc,
+  paused,
+  latest,
+  open,
+  secrets,
+  views
+}) {
   return {
     environment,
     setUp: Boolean(file),
@@ -161,6 +178,7 @@ function summaryOf({ environment, file, doc, paused, latest, open, views }) {
       used: heldTrustKeys(doc, file?.document).size,
       limit: MAX_FEDERATIONS
     },
+    clientSecrets: clientSecretsSummaryOf(environment, secrets),
     latestOperation: latest ? views.get(latest._id) : null,
     inProgress: open.length > 0
   }
@@ -226,6 +244,10 @@ export async function getTeamEnvironment(
     applications: {
       ...summary.applications,
       items: liveFederationsOf(read.doc).map(federationViewOf)
+    },
+    clientSecrets: {
+      ...summary.clientSecrets,
+      items: read.secrets.map((secret) => clientSecretViewOf(secret))
     },
     models: await Promise.all(
       entries.map((entry) => viewOf(db, read.doc, entry))

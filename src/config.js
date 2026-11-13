@@ -179,6 +179,12 @@ export const config = convict({
       default: ['infradev', 'sandbox', 'dev'],
       env: 'CLIENT_SECRET_ENVIRONMENTS'
     },
+    clientSecretTtlDays: {
+      doc: 'How many days a client secret an Admin adds lives before it expires (design E: within three months). The secret the team gets with its first model never expires',
+      format: 'nat',
+      default: 90,
+      env: 'CLIENT_SECRET_TTL_DAYS'
+    },
     mockStageDurationMs: {
       doc: 'Duration in ms of each mocked GitOps stage for team deployment provisioning',
       format: 'nat',

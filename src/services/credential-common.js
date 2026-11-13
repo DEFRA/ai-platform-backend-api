@@ -135,8 +135,8 @@ export function resolveIssuer(registry, model, tier) {
 // acting with the owner's right, or, when no request did (a team's credential
 // issued as its first model turns active), the system, whose role the audit
 // service records. The person the credential is for is on the credential.
-export function issuanceAuditActor(actor) {
-  return actor ? { actor, role: ROLE_OWNER } : { actor: systemActor }
+export function issuanceAuditActor(actor, role = ROLE_OWNER) {
+  return actor ? { actor, role } : { actor: systemActor }
 }
 
 // Runs `work` holding the lock `revokeCredential` takes on the credential

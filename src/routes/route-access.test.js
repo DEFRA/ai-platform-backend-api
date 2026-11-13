@@ -47,6 +47,10 @@ const ROUTES = [
     'DELETE /v1/teams/{teamId}/environments/{environment}/federations/{federationId}',
     ACCESS.teamAdmin
   ],
+  [
+    'POST /v1/teams/{teamId}/environments/{environment}/client-secrets',
+    ACCESS.teamAdmin
+  ],
   ['POST /v1/admin/team-deployments/{id}/retry', ACCESS.platformAdmin],
   ['POST /v1/admin/team-deployments/{id}/reconcile', ACCESS.platformAdmin]
 ]

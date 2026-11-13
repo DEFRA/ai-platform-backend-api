@@ -843,21 +843,40 @@ describe('#credentials routes', () => {
       environment: 'sandbox',
       operationId: 'op-envs-sandbox'
     })
-    const preprod = await ensureTeamCredential(server.db, server.locker, {
+    const infradev = await ensureTeamCredential(server.db, server.locker, {
       ...params,
-      environment: 'preprod',
-      operationId: 'op-envs-preprod'
+      environment: 'infradev',
+      operationId: 'op-envs-infradev'
     })
 
     expect(sandbox.created).toBe(true)
-    expect(preprod.created).toBe(true)
+    expect(infradev.created).toBe(true)
     expect(sandbox.credential._id.toString()).not.toBe(
-      preprod.credential._id.toString()
+      infradev.credential._id.toString()
     )
-    expect(preprod.credential).toMatchObject({
-      environment: 'preprod',
-      externalGatewaySubscriptionId: `team-${teamId}-preprod`
+    expect(infradev.credential).toMatchObject({
+      environment: 'infradev',
+      externalGatewaySubscriptionId: `team-${teamId}-infradev`
     })
+  })
+
+  test('no team credential is made where client secrets are not allowed, whatever model turns active', async () => {
+    const teamId = new ObjectId().toString()
+    const { ensureTeamCredential, teamCredentialNeedsRetry } =
+      await import('#/services/credential-service.js')
+    const params = {
+      teamId,
+      environment: 'preprod',
+      modelSlug: 'gpt-4o',
+      requestedBy: 'team-cred-notallowed-1',
+      operationId: 'op-notallowed'
+    }
+
+    const result = await ensureTeamCredential(server.db, server.locker, params)
+
+    expect(result).toEqual({ credential: null, created: false })
+    expect(await teamCredentialNeedsRetry(server.db, params)).toBe(false)
+    expect(await teamCredentialOf(teamId, 'preprod')).toBeNull()
   })
 
   test('POST /v1/credentials refuses a team credential request', async () => {

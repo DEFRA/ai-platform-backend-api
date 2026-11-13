@@ -12,6 +12,7 @@ import {
   withCredentialRow
 } from '#/services/credential-common.js'
 import { issueAndActivate } from '#/services/credential-issuance.js'
+import { clientSecretsAllowedIn } from '#/services/team-oauth-block.js'
 
 const TEAM_TIER = 'team'
 
@@ -34,6 +35,11 @@ export async function teamCredentialNeedsRetry(
   { teamId, environment },
   { retryAfterMs = 0, activatedAt = null } = {}
 ) {
+  // Never owed where client secrets are not allowed.
+  if (!clientSecretsAllowedIn(environment)) {
+    return false
+  }
+
   const attempts = await credentialsCollection(db)
     .find(
       { teamId, environment, ...TEAM_CREDENTIAL_FILTER },
@@ -213,7 +219,8 @@ async function createTeamCredentialIfOwed(
  * create one credential. An attempt that did not finish - failed, abandoned
  * `pending` after a crash, or one that failed before an issuer was even
  * resolved (recorded as a `failed` document with its reason) - is reused
- * rather than left beside a second row.
+ * rather than left beside a second row. Nothing is created where client
+ * secrets are not allowed (`CLIENT_SECRET_ENVIRONMENTS`).
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{teamId: string, environment: string, modelSlug: string, requestedBy: string, operationId: string, activatedAt?: string|null, retryAfterMs?: number}} params - `requestedBy` is the person whose request activated the model, recorded as the credential's owner (an unfinished attempt keeps its own); the issuance audit names the system, not that person. `activatedAt` is when that activation happened: an admin's revocation made after it is respected, checked again inside the lock. `retryAfterMs` marks a retry from a poll rather than the activation itself (see `teamCredentialNeedsRetry`), so polls that raced for the lock cannot repeat an attempt that has just failed
@@ -229,6 +236,13 @@ export async function ensureTeamCredential(
   vault = credentialVault
 ) {
   const { teamId, environment } = request
+
+  // The team's secret is made only where client secrets are allowed: elsewhere
+  // its applications federate and an Admin adds nothing (design E, choice A).
+  if (!clientSecretsAllowedIn(environment)) {
+    return { credential: null, created: false }
+  }
+
   const lock = await acquireLockWithRetry(
     locker,
     `team-credential:${teamId}:${environment}`
