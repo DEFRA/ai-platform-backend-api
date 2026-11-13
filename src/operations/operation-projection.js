@@ -10,7 +10,8 @@ import { FEDERATION_STATUS } from '#/services/team-federation-constants.js'
 // and `operation {id, state, attempt, runUrl, commitSha, failureReason}`. The
 // operation is the truth; this is recomputed from it, so a repeat is harmless.
 
-const FAILED_STATES = new Set(['checks-failed', 'deploy-failed'])
+const DEPLOY_FAILED = 'deploy-failed'
+const FAILED_STATES = new Set(['checks-failed', DEPLOY_FAILED])
 
 /**
  * The stable failure codes an operation records (plan 5, C6).
@@ -115,7 +116,7 @@ export function entryFailureReasonOf(operation, item) {
       : null
   }
 
-  if (operation.state === 'deploy-failed' && operation.revertFailed) {
+  if (operation.state === DEPLOY_FAILED && operation.revertFailed) {
     return REVERT_FAILED_TEXT
   }
 
@@ -391,7 +392,7 @@ async function projectDeployments(db, doc, operation) {
 const ACTIVE_STATES = new Set(['active', REMOVED])
 const FEDERATION_FAILED_STATES = new Set([
   'checks-failed',
-  'deploy-failed',
+  DEPLOY_FAILED,
   'timed-out'
 ])
 
@@ -465,7 +466,7 @@ function federationFailureReasonOf(operation, item) {
 // keeps the definition the team file still holds, and what it is changing to
 // waits in `pending` (also through a failure before the commit, or a timeout
 // before it, in case it recovers).
-const COMMITTED_CHANGE_STATES = new Set(['active', 'deploy-failed'])
+const COMMITTED_CHANGE_STATES = new Set(['active', DEPLOY_FAILED])
 
 function hasCommitted(operation) {
   if (COMMITTED_CHANGE_STATES.has(operation.state)) {

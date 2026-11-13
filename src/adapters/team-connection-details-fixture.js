@@ -9,7 +9,9 @@ import { config } from '#/config.js'
 const FIXTURE_GATEWAY = 'https://mock-gateway.ai-platform.example'
 const FIXTURE_TENANT = '00000000-0000-4000-8000-000000000000'
 const CDP_AUDIENCE = 'api://AzureADTokenExchange'
-const UUID_GROUPS = [8, 4, 4, 4, 12]
+const UUID_GROUPS = 'xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx'
+  .split('-')
+  .map((group) => group.length)
 
 // A repeatable GUID for a team and environment, so the page does not change
 // on every read.
