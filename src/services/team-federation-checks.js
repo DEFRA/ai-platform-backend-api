@@ -123,7 +123,7 @@ export async function refusalFor(
 
   const { file, doc } = registration
 
-  if (!file) {
+  if (!file || file.status === 'removed') {
     return FEDERATION_REFUSALS.NOT_SET_UP
   }
 
