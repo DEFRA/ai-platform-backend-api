@@ -419,6 +419,40 @@ describe('#team-client-secrets routes', () => {
       })
     })
 
+    test('audits the refusal when no issuer is enabled for the team: actor, admin role, team, environment and code, and nothing is made', async () => {
+      const team = await deployedTeam('cs-issuer-1')
+      const before = (await secretsOf(team)).length
+      const { credentialIssuerRegistry } =
+        await import('#/adapters/credential-issuer-registry.js')
+
+      vi.spyOn(credentialIssuerRegistry, 'forModel').mockImplementation(() => {
+        throw Object.assign(new Error('No gateway issues team credentials'), {
+          code: 'gateway-not-enabled'
+        })
+      })
+
+      const { statusCode, result } = await add(team, 'cs-issuer-1')
+
+      expect(statusCode).toBe(501)
+      expect(result.code).toBe('gateway-not-enabled')
+      expect(await secretsOf(team)).toHaveLength(before)
+
+      const events = await auditOf({
+        action: 'credential.issue',
+        resourceId: team.teamId,
+        code: 'gateway-not-enabled'
+      })
+
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({
+        outcome: 'failure',
+        role: 'admin',
+        resource: 'team',
+        reason: 'sandbox',
+        actorUserId: expect.any(String)
+      })
+    })
+
     test('a Member asking for an environment this instance does not offer is refused 403 first, with no environment audit', async () => {
       const team = await deployedTeam('cs-env-3')
 

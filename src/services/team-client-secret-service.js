@@ -171,9 +171,26 @@ async function earlierRequest(db, context) {
   return found[0] ?? null
 }
 
+// The issuer for the team tier. When none is enabled the resolution refuses
+// (`501 gateway-not-enabled`) before `issueAndActivate` can audit anything, so
+// it is audited here, as every other refusal, and rethrown.
+async function resolveTeamIssuer(db, context, issuerRegistry) {
+  try {
+    return resolveIssuer(issuerRegistry, null, TEAM_TIER)
+  } catch (error) {
+    await auditRefusal(db, context, error.data?.code ?? 'credential-failed')
+
+    throw error
+  }
+}
+
 async function issue(db, locker, context, earlier, { issuerRegistry, vault }) {
   const { actor, teamId, environment } = context
-  const { issuerKey, issuer } = resolveIssuer(issuerRegistry, null, TEAM_TIER)
+  const { issuerKey, issuer } = await resolveTeamIssuer(
+    db,
+    context,
+    issuerRegistry
+  )
   const pending = buildPending(context, issuerKey)
   const unfinished = UNFINISHED_STATUSES.includes(earlier?.status)
     ? earlier
