@@ -22,6 +22,10 @@ import {
   MAX_CLIENT_SECRETS,
   countUnexpiredSecrets
 } from '#/services/team-client-secrets.js'
+import {
+  isEnvironmentBlocked,
+  withCredentialsBlockLock
+} from '#/services/credential-block.js'
 import { teamEnvironments } from '#/services/team-deployment-service.js'
 import {
   findMemberTeam,
@@ -59,6 +63,11 @@ const REFUSALS = {
     make: Boom.conflict,
     message: 'This idempotency key was used for a different request',
     code: 'idempotency-key-reused'
+  },
+  disabled: {
+    make: Boom.conflict,
+    message: 'Credentials are disabled for this team in this environment',
+    code: 'credentials-disabled'
   }
 }
 
@@ -263,8 +272,10 @@ async function addUnderLock(db, locker, context, deps) {
  * addition are audited. The optional `name` (already validated by the route:
  * trimmed, 1 to 30 plain characters) is kept on the record and given to the
  * issuer as `displayName`; it is never audited or logged. While a Platform
- * Admin has disabled the team or the environment it is `409 team-disabled`,
- * audited as an `access.denied`.
+ * Admin has disabled the team's credentials in the environment nothing is
+ * made (`409 credentials-disabled`, audited, with no word of why). While a
+ * Platform Admin has disabled the team or the environment it is `409
+ * team-disabled`, audited as an `access.denied`.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{teamId: string, environment: string, name?: string, actor: {userId: string}, idempotencyKey: string}} params - `teamId` is the team's id or slug
@@ -306,19 +317,28 @@ export async function addTeamClientSecret(
     throw await refuse(db, context, REFUSALS.notSetUp)
   }
 
-  // The key is reserved for the team across its environments before the
-  // environment's own lock is taken (always in this order), so two requests
-  // with one key meet one another's record whichever environment each is for.
+  // The block's lock is the outermost, as for every other grant, so a Platform
+  // Admin's Disable cannot land between this look at it and the issue.
+  return withCredentialsBlockLock(locker, context, async () => {
+    if (await isEnvironmentBlocked(db, context)) {
+      throw await refuse(db, context, REFUSALS.disabled)
+    }
+
+    return addUnderKeyLock(db, locker, context, { issuerRegistry, vault })
+  })
+}
+
+// The key is reserved for the team across its environments before the
+// environment's own lock is taken (always in this order), so two requests
+// with one key meet one another's record whichever environment each is for.
+async function addUnderKeyLock(db, locker, context, deps) {
   const keyLock = await acquireLockWithRetry(
     locker,
-    `team-credential-key:${teamId}:${idempotencyKey}`
+    `team-credential-key:${context.teamId}:${context.idempotencyKey}`
   )
 
   try {
-    return await addUnderEnvironmentLock(db, locker, context, {
-      issuerRegistry,
-      vault
-    })
+    return await addUnderEnvironmentLock(db, locker, context, deps)
   } finally {
     await keyLock.free()
   }

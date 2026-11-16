@@ -674,7 +674,8 @@ issuer answers is its `keyId`, kept as `externalGatewaySubscriptionId`. The mock
 audited. A replay of the key answers `200 {credential}`
 without the value; a key made for another environment is `409 idempotency-key-reused`. Refusals: `409 credential-limit-reached`
 (three unexpired; revoked and expired ones free a place), `409 client-secrets-not-allowed` (the environment is outside
-`CLIENT_SECRET_ENVIRONMENTS`: applications federate there), `409 environment-not-set-up` (no team file yet), `404
+`CLIENT_SECRET_ENVIRONMENTS`: applications federate there), `409 credentials-disabled` (a Platform Admin has disabled the team's
+credentials in the environment), `409 environment-not-set-up` (no team file yet), `404
 environment-not-available`, `403 admin-required` for a Member and `404` for a non-member; every refusal and addition is
 audited (`credential.issue`, role admin). Rotate, revoke and reveal are the existing `/v1/credentials/{id}` routes, team admin
 only for team credentials; rotate now answers `no-store` as reveal does. The environment summary returns `clientSecrets`
