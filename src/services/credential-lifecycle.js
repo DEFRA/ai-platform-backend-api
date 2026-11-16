@@ -19,7 +19,8 @@ import {
 } from '#/services/credential-access.js'
 import {
   withRenewalsRemaining,
-  withTeamGrants
+  withTeamGrants,
+  withTeamName
 } from '#/services/credential-presenter.js'
 import {
   VAULT_UNWRITTEN,
@@ -210,7 +211,10 @@ export async function rotateCredential(
     await auditAction(db, { actor, role, action: 'credential.rotate', id })
 
     return {
-      credential: await withTeamGrants(db, withRenewalsRemaining(updated)),
+      credential: await withTeamGrants(
+        db,
+        withTeamName(withRenewalsRemaining(updated))
+      ),
       secret: rotated.secret
     }
   } finally {

@@ -40,6 +40,17 @@ export function describeCredentialIssuerContract(
       expect(issued.expiresAt).toEqual(expect.any(String))
     })
 
+    test('issue accepts an optional displayName and returns the same shape, the externalId being the link to the provider identity', async () => {
+      const issued = await createIssuer().issue({
+        ...issueParams,
+        displayName: 'local-dev'
+      })
+
+      expect(issued.externalId).toEqual(expect.any(String))
+      expect(issued.keyHint).toBe(issued.secret.slice(-KEY_HINT_LENGTH))
+      expect(issued).not.toHaveProperty('displayName')
+    })
+
     test('rotate returns a new secret for the same externalId, with a matching keyHint', async () => {
       const issuer = createIssuer()
       const issued = await issuer.issue(issueParams)

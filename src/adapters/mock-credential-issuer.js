@@ -41,7 +41,9 @@ function teamCredential({ teamId, environment, credentialId }, expiresAt) {
 /**
  * Mock credential issuer used until the real Azure APIM adapter is wired up.
  * Generates a fake subscription key locally instead of calling Azure, or for
- * the team tier (OAuth only) a fake OAuth client secret.
+ * the team tier (OAuth only) a fake OAuth client secret. An Admin's
+ * `displayName` for a team secret is accepted and ignored: there is no
+ * provider to show it in.
  * @type {import('./credential-issuer.js').CredentialIssuer}
  */
 export const mockCredentialIssuer = {
