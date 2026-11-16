@@ -70,11 +70,23 @@ export async function withTeamGrants(db, credential) {
   }
 }
 
+/**
+ * A team credential's `name` (an Admin's short label for a secret) reads as
+ * `null` where it has none, so documents made before names existed need no
+ * backfill. A research credential has no such field and is returned as is.
+ * @param {object} credential
+ */
+export function withTeamName(credential) {
+  return credential.tier === 'team'
+    ? { ...credential, name: credential.name ?? null }
+    : credential
+}
+
 // How every credential leaves the service: lazily expired, with its
-// allowance and, for a team's, its coverage.
+// allowance and, for a team's, its name and coverage.
 export async function presentCredential(db, credential) {
   return withTeamGrants(
     db,
-    withRenewalsRemaining(await applyLazyExpiry(db, credential))
+    withTeamName(withRenewalsRemaining(await applyLazyExpiry(db, credential)))
   )
 }

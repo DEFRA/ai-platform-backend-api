@@ -99,7 +99,8 @@ function viewOf(credential) {
     id: credential._id.toString(),
     keyHint: credential.keyHint,
     expiresAt: credential.expiresAt ?? null,
-    environment: credential.environment
+    environment: credential.environment,
+    name: credential.name ?? null
   }
 }
 
@@ -113,7 +114,7 @@ async function isSetUp(registry, team, environment) {
 }
 
 function buildPending(
-  { actor, teamId, environment, idempotencyKey },
+  { actor, teamId, environment, idempotencyKey, name },
   issuerKey
 ) {
   return {
@@ -125,6 +126,9 @@ function buildPending(
     origin: ADMIN_ADDED,
     environment,
     purpose: null,
+    // The Admin's short name for it; the issuer shows it as the secret's
+    // description where the provider has one.
+    name: name ?? null,
     type: SUBSCRIPTION_TYPE,
     status: 'pending',
     idempotencyKey,
@@ -215,7 +219,8 @@ async function issue(db, locker, context, earlier, { issuerRegistry, vault }) {
         teamId,
         environment,
         credentialId: rowId.toString(),
-        expiresAt
+        expiresAt,
+        ...(context.name && { displayName: context.name })
       }
     })
   )
@@ -254,17 +259,19 @@ async function addUnderLock(db, locker, context, deps) {
  * of credential is `409 idempotency-key-reused`. A Member is refused with a
  * `403` and a non-member `404`; every refusal (an environment the instance
  * does not offer, `404 environment-not-available`, included) and the
- * addition are audited.
+ * addition are audited. The optional `name` (already validated by the route:
+ * trimmed, 1 to 30 plain characters) is kept on the record and given to the
+ * issuer as `displayName`; it is never audited or logged.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{teamId: string, environment: string, actor: {userId: string}, idempotencyKey: string}} params - `teamId` is the team's id or slug
+ * @param {{teamId: string, environment: string, name?: string, actor: {userId: string}, idempotencyKey: string}} params - `teamId` is the team's id or slug
  * @param {{registry?: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry, issuerRegistry?: import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry, vault?: import('#/adapters/credential-vault.js').CredentialVault}} [deps]
- * @returns {Promise<{credential: {id: string, keyHint: string, expiresAt: string|null, environment: string}, secret?: string, replay: boolean}>}
+ * @returns {Promise<{credential: {id: string, keyHint: string, expiresAt: string|null, environment: string, name: string|null}, secret?: string, replay: boolean}>}
  */
 export async function addTeamClientSecret(
   db,
   locker,
-  { teamId: teamRef, environment, actor, idempotencyKey },
+  { teamId: teamRef, environment, name, actor, idempotencyKey },
   {
     registry = tenantOrchestratorRegistry,
     issuerRegistry = credentialIssuerRegistry,
@@ -276,7 +283,7 @@ export async function addTeamClientSecret(
     action: 'add a client secret'
   })
 
-  const context = { actor, role, teamId, environment, idempotencyKey }
+  const context = { actor, role, teamId, environment, idempotencyKey, name }
 
   await requireOfferedEnvironment(db, context)
 

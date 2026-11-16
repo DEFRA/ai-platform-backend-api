@@ -227,14 +227,15 @@ async function reconcileUnwrittenVaultSecret(
 }
 
 // What a secret an Admin added was issued as: its own credential, expiring
-// when it does. Reissued without them it would be made, and stored, as
-// another credential. The first model's, and a research key, were made
-// with neither.
+// when it does, with the name the Admin gave it. Reissued without them it
+// would be made, and stored, as another credential. The first model's, and a
+// research key, were made with none of them.
 function issuedAsOf(credential) {
   return credential.origin === ADMIN_ADDED
     ? {
         credentialId: credential._id.toString(),
-        expiresAt: credential.expiresAt
+        expiresAt: credential.expiresAt,
+        ...(credential.name && { displayName: credential.name })
       }
     : {}
 }
