@@ -28,6 +28,7 @@ import {
   requireAvailableEnvironment
 } from '#/services/team-environments-service.js'
 import { clientSecretsAllowedIn } from '#/services/team-oauth-block.js'
+import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 import { readTeamFiles } from '#/services/team-service.js'
 
 const MS_PER_DAY = 24 * 60 * 60 * 1000
@@ -254,7 +255,8 @@ async function addUnderLock(db, locker, context, deps) {
  * of credential is `409 idempotency-key-reused`. A Member is refused with a
  * `403` and a non-member `404`; every refusal (an environment the instance
  * does not offer, `404 environment-not-available`, included) and the
- * addition are audited.
+ * addition are audited. While a Platform Admin has disabled the team or the
+ * environment it is `409 team-disabled`, audited as an `access.denied`.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{teamId: string, environment: string, actor: {userId: string}, idempotencyKey: string}} params - `teamId` is the team's id or slug
@@ -274,6 +276,14 @@ export async function addTeamClientSecret(
   const { teamId, role, team } = await findMemberTeam(db, teamRef, actor, {
     role: TEAM_ADMIN,
     action: 'add a client secret'
+  })
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId,
+    environment,
+    scope: LOCK_SCOPE.environment
   })
 
   const context = { actor, role, teamId, environment, idempotencyKey }

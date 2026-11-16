@@ -8,6 +8,7 @@ import { recordAuditEvent } from '#/services/audit-service.js'
 import { emailOf, isEligible } from '#/services/directory-eligibility.js'
 import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
 import { requireTeamId } from '#/services/team-service.js'
+import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 import { ensurePersonFromDirectory } from '#/services/user-service.js'
 
 // The most people one search returns; the Admin narrows the search for more.
@@ -313,9 +314,16 @@ export async function addMember(
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamRole(db, actor, teamId, {
+  const held = await requireTeamRole(db, actor, teamId, {
     role: TEAM_ADMIN,
     action: 'add members'
+  })
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role: held,
+    teamId,
+    scope: LOCK_SCOPE.team
   })
 
   return addTeamMember(

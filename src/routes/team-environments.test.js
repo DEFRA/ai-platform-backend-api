@@ -1,4 +1,4 @@
-import { Collection } from 'mongodb'
+import { Collection, ObjectId } from 'mongodb'
 
 import { withTestUsers } from '#/common/test-helpers/portal-token.js'
 import { createTeamFixtures } from '#/common/test-helpers/team-fixtures.js'
@@ -244,6 +244,33 @@ describe('#team-environments routes', () => {
         paused: false,
         inProgress: false
       })
+    })
+
+    test('marks each environment a Platform Admin disabled for the team, and no other, with no word of why', async () => {
+      const team = await fixtures.newTeam('env-list-disabled')
+
+      filesOf(team, { infradev: teamFile(team.slug, 'infradev') })
+      await server.db
+        .collection('teams')
+        .updateOne(
+          { _id: new ObjectId(team.teamId) },
+          { $set: { status: 'disabled', disabledEnvironments: ['qa'] } }
+        )
+
+      const { result } = await getAll(team, 'env-list-disabled')
+      const one = await getOne(team, 'qa', 'env-list-disabled')
+
+      expect(
+        result.environments.map(({ environment, disabled }) => [
+          environment,
+          disabled
+        ])
+      ).toEqual([
+        ['infradev', false],
+        ['qa', true]
+      ])
+      expect(one.result.disabled).toBe(true)
+      expect(JSON.stringify([result, one.result])).not.toMatch(/reason/i)
     })
 
     test('shows the same to a Member as to an Admin', async () => {

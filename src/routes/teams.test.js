@@ -412,6 +412,57 @@ describe('#teams routes', () => {
     expect(result.members[0].role).toBe('admin')
   })
 
+  test('GET /v1/teams/{id} shows the status and the disabled environments, none for a team that was never disabled, and no reason', async () => {
+    const headers = {
+      'x-user-id': 'team-user-5-lock',
+      'idempotency-key': randomUUID()
+    }
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers,
+      payload: { name: 'My Team 5 Lock', serviceCode: 'ABC' }
+    })
+    const read = () =>
+      server.inject({
+        method: 'GET',
+        url: `/v1/teams/${created.result.team._id}`,
+        headers: { 'x-user-id': 'team-user-5-lock' }
+      })
+
+    expect((await read()).result.team).toMatchObject({
+      status: 'active',
+      disabledEnvironments: []
+    })
+
+    await server.db
+      .collection('teams')
+      .updateOne(
+        { _id: created.result.team._id },
+        { $set: { status: 'disabled', disabledEnvironments: ['sandbox'] } }
+      )
+
+    const { result } = await read()
+
+    expect(result.team).toMatchObject({
+      status: 'disabled',
+      disabledEnvironments: ['sandbox']
+    })
+    expect(JSON.stringify(result)).not.toMatch(/reason/i)
+
+    await server.db
+      .collection('teams')
+      .updateOne(
+        { _id: created.result.team._id },
+        { $unset: { status: '', disabledEnvironments: '' } }
+      )
+
+    expect((await read()).result.team).toMatchObject({
+      status: 'active',
+      disabledEnvironments: []
+    })
+  })
+
   test('GET /v1/teams/{id} returns 404 for a non-member', async () => {
     const headers = {
       'x-user-id': 'team-user-6',

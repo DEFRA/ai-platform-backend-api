@@ -25,6 +25,7 @@ import {
   viewsOf
 } from '#/services/team-operations-service.js'
 import { readTeamFiles, requireTeamId } from '#/services/team-service.js'
+import { isEnvironmentDisabled } from '#/services/team-lock.js'
 
 // What a team's members see of their team in each environment: the models
 // they hold and how each change is going, the limits their team file holds,
@@ -56,7 +57,7 @@ export function requireAvailableEnvironment(environment) {
  * @param {string} teamRef - the team's id or slug
  * @param {{userId: string}} actor
  * @param {{role?: 'member'|'admin', action?: string}} [roleOptions]
- * @returns {Promise<{teamId: string, role: string, team: {slug: string, name: string}}>}
+ * @returns {Promise<{teamId: string, role: string, team: {slug: string, name: string, disabledEnvironments?: string[]}}>}
  */
 export async function findMemberTeam(db, teamRef, actor, roleOptions = {}) {
   const teamId = await requireTeamId(db, teamRef)
@@ -67,7 +68,7 @@ export async function findMemberTeam(db, teamRef, actor, roleOptions = {}) {
     .collection('teams')
     .findOne(
       { _id: new ObjectId(teamId) },
-      { projection: { slug: 1, name: 1 } }
+      { projection: { slug: 1, name: 1, disabledEnvironments: 1 } }
     )
 
   return { teamId, role, team }
@@ -116,6 +117,7 @@ async function gather(
 
   return environments.map((environment, index) => ({
     environment,
+    disabled: isEnvironmentDisabled(team, environment),
     file: files.find((file) => file.environment === environment),
     doc: docs.find((doc) => doc.environment === environment),
     paused: paused[index],
@@ -158,6 +160,7 @@ function modelsOf(doc) {
 
 function summaryOf({
   environment,
+  disabled,
   file,
   doc,
   paused,
@@ -170,6 +173,7 @@ function summaryOf({
     environment,
     setUp: Boolean(file),
     paused,
+    disabled,
     models: modelsOf(doc).summary,
     limits: limitsOf(file),
     // The places the team's registration holds: applications asked for and

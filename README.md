@@ -538,6 +538,36 @@ never shown to the team. `enable` takes no body.
   Nothing left to revoke (`revoked: 0`, no event, no 409) is a no-op, so a caller that offered Revoke only for an
   `active` credential (`credential.held` while disabled) can tell nothing was revoked.
 
+**Disable team and Enable team** (B31, design F) make a team view-only in the portal; nothing at the gateway, in Entra
+or in GitOps changes, so the team's credentials and models keep working. `POST /v1/admin/teams/{id}/disable` takes
+`Idempotency-Key` and `{ reason, environments? }` (reason as above; `environments` optional, may be empty, each a
+configured environment else 404 `environment-not-found`), and `POST /v1/admin/teams/{id}/enable` takes `{ environments? }`
+(absent: every disabled environment) and no reason. Both answer `200 {team: {id, status, disabledEnvironments}}` and are
+`platform-admin` only (403 `platform-admin-required`, 404 `team-not-found`, 400 `invalid-request`). They set the team's
+own `status` (`disabled`, never `adminBlocked`) and `disabledEnvironments` (absent reads as none; never queried, so no
+backfill) in one update under the `team-status:{teamId}` lock, with one audit event, `admin.team.disable` (with the
+reason and the environments added) or `admin.team.enable` (the environments unlocked, no reason). Disabling a team that
+is already disabled with nothing to add, a repeat of the key and reason, and enabling a team that is not disabled with
+nothing to unlock change and record nothing; the same key with another reason is 409 `idempotency-key-reused`. Enable
+lifts the team lock at once and leaves any environment not named disabled; it never touches `adminBlocked`, and
+enabling credentials never touches the team.
+
+While the team is disabled, the team-wide changes (`PATCH /v1/teams/{id}`, adding, changing and removing members, and
+setting up an environment the team has no record in) are `409 team-disabled`; while an environment is in
+`disabledEnvironments`, the changes in that environment (requesting or removing models, limits, client secrets, rotating
+and revealing a team credential, and changing or removing an application) are too, whatever the team's status. An
+environment not disabled stays usable. `requireTeamChangeAllowed` (`team-lock.js`) is the one guard, called right after
+the role check; the refusal is audited as `access.denied` with the team and the environment, and says "This team is
+disabled. You can view it but not change it." with no reason. A federation request in a disabled environment is `409
+federation-refused` with `team-disabled` for it, and the dry run reports `team-disabled`. Not locked: every read, revoking
+a team credential or client secret, research credentials, system steps and every `/v1/admin/**` route. Members read it
+as `team.status` and `team.disabledEnvironments` on `GET /v1/teams/{id}`, `disabled` on each environment of `GET
+/v1/teams/{teamId}/environments[/{environment}]`, and `GET /v1/teams/{teamId}/status-changes?environment&limit`
+(limit 1 to 50, ten by default; 400 `invalid-query`; 404 for a non-member, audited), which returns `{items: [{change:
+'disabled'|'enabled', environments, at}]}` newest first from the successful events only, never the reason or the admin.
+`GET /v1/admin/teams/{id}` adds `team.disabledEnvironments` and each environment's `disabled`, and `GET
+/v1/admin/team-deployments/{teamId}/{environment}` adds `teamDisabled`.
+
 Each action writes `admin.credentials.disable`, `.enable` or `.revoke` (resource `teamDeployment`, `resourceId` and
 `teamId` the team, `environment`, role `platform-admin`, and the reason for disable and revoke) only when it changed
 something, then calls `credentialsAccessChanged(db, {teamId, environment, change, actor})` once. That hook

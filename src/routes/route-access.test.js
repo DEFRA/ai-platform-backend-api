@@ -33,6 +33,7 @@ const ROUTES = [
   ['GET /v1/teams/{teamId}/operations/{operationId}', ACCESS.teamMember],
   ['GET /v1/teams/{teamId}/environments', ACCESS.teamMember],
   ['GET /v1/teams/{teamId}/environments/{environment}', ACCESS.teamMember],
+  ['GET /v1/teams/{teamId}/status-changes', ACCESS.teamMember],
   [
     'PUT /v1/teams/{teamId}/environments/{environment}/limits',
     ACCESS.teamAdmin
@@ -75,7 +76,9 @@ const ROUTES = [
   ['GET /v1/admin/teams/{id}', ACCESS.platformAdmin],
   ['POST /v1/admin/teams/{id}/people/search', ACCESS.platformAdmin],
   ['POST /v1/admin/teams/{id}/members', ACCESS.platformAdmin],
-  ['DELETE /v1/admin/teams/{id}/members/{memberId}', ACCESS.platformAdmin]
+  ['DELETE /v1/admin/teams/{id}/members/{memberId}', ACCESS.platformAdmin],
+  ['POST /v1/admin/teams/{id}/disable', ACCESS.platformAdmin],
+  ['POST /v1/admin/teams/{id}/enable', ACCESS.platformAdmin]
 ]
 
 describe('#route access', () => {

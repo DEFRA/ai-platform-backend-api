@@ -12,6 +12,10 @@ import {
   withMemberDisplayNames
 } from '#/services/team-service.js'
 import { TEAM_STATUS, statusOf } from '#/services/team-status.js'
+import {
+  disabledEnvironmentsOf,
+  isEnvironmentDisabled
+} from '#/services/team-lock.js'
 
 /** Teams on a page of the Platform Admin Teams list (design F). */
 export const ADMIN_TEAMS_PAGE_SIZE = 25
@@ -168,11 +172,12 @@ export async function listAdminTeams(db, { actor, search, status, page = 1 }) {
   }
 }
 
-function environmentOf({ environment, document }) {
+function environmentOf({ environment, document }, team) {
   return {
     environment,
     fileStatus: document.status ?? null,
-    ...(document.removeAfter && { removeAfter: document.removeAfter })
+    ...(document.removeAfter && { removeAfter: document.removeAfter }),
+    disabled: isEnvironmentDisabled(team, environment)
   }
 }
 
@@ -205,7 +210,8 @@ export async function findAdminTeam(
       slug: team.slug,
       serviceCode: team.serviceCode,
       status: statusOf(team),
-      environments: files.map(environmentOf)
+      disabledEnvironments: disabledEnvironmentsOf(team),
+      environments: files.map((file) => environmentOf(file, team))
     },
     members: await withMemberDisplayNames(db, members)
   }

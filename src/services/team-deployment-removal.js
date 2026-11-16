@@ -18,6 +18,7 @@ import { refusalOf, traceOf } from '#/services/team-deployment-submission.js'
 import { resolveTeamTarget } from '#/services/team-desired-state.js'
 import { resolveTeamId } from '#/services/team-service.js'
 import { toDeploymentView } from '#/services/team-deployment-view.js'
+import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 
 const REMOVE_ACTION = 'teamDeployment.remove'
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
@@ -64,6 +65,14 @@ export async function removeDeployment(
   if (!located || !findEntry(located, id)) {
     return null
   }
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId,
+    environment: located.environment,
+    scope: LOCK_SCOPE.environment
+  })
 
   const principal = principalOf(actor)
   const lock = await acquireLockWithRetry(

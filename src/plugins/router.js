@@ -9,6 +9,7 @@ import { teamEnvironments } from '#/routes/team-environments.js'
 import { teamLimits } from '#/routes/team-limits.js'
 import { teamFederations } from '#/routes/team-federations.js'
 import { teamClientSecrets } from '#/routes/team-client-secrets.js'
+import { teamStatusChanges } from '#/routes/team-status-changes.js'
 import { adminTeamDeployments } from '#/routes/admin-team-deployments.js'
 import { adminTeams } from '#/routes/admin-teams.js'
 import { adminAudit } from '#/routes/admin-audit.js'
@@ -30,6 +31,7 @@ export const router = {
           teamLimits,
           teamFederations,
           teamClientSecrets,
+          teamStatusChanges,
           adminTeamDeployments,
           adminTeams,
           adminAudit

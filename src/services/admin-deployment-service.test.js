@@ -684,6 +684,7 @@ describe('#admin-deployment-service', () => {
           memberCount: 2
         },
         environment: DEV,
+        teamDisabled: false,
         status: 'needs-attention',
         credential: { status: 'active' },
         deployments: [
@@ -718,6 +719,23 @@ describe('#admin-deployment-service', () => {
           }
         ]
       })
+    })
+
+    test('teamDisabled is true only for an environment the team is disabled in, whatever its status', async () => {
+      const id = await team('Locked Team', {
+        status: 'active',
+        disabledEnvironments: [DEV]
+      })
+
+      await deployment(id, DEV, [entry()])
+      await deployment(id, TEST, [entry()])
+
+      expect(
+        (await detail({ teamId: id, environment: DEV })).teamDisabled
+      ).toBe(true)
+      expect(
+        (await detail({ teamId: id, environment: TEST })).teamDisabled
+      ).toBe(false)
     })
 
     test('a team with no status reads as active, and a removed model is not listed', async () => {

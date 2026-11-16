@@ -401,6 +401,45 @@ describe('#admin audit log read', () => {
       expect(result.events.map(({ id }) => id)).toEqual(['one'])
     })
 
+    test('the team lock actions are found by the action filter and shown with their reason, as a platform admin’s', async () => {
+      const teamId = newTeamId()
+
+      await seed(
+        {
+          _id: 'disabled',
+          teamId,
+          role: 'platform-admin',
+          action: 'admin.team.disable',
+          reason: 'A leaked secret',
+          environments: ['sandbox'],
+          minutes: 1
+        },
+        {
+          _id: 'enabled',
+          teamId,
+          role: 'platform-admin',
+          action: 'admin.team.enable',
+          environments: [],
+          minutes: 2
+        },
+        { _id: 'other', teamId, action: 'admin.credentials.disable' }
+      )
+
+      const disable = await get(`?team=${teamId}&action=admin.team.disable`)
+      const enable = await get(`?team=${teamId}&action=admin.team.enable`)
+
+      expect(disable.result.events).toEqual([
+        expect.objectContaining({
+          id: 'disabled',
+          action: 'admin.team.disable',
+          reason: 'A leaked secret',
+          actor: expect.objectContaining({ type: 'platform-admin' })
+        })
+      ])
+      expect(enable.result.events.map(({ id }) => id)).toEqual(['enabled'])
+      expect(disable.result.events[0]).not.toHaveProperty('environments')
+    })
+
     test.each([
       ['platform-admin', ['pa']],
       ['team-admin', ['ta']],

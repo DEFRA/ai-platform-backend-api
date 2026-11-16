@@ -13,6 +13,7 @@ import { refusalOf, traceOf } from '#/services/team-deployment-submission.js'
 import { requireAvailableEnvironment } from '#/services/team-environments-service.js'
 import { resolveTeamTarget } from '#/services/team-desired-state.js'
 import { limitBoundsFor, withinBounds } from '#/services/team-limit-bounds.js'
+import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 import {
   MAX_OPERATIONS_LIMIT,
   viewsOf
@@ -222,6 +223,14 @@ export async function changeTeamLimits(
   const role = await requireTeamRole(db, actor, teamId, {
     role: TEAM_ADMIN,
     action: "change the team's limits"
+  })
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId,
+    environment,
+    scope: LOCK_SCOPE.environment
   })
 
   requireAvailableEnvironment(environment)

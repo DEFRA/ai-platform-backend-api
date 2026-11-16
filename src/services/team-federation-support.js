@@ -19,6 +19,7 @@ import {
   trustKeyOf
 } from '#/services/team-federation-entries.js'
 import { principalOf } from '#/services/user-service.js'
+import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 
 // What the federation requests share (design E): the locks, the audit of each
 // action and refusal, the application's entry in the team's document, the
@@ -280,6 +281,14 @@ export async function adminContext(db, params, action) {
   )
 
   requireAvailableEnvironment(params.environment)
+
+  await requireTeamChangeAllowed(db, {
+    actor: params.actor,
+    role,
+    teamId,
+    environment: params.environment,
+    scope: LOCK_SCOPE.environment
+  })
 
   return {
     ...params,

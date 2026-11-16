@@ -23,6 +23,7 @@ import { TEAM_CREDENTIAL_FILTER } from '#/services/credential-common.js'
 import { findModelBySlug } from '#/services/models-service.js'
 import { REMOVING } from '#/services/team-deployment-entries.js'
 import { teamEnvironments } from '#/services/team-deployment-service.js'
+import { isEnvironmentDisabled } from '#/services/team-lock.js'
 import { normaliseName } from '#/services/team-service.js'
 import { statusOf } from '#/services/team-status.js'
 
@@ -445,6 +446,7 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
       memberCount
     },
     environment,
+    teamDisabled: isEnvironmentDisabled(team, environment),
     status: worstStatusOf(entries),
     credential: credentialIn(environment),
     deployments: await Promise.all(

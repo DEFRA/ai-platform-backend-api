@@ -12,6 +12,7 @@ import {
   readCredentialStatus
 } from '#/services/admin-deployment-service.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
+import { eventIdOf, isReplay } from '#/services/admin-idempotency.js'
 import {
   blockCredentials,
   credentialsAccessChanged,
@@ -64,36 +65,6 @@ function auditEvent(db, event) {
     teamId,
     ...rest
   })
-}
-
-function eventIdOf(action, { teamId, environment, idempotencyKey }) {
-  return `${action}:${teamId}:${environment}:${idempotencyKey}`
-}
-
-/**
- * Whether this Idempotency-Key already did this action: the success event it
- * wrote is the record. The same key with another reason is another request:
- * `409 idempotency-key-reused`, so a caller is never told their reason was
- * saved when another was.
- */
-async function isReplay(db, eventId, reason) {
-  const earlier = await db
-    .collection('auditEvents')
-    .findOne({ _id: eventId }, { projection: { reason: 1 } })
-
-  if (!earlier) {
-    return false
-  }
-
-  if (earlier.reason !== reason) {
-    throw boomWithCode(
-      Boom.conflict,
-      'This idempotency key was used for a different request',
-      'idempotency-key-reused'
-    )
-  }
-
-  return true
 }
 
 /**

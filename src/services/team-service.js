@@ -13,7 +13,12 @@ import { serviceCodeVerifier } from '#/adapters/service-code-verifier-registry.j
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { readTeamEnvironments } from '#/services/team-desired-state.js'
-import { TEAM_STATUS } from '#/services/team-status.js'
+import { TEAM_STATUS, statusOf } from '#/services/team-status.js'
+import {
+  LOCK_SCOPE,
+  disabledEnvironmentsOf,
+  requireTeamChangeAllowed
+} from '#/services/team-lock.js'
 import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
 
 // Two names that differ only in punctuation ("Data Team" and "Data Team!")
@@ -264,9 +269,16 @@ export async function updateTeam(
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamRole(db, actor, teamId, {
+  const role = await requireTeamRole(db, actor, teamId, {
     role: TEAM_ADMIN,
     action: "change the team's details"
+  })
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId,
+    scope: LOCK_SCOPE.team
   })
 
   const changes = {}
@@ -358,7 +370,11 @@ export async function findTeamById(
   const files = await readTeamFiles(registry, team.slug)
 
   return {
-    team,
+    team: {
+      ...team,
+      status: statusOf(team),
+      disabledEnvironments: disabledEnvironmentsOf(team)
+    },
     members: await withMemberDisplayNames(db, members),
     environments: files.map(({ environment, document }) => ({
       environment,
@@ -496,9 +512,16 @@ export async function removeMember(
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamRole(db, actor, teamId, {
+  const role = await requireTeamRole(db, actor, teamId, {
     role: TEAM_ADMIN,
     action: 'remove members'
+  })
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId,
+    scope: LOCK_SCOPE.team
   })
 
   await removeTeamMember(db, locker, {
@@ -586,9 +609,16 @@ export async function setMemberRole(
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamRole(db, actor, teamId, {
+  const held = await requireTeamRole(db, actor, teamId, {
     role: TEAM_ADMIN,
     action: "change a member's role"
+  })
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role: held,
+    teamId,
+    scope: LOCK_SCOPE.team
   })
 
   const lock = await acquireLockWithRetry(locker, membershipLock(teamId))

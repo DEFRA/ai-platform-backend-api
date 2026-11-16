@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { ObjectId } from 'mongodb'
+
 import {
   authFor,
   appAuth,
@@ -397,13 +399,15 @@ describe('#admin teams reads', () => {
         slug: team.slug,
         serviceCode: 'ABC',
         status: 'pending-removal',
+        disabledEnvironments: [],
         environments: [
           {
             environment: 'infradev',
             fileStatus: 'pending-removal',
-            removeAfter: '2026-12-01'
+            removeAfter: '2026-12-01',
+            disabled: false
           },
-          { environment: 'qa', fileStatus: 'active' }
+          { environment: 'qa', fileStatus: 'active', disabled: false }
         ]
       })
       expect(result.members).toHaveLength(1)
@@ -428,7 +432,37 @@ describe('#admin teams reads', () => {
       expect(statusCode).toBe(200)
       expect(result.team.id).toBe(team.id)
       expect(result.team.environments).toEqual([
-        { environment: 'infradev', fileStatus: null }
+        { environment: 'infradev', fileStatus: null, disabled: false }
+      ])
+    })
+
+    test('lists the environments a Platform Admin disabled, and marks each environment that is one of them', async () => {
+      const team = await seedTeam('disabled')
+
+      await server.db
+        .collection('teams')
+        .updateOne(
+          { _id: new ObjectId(team.id) },
+          { $set: { disabledEnvironments: ['qa'] } }
+        )
+      config.set('teamDeployment.environments', ['infradev', 'qa'])
+      tenantFiles({
+        [`environments/infradev/${team.slug}.json`]: { status: 'active' },
+        [`environments/qa/${team.slug}.json`]: { status: 'active' }
+      })
+
+      const { result } = await get(`/v1/admin/teams/${team.id}`)
+
+      expect(result.team.status).toBe('disabled')
+      expect(result.team.disabledEnvironments).toEqual(['qa'])
+      expect(
+        result.team.environments.map(({ environment, disabled }) => [
+          environment,
+          disabled
+        ])
+      ).toEqual([
+        ['infradev', false],
+        ['qa', true]
       ])
     })
 

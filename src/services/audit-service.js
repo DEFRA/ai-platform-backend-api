@@ -28,7 +28,7 @@ function roleOf(role, actor) {
  * no person, tenant or token. `actorUserId` alone names a person a step acts for.
  * Only named claims are copied, so no token can reach a record.
  * @param {import('mongodb').Db} db
- * @param {{actor?: {userId?: string|null, oid?: string, tid?: string, azp?: string, uti?: string|null}, actorUserId?: string, role?: string|null, action: string, resource: string, resourceId: string, outcome: 'success'|'failure', code?: string, reason?: string, eventId?: string, subjectOid?: string, teamId?: string, environment?: string}} params - `eventId` makes the insert idempotent: a second insert of the same event fails with a duplicate key error; `subjectOid` is the Entra object ID of the person the action was done to (distinct from the actor's `oid`), never a name or email; `teamId` and `environment` name the team and the environment an event is about, left out when it names neither
+ * @param {{actor?: {userId?: string|null, oid?: string, tid?: string, azp?: string, uti?: string|null}, actorUserId?: string, role?: string|null, action: string, resource: string, resourceId: string, outcome: 'success'|'failure', code?: string, reason?: string, eventId?: string, subjectOid?: string, teamId?: string, environment?: string, environments?: string[]}} params - `eventId` makes the insert idempotent: a second insert of the same event fails with a duplicate key error; `subjectOid` is the Entra object ID of the person the action was done to (distinct from the actor's `oid`), never a name or email; `teamId` and `environment` name the team and the environment an event is about, left out when it names neither; `environments` lists the environments a team-wide action changed (Disable and Enable team), and may be empty
  */
 export async function recordAuditEvent(
   db,
@@ -45,7 +45,8 @@ export async function recordAuditEvent(
     eventId,
     subjectOid,
     teamId,
-    environment
+    environment,
+    environments
   }
 ) {
   await db.collection('auditEvents').insertOne({
@@ -64,6 +65,7 @@ export async function recordAuditEvent(
     ...(subjectOid && { subjectOid }),
     ...(teamId && { teamId }),
     ...(environment && { environment }),
+    ...(environments && { environments }),
     requestId: getTraceId() ?? null
   })
 }

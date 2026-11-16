@@ -6,6 +6,7 @@ import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { grantedModelSlugs } from '#/services/team-deployment-gateway.js'
 import { isEnvironmentBlocked } from '#/services/credential-block.js'
+import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 import {
   ROLE_OWNER,
   assertNotRevoked,
@@ -47,6 +48,24 @@ function auditAction(db, { actor, role, action, id, ...extra }) {
     resourceId: id,
     outcome: 'success',
     ...extra
+  })
+}
+
+// A team credential cannot be rotated or revealed while a Platform Admin has
+// disabled its team or its environment: `409 team-disabled`, audited as an
+// `access.denied`. Revoking is not locked. Research credentials are personal
+// and never locked.
+async function assertTeamChangeAllowed(db, { credential, actor, role }) {
+  if (credential.tier !== 'team') {
+    return
+  }
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId: credential.teamId,
+    environment: environmentOf(credential),
+    scope: LOCK_SCOPE.environment
   })
 }
 
@@ -228,6 +247,7 @@ export async function rotateCredential(
 
     const { credential, role } = loaded
 
+    await assertTeamChangeAllowed(db, { credential, actor, role })
     assertNotRevoked(credential)
     await assertCredentialsEnabled(db, {
       credential,
@@ -414,6 +434,7 @@ export async function revealCredential(
 
   const { credential, role } = loaded
 
+  await assertTeamChangeAllowed(db, { credential, actor, role })
   assertNotRevoked(credential)
   await assertCredentialsEnabled(db, {
     credential,

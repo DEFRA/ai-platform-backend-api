@@ -65,12 +65,12 @@ export async function getActiveTeamIds(db, actor) {
  * right, a 404 that hides a resource included, goes through here.
  * @param {import('mongodb').Db} db
  * @param {object} actor
- * @param {{resource: string, resourceId: string, code: string, role?: string|null, teamId?: string, error: Error}} refusal - `teamId` is the id of the team the refusal is about, for a refusal of a team's right
+ * @param {{resource: string, resourceId: string, code: string, role?: string|null, teamId?: string, environment?: string, error: Error}} refusal - `teamId` is the id of the team the refusal is about, for a refusal of a team's right; `environment` names the environment when the refusal is about one
  */
 export async function refuse(
   db,
   actor,
-  { resource, resourceId, code, role = null, teamId, error }
+  { resource, resourceId, code, role = null, teamId, environment, error }
 ) {
   await recordAuditEvent(db, {
     actor,
@@ -79,6 +79,7 @@ export async function refuse(
     resource,
     resourceId: String(resourceId),
     teamId,
+    environment,
     outcome: 'failure',
     code
   })
