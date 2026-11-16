@@ -778,4 +778,206 @@ describe('#admin-credential-service', () => {
       expect(await events(teamId, 'admin.credentials.revoke')).toHaveLength(1)
     })
   })
+
+  describe('revokeCredential (one secret)', () => {
+    const revokeOne = (teamId, credentialId, extra = {}, withDeps = deps()) =>
+      service.revokeCredential(
+        db,
+        locker,
+        {
+          actor: ADMIN,
+          teamId,
+          environment: DEV,
+          credentialId: credentialId.toString(),
+          reason: REASON,
+          idempotencyKey: randomUUID(),
+          ...extra
+        },
+        withDeps
+      )
+
+    test('revokes only the secret named, through the built path, and writes one admin.credential.revoke event for it with the reason', async () => {
+      const teamId = await team()
+      const target = await credential(teamId, DEV)
+      const other = await credential(teamId, DEV, { origin: 'admin-added' })
+      const withDeps = deps()
+
+      const result = await revokeOne(teamId, target._id, {}, withDeps)
+
+      expect(result).toEqual({
+        environment: DEV,
+        credentialId: target._id.toString(),
+        revoked: true
+      })
+      expect(withDeps.issuer.revoke).toHaveBeenCalledTimes(1)
+      expect(withDeps.issuer.revoke).toHaveBeenCalledWith({
+        externalId: target.externalGatewaySubscriptionId,
+        environment: DEV
+      })
+      expect(await stored(target._id)).toMatchObject({
+        status: 'revoked',
+        revokedReason: 'admin-revoked'
+      })
+      expect((await stored(other._id)).status).toBe('active')
+      expect(await events(teamId)).toEqual([
+        expect.objectContaining({
+          action: 'admin.credential.revoke',
+          outcome: 'success',
+          role: 'platform-admin',
+          actorUserId: ADMIN.userId,
+          resource: 'credential',
+          resourceId: target._id.toString(),
+          teamId,
+          environment: DEV,
+          reason: REASON
+        })
+      ])
+      expect(withDeps.accessChanged).toHaveBeenCalledWith(db, {
+        teamId,
+        environment: DEV,
+        change: 'revoked',
+        actor: ADMIN
+      })
+    })
+
+    test('works while the environment is disabled, and the block stays', async () => {
+      const teamId = await team()
+      const target = await credential(teamId, DEV)
+
+      await disable(teamId)
+      await revokeOne(teamId, target._id)
+
+      expect((await stored(target._id)).status).toBe('revoked')
+      expect(await blocked(teamId)).toBe(true)
+    })
+
+    test('a secret already revoked is left alone: revoked false, no event, no hook', async () => {
+      const teamId = await team()
+      const target = await credential(teamId, DEV, { status: 'revoked' })
+      const withDeps = deps()
+
+      const result = await revokeOne(teamId, target._id, {}, withDeps)
+
+      expect(result.revoked).toBe(false)
+      expect(withDeps.issuer.revoke).not.toHaveBeenCalled()
+      expect(withDeps.accessChanged).not.toHaveBeenCalled()
+      expect(await events(teamId)).toEqual([])
+    })
+
+    test('a repeat with the same key and reason writes no second event, and the same key for another secret is a new request', async () => {
+      const teamId = await team()
+      const first = await credential(teamId, DEV)
+      const second = await credential(teamId, DEV, { origin: 'admin-added' })
+      const withDeps = deps()
+      const idempotencyKey = randomUUID()
+
+      await revokeOne(teamId, first._id, { idempotencyKey }, withDeps)
+      await revokeOne(teamId, first._id, { idempotencyKey }, withDeps)
+      await revokeOne(teamId, second._id, { idempotencyKey }, withDeps)
+
+      expect(await events(teamId, 'admin.credential.revoke')).toHaveLength(2)
+      expect(withDeps.issuer.revoke).toHaveBeenCalledTimes(2)
+    })
+
+    test('a key reused with another reason for the same secret is refused 409 idempotency-key-reused', async () => {
+      const teamId = await team()
+      const target = await credential(teamId, DEV)
+      const idempotencyKey = randomUUID()
+
+      await revokeOne(teamId, target._id, { idempotencyKey })
+
+      await expect(
+        revokeOne(teamId, target._id, { idempotencyKey, reason: 'Another' })
+      ).rejects.toMatchObject({
+        output: { statusCode: 409 },
+        data: { code: 'idempotency-key-reused' }
+      })
+    })
+
+    test.each([
+      ['an id that is not an id', () => 'not-an-id'],
+      ['an id no credential has', () => new ObjectId().toString()]
+    ])('for %s: 404 credential-not-found, no event', async (_name, idOf) => {
+      const teamId = await team()
+
+      await expect(revokeOne(teamId, idOf())).rejects.toMatchObject({
+        output: { statusCode: 404 },
+        data: { code: 'credential-not-found' }
+      })
+      expect(await events(teamId)).toEqual([])
+    })
+
+    test('a secret of another team or environment, or a research key, is not found and is left alone', async () => {
+      const teamId = await team()
+      const otherTeam = await team()
+      const elsewhere = await credential(teamId, TEST)
+      const theirs = await credential(otherTeam, DEV)
+      const research = await credential(teamId, DEV, { tier: 'research' })
+
+      for (const record of [elsewhere, theirs, research]) {
+        await expect(revokeOne(teamId, record._id)).rejects.toMatchObject({
+          data: { code: 'credential-not-found' }
+        })
+        expect((await stored(record._id)).status).toBe('active')
+      }
+    })
+
+    test('for a person who is not a Platform Admin: 403, audited, nothing revoked', async () => {
+      const teamId = await team()
+      const target = await credential(teamId, DEV)
+      const withDeps = deps()
+
+      await expect(
+        revokeOne(teamId, target._id, { actor: OTHER }, withDeps)
+      ).rejects.toMatchObject({
+        output: { statusCode: 403 },
+        data: { code: 'platform-admin-required' }
+      })
+      expect((await stored(target._id)).status).toBe('active')
+      expect(withDeps.issuer.revoke).not.toHaveBeenCalled()
+    })
+
+    test('when the issuer fails: 502 upstream-unavailable, the secret stays active, a failure event names it, and no reason or gateway message is logged', async () => {
+      const teamId = await team()
+      const target = await credential(teamId, DEV)
+      const issuer = {
+        revoke: vi
+          .fn()
+          .mockRejectedValue(new Error('gateway said SECRET-DETAIL'))
+      }
+      const withDeps = deps({
+        issuer,
+        registry: { forCredential: vi.fn(() => ({ issuer })) }
+      })
+
+      const error = await revokeOne(teamId, target._id, {}, withDeps).catch(
+        (caught) => caught
+      )
+      const logged = JSON.stringify(
+        Object.values(withDeps.logger).map((fn) => fn.mock.calls)
+      )
+
+      expect(error).toMatchObject({
+        output: { statusCode: 502 },
+        data: { code: 'upstream-unavailable' }
+      })
+      expect((await stored(target._id)).status).toBe('active')
+      expect(await events(teamId)).toEqual([
+        expect.objectContaining({
+          action: 'admin.credential.revoke',
+          outcome: 'failure',
+          code: 'upstream-unavailable',
+          resource: 'credential',
+          resourceId: target._id.toString(),
+          environment: DEV
+        })
+      ])
+      expect(withDeps.accessChanged).not.toHaveBeenCalled()
+
+      for (const text of [REASON, 'SECRET-DETAIL', 'ABCD']) {
+        expect(logged).not.toContain(text)
+        expect(JSON.stringify(error.output.payload)).not.toContain(text)
+      }
+    })
+  })
 })

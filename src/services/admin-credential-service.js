@@ -1,3 +1,5 @@
+import { ObjectId } from 'mongodb'
+
 import { Boom, boomWithCode } from '#/common/helpers/boom-with-code.js'
 import {
   PLATFORM_ADMIN_ROLE,
@@ -34,6 +36,7 @@ import { revokeCredentialRecord } from '#/services/credential-lifecycle.js'
 
 const ADMIN_REVOKED = 'admin-revoked'
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
+const REVOKE_ONE_ACTION = 'admin.credential.revoke'
 
 /**
  * @typedef {object} CredentialActionDeps
@@ -205,28 +208,33 @@ async function revokeRecord(db, locker, { id, actor }, deps) {
   }
 }
 
-// What a failed revoke leaves: the failure audited against the environment,
-// a log line of codes only, and the error the page shows. The issuer's own
-// message is never carried, nor is the reason.
-async function failRevoke(db, { actor, teamId, environment, reason }, logger) {
+// What a failed revoke leaves: the failure audited against the environment (or
+// the one secret), a log line of codes only, and the error the page shows. The
+// issuer's own message is never carried, nor is the reason.
+async function failRevoke(
+  db,
+  { actor, teamId, environment, reason, credentialId },
+  logger
+) {
   logger?.warn(
     { code: UPSTREAM_UNAVAILABLE, teamId, environment },
     'Revoking the team credentials failed'
   )
 
   await auditEvent(db, {
-    action: 'admin.credentials.revoke',
+    action: credentialId ? REVOKE_ONE_ACTION : 'admin.credentials.revoke',
     actor,
     teamId,
     environment,
     outcome: 'failure',
     code: UPSTREAM_UNAVAILABLE,
-    reason
+    reason,
+    ...(credentialId && { resource: 'credential', resourceId: credentialId })
   })
 
   throw boomWithCode(
     Boom.badGateway,
-    'The credentials could not be revoked, try again',
+    `The credential${credentialId ? '' : 's'} could not be revoked, try again`,
     UPSTREAM_UNAVAILABLE
   )
 }
@@ -306,5 +314,115 @@ export async function revokeCredentials(
     }
 
     return { environment, revoked }
+  })
+}
+
+function credentialNotFound() {
+  return boomWithCode(
+    Boom.notFound,
+    'This credential is not available',
+    'credential-not-found'
+  )
+}
+
+// The id of a team's own client secret in the environment, or a refusal that
+// says nothing of whether another team or environment has it.
+async function findTeamSecretId(db, { teamId, environment, credentialId }) {
+  if (!ObjectId.isValid(credentialId)) {
+    throw credentialNotFound()
+  }
+
+  const record = await credentialsCollection(db).findOne(
+    {
+      ...TEAM_CREDENTIAL_FILTER,
+      _id: new ObjectId(credentialId),
+      teamId,
+      environment
+    },
+    { projection: { _id: 1 } }
+  )
+
+  if (!record) {
+    throw credentialNotFound()
+  }
+
+  return record._id
+}
+
+/**
+ * Revokes one of the team's client secrets in an environment through the
+ * built revoke path (the gateway subscription deleted, the secret removed from
+ * the vault, the record `revoked` with the reason `admin-revoked`), leaving
+ * the team's other secrets and the environment's block as they are. One
+ * `admin.credential.revoke` event is about the secret. A secret already
+ * revoked, a repeat with the same Idempotency-Key and reason, changes and
+ * records nothing; the same key with another reason is `409
+ * idempotency-key-reused`. A failure leaves the secret active, audits a
+ * `failure` and answers `502 upstream-unavailable`.
+ * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
+ * @param {{actor: object, teamId: string, environment: string, credentialId: string, reason: string, idempotencyKey: string}} params - `actor` is the token's credentials; `reason` is kept in the audit event only
+ * @param {CredentialActionDeps} [deps]
+ * @returns {Promise<{environment: string, credentialId: string, revoked: boolean}>}
+ */
+export async function revokeCredential(
+  db,
+  locker,
+  { actor, teamId, environment, credentialId, reason, idempotencyKey },
+  {
+    accessChanged = credentialsAccessChanged,
+    logger,
+    registry = credentialIssuerRegistry,
+    vault = credentialVault
+  } = {}
+) {
+  await authorise(db, { actor, teamId, environment })
+
+  const id = await findTeamSecretId(db, { teamId, environment, credentialId })
+  const eventId = eventIdOf(REVOKE_ONE_ACTION, {
+    teamId,
+    environment,
+    resourceId: credentialId,
+    idempotencyKey
+  })
+
+  return withCredentialsBlockLock(locker, { teamId, environment }, async () => {
+    if (await isReplay(db, eventId, reason)) {
+      return { environment, credentialId, revoked: false }
+    }
+
+    let revoked
+
+    try {
+      revoked = await revokeRecord(
+        db,
+        locker,
+        { id, actor },
+        { registry, vault }
+      )
+    } catch {
+      return failRevoke(
+        db,
+        { actor, teamId, environment, reason, credentialId },
+        logger
+      )
+    }
+
+    if (revoked) {
+      await auditEvent(db, {
+        action: REVOKE_ONE_ACTION,
+        actor,
+        teamId,
+        environment,
+        outcome: 'success',
+        reason,
+        eventId,
+        resource: 'credential',
+        resourceId: credentialId
+      })
+      await accessChanged(db, { teamId, environment, change: 'revoked', actor })
+    }
+
+    return { environment, credentialId, revoked }
   })
 }

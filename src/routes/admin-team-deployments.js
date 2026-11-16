@@ -12,6 +12,7 @@ import {
 import {
   disableCredentials,
   enableCredentials,
+  revokeCredential,
   revokeCredentials
 } from '#/services/admin-credential-service.js'
 import { redispatchApply } from '#/services/team-deployment-service.js'
@@ -35,6 +36,12 @@ const idParam = Joi.object({ id: Joi.string().required() }).unknown(false)
 const deploymentParams = Joi.object({
   teamId: Joi.string().max(MAX_ID_LENGTH).required(),
   environment: Joi.string().max(MAX_ENVIRONMENT_LENGTH).required()
+}).unknown(false)
+
+const secretParams = Joi.object({
+  teamId: Joi.string().max(MAX_ID_LENGTH).required(),
+  environment: Joi.string().max(MAX_ENVIRONMENT_LENGTH).required(),
+  credentialId: Joi.string().max(MAX_ID_LENGTH).required()
 }).unknown(false)
 
 const listQuery = Joi.object({
@@ -161,6 +168,35 @@ export const adminTeamDeployments = [
         logger: request.logger
       })
   }),
+  {
+    method: 'POST',
+    path: `${BASE}/{teamId}/{environment}/credentials/{credentialId}/revoke`,
+    options: {
+      app: { access: ACCESS.platformAdmin },
+      description:
+        "Revokes one of a team's client secrets in an environment (Platform Admin): the gateway subscription is deleted, the secret is removed from the vault and the record is revoked; the team's other secrets and the environment's block are left as they are. Takes an Idempotency-Key and a `reason` of 1 to 500 characters, kept in the audit log only. 200 `{environment, credentialId, revoked}`; a secret already revoked, or a repeat of the key, changes and records nothing (`revoked: false`); the same key with another reason is 409 `idempotency-key-reused`; 400 `reason-required`, `reason-too-long`; 404 `credential-not-found`, `deployment-not-found`; 502 `upstream-unavailable`, and the secret stays active.",
+      validate: {
+        headers: idempotentHeaders,
+        params: secretParams,
+        payload: reasonPayload,
+        failAction: reasonFailAction
+      }
+    },
+    handler: async (request, h) =>
+      h.response(
+        await revokeCredential(
+          request.db,
+          request.locker,
+          {
+            actor: request.auth.credentials,
+            ...request.params,
+            reason: request.payload.reason,
+            idempotencyKey: request.headers['idempotency-key']
+          },
+          { logger: request.logger }
+        )
+      )
+  },
   redispatchRoute('retry'),
   redispatchRoute('reconcile')
 ]

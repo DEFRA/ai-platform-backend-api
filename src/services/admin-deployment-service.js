@@ -23,6 +23,15 @@ import { TEAM_CREDENTIAL_FILTER } from '#/services/credential-common.js'
 import { findModelBySlug } from '#/services/models-service.js'
 import { REMOVING } from '#/services/team-deployment-entries.js'
 import { teamEnvironments } from '#/services/team-deployment-service.js'
+import {
+  federationViewOf,
+  liveFederationsOf
+} from '#/services/team-federation-entries.js'
+import {
+  clientSecretViewOf,
+  clientSecretsOf,
+  clientSecretsSummaryOf
+} from '#/services/team-client-secrets.js'
 import { isEnvironmentDisabled } from '#/services/team-lock.js'
 import { normaliseName } from '#/services/team-service.js'
 import { statusOf } from '#/services/team-status.js'
@@ -399,9 +408,10 @@ export async function findTeamDeployment(db, { teamId, environment }) {
 
 /**
  * One team's deployments in one environment for a Platform Admin: the team,
- * the worst state, the credential's state (never a secret, key hint or
- * external ID), each model with whether a retry would be accepted, and the
- * credential state in each of the team's environments.
+ * the worst state, the credential's state, the client secrets (each by the
+ * last four characters of its key, never a value or external ID) and the
+ * federated applications, each model with whether a retry would be accepted,
+ * and the credential state in each of the team's environments.
  * @param {import('mongodb').Db} db
  * @param {{actor: object, teamId: string, environment: string}} params - `actor` is the token's credentials
  * @returns {Promise<object>}
@@ -413,17 +423,20 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
   })
 
   const { doc, team } = await findTeamDeployment(db, { teamId, environment })
-  const [memberCount, docs, credentials] = await Promise.all([
-    db.collection('teamMembers').countDocuments({ teamId, status: 'active' }),
-    db
-      .collection('teamDeployments')
-      .find(
-        { teamId },
-        { projection: { environment: 1, adminBlocked: 1, adminBlockedAt: 1 } }
-      )
-      .toArray(),
-    teamCredentialsCursor(db, { teamIds: [teamId] }).toArray()
-  ])
+  const [memberCount, docs, credentials, secretsByEnvironment] =
+    await Promise.all([
+      db.collection('teamMembers').countDocuments({ teamId, status: 'active' }),
+      db
+        .collection('teamDeployments')
+        .find(
+          { teamId },
+          { projection: { environment: 1, adminBlocked: 1, adminBlockedAt: 1 } }
+        )
+        .toArray(),
+      teamCredentialsCursor(db, { teamIds: [teamId] }).toArray(),
+      clientSecretsOf(db, { teamId, environments: [environment] })
+    ])
+  const secrets = secretsByEnvironment.get(environment)
   const entries = liveEntries(doc)
   const names = await modelNames(db, new Set(entries.map((e) => e.modelSlug)))
   const credentialsByEnvironment = groupBy(
@@ -449,6 +462,11 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
     teamDisabled: isEnvironmentDisabled(team, environment),
     status: worstStatusOf(entries),
     credential: credentialIn(environment),
+    clientSecrets: {
+      ...clientSecretsSummaryOf(environment, secrets),
+      items: secrets.map((secret) => clientSecretViewOf(secret))
+    },
+    federations: liveFederationsOf(doc).map(federationViewOf),
     deployments: await Promise.all(
       entries.map((entry) => modelRow(db, entry, names))
     ),

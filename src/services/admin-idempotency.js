@@ -6,13 +6,19 @@ import { Boom, boomWithCode } from '#/common/helpers/boom-with-code.js'
 
 /**
  * The id of the success event an Idempotency-Key makes for an action: the
- * team, the environment when the action is for one, and the key.
+ * team, the environment and the one resource when the action is for them, and
+ * the key.
  * @param {string} action
- * @param {{teamId: string, environment?: string, idempotencyKey: string}} parts
+ * @param {{teamId: string, environment?: string, resourceId?: string, idempotencyKey: string}} parts
  * @returns {string}
  */
-export function eventIdOf(action, { teamId, environment, idempotencyKey }) {
-  return [action, teamId, environment, idempotencyKey].filter(Boolean).join(':')
+export function eventIdOf(
+  action,
+  { teamId, environment, resourceId, idempotencyKey }
+) {
+  return [action, teamId, environment, resourceId, idempotencyKey]
+    .filter(Boolean)
+    .join(':')
 }
 
 /**

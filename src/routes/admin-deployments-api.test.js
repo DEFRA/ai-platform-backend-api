@@ -199,7 +199,7 @@ describe('#admin team-deployments Deployments tab routes', () => {
   })
 
   describe(`GET ${BASE}/{teamId}/{environment}`, () => {
-    test('returns the team, status, credential, models and the team’s environments, with no secret', async () => {
+    test('returns the team, status, credential, client secrets by key ending, models and the team’s environments, with no secret value', async () => {
       const { teamId, name } = await seedTeam()
 
       await seedCredential(teamId, DEV)
@@ -215,6 +215,12 @@ describe('#admin team-deployments Deployments tab routes', () => {
         environment: DEV,
         status: 'ready',
         credential: { status: 'active' },
+        clientSecrets: {
+          used: 1,
+          limit: 3,
+          items: [expect.objectContaining({ keyHint: 'WXYZ' })]
+        },
+        federations: [],
         deployments: [
           expect.objectContaining({
             modelSlug: 'gpt-4o',
@@ -227,7 +233,6 @@ describe('#admin team-deployments Deployments tab routes', () => {
           { environment: TEST, credential: { status: 'none' } }
         ]
       })
-      expect(JSON.stringify(result)).not.toContain('WXYZ')
       expect(JSON.stringify(result)).not.toContain('ext-')
     })
 
@@ -533,6 +538,129 @@ describe('#admin team-deployments Deployments tab routes', () => {
       expect(
         (await call('POST', url(teamId), { headers: appAuth() })).statusCode
       ).toBe(401)
+    })
+  })
+
+  describe('POST …/credentials/{credentialId}/revoke', () => {
+    const url = (teamId, credentialId, environment = DEV) =>
+      `${BASE}/${teamId}/${environment}/credentials/${credentialId}/revoke`
+    const post = (
+      teamId,
+      credentialId,
+      { headers = withKey(), ...rest } = {}
+    ) =>
+      call('POST', url(teamId, credentialId), {
+        headers,
+        payload: { reason: REASON },
+        ...rest
+      })
+    const statusOf = async (id) =>
+      (await server.db.collection('credentials').findOne({ _id: id })).status
+
+    test('revokes the one secret named and leaves the team’s other secret active, with one audit event about it', async () => {
+      const { teamId } = await seedTeam()
+      const target = await seedCredential(teamId, DEV)
+      const other = await seedCredential(teamId, DEV)
+
+      const { statusCode, result } = await post(teamId, target.toString())
+
+      expect(statusCode).toBe(200)
+      expect(result).toEqual({
+        environment: DEV,
+        credentialId: target.toString(),
+        revoked: true
+      })
+      expect(await statusOf(target)).toBe('revoked')
+      expect(await statusOf(other)).toBe('active')
+      expect(
+        await server.db
+          .collection('auditEvents')
+          .find({ teamId, action: 'admin.credential.revoke' })
+          .toArray()
+      ).toEqual([
+        expect.objectContaining({
+          resource: 'credential',
+          resourceId: target.toString(),
+          environment: DEV,
+          outcome: 'success',
+          reason: REASON
+        })
+      ])
+    })
+
+    test('a repeat with the same Idempotency-Key is a 200 and writes no second event; another reason is 409 idempotency-key-reused', async () => {
+      const { teamId } = await seedTeam()
+      const target = await seedCredential(teamId, DEV)
+      const headers = withKey()
+
+      await post(teamId, target.toString(), { headers })
+
+      const again = await post(teamId, target.toString(), { headers })
+      const reused = await call('POST', url(teamId, target.toString()), {
+        headers,
+        payload: { reason: 'Another reason' }
+      })
+
+      expect(again.statusCode).toBe(200)
+      expect(again.result.revoked).toBe(false)
+      expect(reused.statusCode).toBe(409)
+      expect(reused.result.code).toBe('idempotency-key-reused')
+      expect(
+        await server.db
+          .collection('auditEvents')
+          .countDocuments({ teamId, action: 'admin.credential.revoke' })
+      ).toBe(1)
+    })
+
+    test.each([
+      ['no reason', {}, 'reason-required'],
+      [
+        'a reason of 501 characters',
+        { reason: 'x'.repeat(501) },
+        'reason-too-long'
+      ]
+    ])('refuses %s as %s and revokes nothing', async (_name, payload, code) => {
+      const { teamId } = await seedTeam()
+      const target = await seedCredential(teamId, DEV)
+      const { statusCode, result } = await call(
+        'POST',
+        url(teamId, target.toString()),
+        { headers: withKey(), payload }
+      )
+
+      expect(statusCode).toBe(400)
+      expect(result.code).toBe(code)
+      expect(await statusOf(target)).toBe('active')
+    })
+
+    test('answers 404 credential-not-found for an id no secret of the team has, and 404 deployment-not-found for an unknown team', async () => {
+      const { teamId } = await seedTeam()
+      const missing = await post(teamId, '000000000000000000000000')
+      const unknownTeam = await post(
+        '000000000000000000000000',
+        '000000000000000000000000'
+      )
+
+      expect(missing.statusCode).toBe(404)
+      expect(missing.result.code).toBe('credential-not-found')
+      expect(unknownTeam.statusCode).toBe(404)
+      expect(unknownTeam.result.code).toBe('deployment-not-found')
+    })
+
+    test('refuses a person who is not a Platform Admin with 403 and nothing revoked, and the app-only token with 401', async () => {
+      const { teamId } = await seedTeam()
+      const target = await seedCredential(teamId, DEV)
+      const person = await post(teamId, target.toString(), {
+        headers: withKey(asPerson())
+      })
+      const app = await post(teamId, target.toString(), {
+        headers: withKey(appAuth())
+      })
+
+      expect(person.statusCode).toBe(403)
+      expect(person.result.code).toBe('platform-admin-required')
+      expect(app.statusCode).toBe(401)
+      expect(await statusOf(target)).toBe('active')
     })
   })
 

@@ -655,7 +655,7 @@ describe('#admin-deployment-service', () => {
       return id
     }
 
-    test('returns the team, the environment, the worst status, the credential, each model and the team’s environments', async () => {
+    test('returns the team, the environment, the worst status, the credential, the client secrets, the federated applications, each model and the team’s environments', async () => {
       const id = await seedDetail()
       const good = entry({ id: 'op-1' })
       const failed = entry({
@@ -669,14 +669,30 @@ describe('#admin-deployment-service', () => {
         }
       })
 
-      await deployment(id, DEV, [good, failed])
+      await deployment(id, DEV, [good, failed], {
+        federations: [
+          {
+            id: 'fed-1',
+            name: 'beta-api',
+            host: 'cdp',
+            service: 'beta-api',
+            status: 'ready'
+          },
+          { id: 'fed-2', name: 'gone', host: 'cdp', status: 'removed' }
+        ]
+      })
       await deployment(id, TEST, [entry()], {
         adminBlocked: true,
         adminBlockedAt: '2026-11-02T10:00:00.000Z'
       })
       await credentialOf(id, DEV)
 
-      expect(await detail({ teamId: id, environment: DEV })).toEqual({
+      const result = await detail({ teamId: id, environment: DEV })
+      const { _id: secretId } = await db
+        .collection('credentials')
+        .findOne({ teamId: id })
+
+      expect(result).toEqual({
         team: {
           id,
           name: 'Detail Team',
@@ -687,6 +703,31 @@ describe('#admin-deployment-service', () => {
         teamDisabled: false,
         status: 'needs-attention',
         credential: { status: 'active' },
+        clientSecrets: {
+          allowed: expect.any(Boolean),
+          used: 1,
+          limit: 3,
+          items: [
+            {
+              id: secretId.toString(),
+              keyHint: 'ABCD',
+              name: null,
+              expiresAt: null,
+              status: 'active'
+            }
+          ]
+        },
+        federations: [
+          {
+            id: 'fed-1',
+            name: 'beta-api',
+            host: 'cdp',
+            service: 'beta-api',
+            status: 'ready',
+            operationId: null,
+            failureReason: null
+          }
+        ],
         deployments: [
           {
             id: 'op-1',
@@ -719,6 +760,26 @@ describe('#admin-deployment-service', () => {
           }
         ]
       })
+    })
+
+    test('lists no secrets or applications for a team that has none, and never a secret value or external id', async () => {
+      const id = await team('Bare Team')
+
+      await deployment(id, DEV, [entry()])
+      await credentialOf(id, DEV, { status: 'revoked' })
+      await credentialOf(id, DEV, {
+        keyHint: 'WXYZ',
+        expiresAt: '2020-01-01T00:00:00.000Z'
+      })
+
+      const result = await detail({ teamId: id, environment: DEV })
+
+      expect(result.federations).toEqual([])
+      expect(result.clientSecrets).toMatchObject({ used: 0, limit: 3 })
+      expect(result.clientSecrets.items).toEqual([
+        expect.objectContaining({ keyHint: 'WXYZ', status: 'expired' })
+      ])
+      expect(JSON.stringify(result)).not.toContain('secret-external-id')
     })
 
     test('teamDisabled is true only for an environment the team is disabled in, whatever its status', async () => {
@@ -925,17 +986,19 @@ describe('#admin-deployment-service', () => {
       ).toMatchObject({ resource: 'teamDeployment', resourceId: id })
     })
 
-    test('never carries a secret, key hint or external ID, and writes no event', async () => {
+    test('shows a secret only by the end of its key, never a value or external ID, and writes no event', async () => {
       const id = await seedDetail()
 
       await deployment(id, DEV, [entry()])
-      await credentialOf(id, DEV)
+      await credentialOf(id, DEV, { secret: 'shh-value', value: 'shh-value' })
 
-      const text = JSON.stringify(
-        await detail({ teamId: id, environment: DEV })
-      )
+      const result = await detail({ teamId: id, environment: DEV })
+      const text = JSON.stringify(result)
 
-      expect(text).not.toContain('ABCD')
+      expect(result.clientSecrets.items).toEqual([
+        expect.objectContaining({ keyHint: 'ABCD' })
+      ])
+      expect(text).not.toContain('shh-value')
       expect(text).not.toContain('secret-external-id')
       expect(await db.collection('auditEvents').countDocuments()).toBe(0)
     })
