@@ -93,13 +93,14 @@ export function clientSecretsSummaryOf(environment, secrets, now = new Date()) {
  * One secret as a member sees it: no value, only what identifies it.
  * @param {object} secret
  * @param {Date} [now]
- * @returns {{id: string, keyHint: string, expiresAt: string|null, status: 'active'|'expired'}}
+ * @returns {{id: string, keyHint: string, expiresAt: string|null, status: 'active'|'expired', name: string|null}}
  */
 export function clientSecretViewOf(secret, now = new Date()) {
   return {
     id: secret._id.toString(),
     keyHint: secret.keyHint,
     expiresAt: secret.expiresAt ?? null,
-    status: isExpired(secret, now) ? EXPIRED : ACTIVE
+    status: isExpired(secret, now) ? EXPIRED : ACTIVE,
+    name: secret.name ?? null
   }
 }

@@ -65,4 +65,19 @@ describe('mockCredentialIssuer', () => {
     expect(team.secret).toMatch(/^mock-oauth-/)
     expect(research.secret).toMatch(/^mock_/)
   })
+
+  test('issue accepts a displayName and ignores it: the mock has no provider to show it in', async () => {
+    const issued = await mockCredentialIssuer.issue({
+      userId: 'user-1',
+      modelSlug: null,
+      tier: 'team',
+      teamId: 'team-1',
+      environment: 'sandbox',
+      credentialId: 'cred-1',
+      displayName: 'local-dev'
+    })
+
+    expect(issued.externalId).toBe('team-team-1-sandbox-cred-1')
+    expect(JSON.stringify(issued)).not.toContain('local-dev')
+  })
 })

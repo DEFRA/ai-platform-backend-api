@@ -108,12 +108,13 @@ describe('#team-client-secrets routes', () => {
   function add(
     team,
     label,
-    { key = randomUUID(), environment = 'sandbox' } = {}
+    { key = randomUUID(), environment = 'sandbox', payload } = {}
   ) {
     return server.inject({
       method: 'POST',
       url: `/v1/teams/${team.slug}/environments/${environment}/client-secrets`,
-      headers: { ...fixtures.as(label), 'idempotency-key': key }
+      headers: { ...fixtures.as(label), 'idempotency-key': key },
+      payload
     })
   }
 
@@ -152,7 +153,8 @@ describe('#team-client-secrets routes', () => {
         id: expect.any(String),
         keyHint: result.secret.slice(-4),
         expiresAt: expect.any(String),
-        environment: 'sandbox'
+        environment: 'sandbox',
+        name: null
       })
 
       const lifetime = new Date(result.credential.expiresAt) - before
@@ -548,6 +550,174 @@ describe('#team-client-secrets routes', () => {
       expect(byId.statusCode).toBe(201)
     })
 
+    describe('the secret name', () => {
+      let mockIssuer
+
+      beforeAll(async () => {
+        ;({ mockCredentialIssuer: mockIssuer } =
+          await import('#/adapters/mock-credential-issuer.js'))
+      })
+
+      function issuedFor(team) {
+        return mockIssuer.issue.mock.calls
+          .map(([params]) => params)
+          .filter(({ teamId }) => teamId === team.teamId)
+      }
+
+      test('a name is trimmed, kept on the record, answered, and given to the issuer as its displayName', async () => {
+        const team = await deployedTeam('cs-name-1')
+
+        vi.spyOn(mockIssuer, 'issue')
+
+        const { statusCode, result } = await add(team, 'cs-name-1', {
+          payload: { name: '  local-dev  ' }
+        })
+        const [stored] = (await secretsOf(team)).filter(
+          ({ _id }) => _id.toString() === result.credential.id
+        )
+        const [issued] = issuedFor(team)
+
+        expect(statusCode).toBe(201)
+        expect(result.credential.name).toBe('local-dev')
+        expect(stored.name).toBe('local-dev')
+        expect(issued).toMatchObject({
+          credentialId: result.credential.id,
+          displayName: 'local-dev'
+        })
+      })
+
+      test('without a name the issuer is given no displayName and the answer says null', async () => {
+        const team = await deployedTeam('cs-name-2')
+
+        vi.spyOn(mockIssuer, 'issue')
+
+        const nothing = await add(team, 'cs-name-2')
+        const nulled = await add(team, 'cs-name-2', { payload: null })
+
+        expect(nothing.result.credential.name).toBeNull()
+        expect(nulled.statusCode).toBe(201)
+        expect(nulled.result.credential.name).toBeNull()
+        expect(issuedFor(team).map((params) => params.displayName)).toEqual([
+          undefined,
+          undefined
+        ])
+      })
+
+      test('accepts 30 characters of letters, numbers, spaces, hyphens, underscores and full stops', async () => {
+        const team = await deployedTeam('cs-name-3')
+        const name = `${'a1 _.-'.repeat(5)}`
+
+        const { statusCode, result } = await add(team, 'cs-name-3', {
+          payload: { name }
+        })
+
+        expect(name).toHaveLength(30)
+        expect(statusCode).toBe(201)
+        expect(result.credential.name).toBe(name.trim())
+      })
+
+      test.each([
+        ['31 characters', 'a'.repeat(31)],
+        ['only spaces', '   '],
+        ['empty', ''],
+        ['a slash', 'dev/local'],
+        ['markup', '<b>dev</b>'],
+        ['an accented letter', 'café'],
+        ['a number', 7],
+        ['a null', null]
+      ])('refuses a name of %s: 400, nothing made', async (_label, name) => {
+        const team = await deployedTeam('cs-name-4')
+        const before = (await secretsOf(team)).length
+
+        const { statusCode } = await add(team, 'cs-name-4', {
+          payload: { name }
+        })
+
+        expect(statusCode).toBe(400)
+        expect(await secretsOf(team)).toHaveLength(before)
+      })
+
+      test('a replayed key answers with the earlier secret and its name, and the name is not part of the key check', async () => {
+        const team = await deployedTeam('cs-name-5')
+        const key = randomUUID()
+        const first = await add(team, 'cs-name-5', {
+          key,
+          payload: { name: 'first' }
+        })
+
+        const replay = await add(team, 'cs-name-5', {
+          key,
+          payload: { name: 'second' }
+        })
+
+        expect(replay.statusCode).toBe(200)
+        expect(replay.result.credential).toEqual(first.result.credential)
+        expect(replay.result.credential.name).toBe('first')
+      })
+
+      test('names need not be unique', async () => {
+        const team = await deployedTeam('cs-name-6')
+
+        const first = await add(team, 'cs-name-6', { payload: { name: 'ci' } })
+        const second = await add(team, 'cs-name-6', { payload: { name: 'ci' } })
+
+        expect(first.statusCode).toBe(201)
+        expect(second.statusCode).toBe(201)
+      })
+
+      test('is read back by the credential and by the environment list, null where there is none, and rotation keeps it', async () => {
+        const team = await deployedTeam('cs-name-7')
+        const { result } = await add(team, 'cs-name-7', {
+          payload: { name: 'local-dev' }
+        })
+        const { id } = result.credential
+
+        const rotated = await server.inject({
+          method: 'POST',
+          url: `/v1/credentials/${id}/rotate`,
+          headers: fixtures.as('cs-name-7')
+        })
+
+        expect(rotated.statusCode).toBe(200)
+        expect(rotated.result.credential.name).toBe('local-dev')
+
+        const credential = await server.inject({
+          method: 'GET',
+          url: `/v1/credentials/${id}`,
+          headers: fixtures.as('cs-name-7')
+        })
+        const detail = await server.inject({
+          method: 'GET',
+          url: `/v1/teams/${team.slug}/environments/sandbox`,
+          headers: fixtures.as('cs-name-7')
+        })
+        const [automatic] = await secretsOf(team)
+        const automaticRead = await server.inject({
+          method: 'GET',
+          url: `/v1/credentials/${automatic._id}`,
+          headers: fixtures.as('cs-name-7')
+        })
+
+        expect(credential.result.name).toBe('local-dev')
+        expect(
+          detail.result.clientSecrets.items.map((item) => item.name)
+        ).toEqual([null, 'local-dev'])
+        expect(automaticRead.result.name).toBeNull()
+      })
+
+      test('does not put the name in the audit', async () => {
+        const team = await deployedTeam('cs-name-8')
+        const { result } = await add(team, 'cs-name-8', {
+          payload: { name: 'private-name' }
+        })
+
+        const events = await auditOf({ resourceId: result.credential.id })
+
+        expect(events.length).toBeGreaterThan(0)
+        expect(JSON.stringify(events)).not.toContain('private-name')
+      })
+    })
+
     test('needs an Idempotency-Key (a UUID v4) and takes no body', async () => {
       const team = await deployedTeam('cs-valid-1')
       const url = `/v1/teams/${team.slug}/environments/sandbox/client-secrets`
@@ -809,6 +979,32 @@ describe('#team-client-secrets routes', () => {
       ).toBeUndefined()
     })
 
+    test("recovering a named secret's vault write reissues it with the same displayName", async () => {
+      const team = await deployedTeam('cs-rec-5')
+      const { result } = await add(team, 'cs-rec-5', {
+        payload: { name: 'local-dev' }
+      })
+
+      await server.db
+        .collection('credentials')
+        .updateOne(
+          { _id: new ObjectId(result.credential.id) },
+          { $set: { vaultState: 'unwritten' } }
+        )
+      vi.spyOn(mockIssuer, 'issue')
+
+      await maintenance.reconcilePendingCredentials(
+        server.db,
+        server.locker,
+        adapters.registry,
+        adapters.vault
+      )
+
+      expect(reissuesOf(team)).toEqual([
+        expect.objectContaining({ displayName: 'local-dev' })
+      ])
+    })
+
     test("recovering the first model's credential reissues it as it was made: no credential id, no expiry", async () => {
       const team = await deployedTeam('cs-rec-4')
       const [automatic] = await secretsOf(team)
@@ -869,13 +1065,15 @@ describe('#team-client-secrets routes', () => {
             id: expect.any(String),
             keyHint: expect.any(String),
             expiresAt: null,
-            status: 'active'
+            status: 'active',
+            name: null
           },
           {
             id: added.credential.id,
             keyHint: added.credential.keyHint,
             expiresAt: added.credential.expiresAt,
-            status: 'active'
+            status: 'active',
+            name: null
           }
         ]
       })

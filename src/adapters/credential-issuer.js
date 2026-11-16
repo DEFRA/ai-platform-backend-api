@@ -14,8 +14,12 @@
  * `environment` the credential was issued in, never the current configuration,
  * so a credential issued in an earlier environment still renews and revokes
  * against the resources that hold it.
+ * A team secret an Admin adds may carry a short `displayName`: for an Entra
+ * app registration it is the `displayName` of the Graph `passwordCredential`
+ * (the description the Azure portal shows), and the `externalId` the issuer
+ * answers is that credential's `keyId`, the link back to our record.
  * @typedef {object} CredentialIssuer
- * @property {(params: {userId: string, modelSlug: string|null, tier: 'research'|'team', teamId?: string|null, environment: string|null, credentialId?: string, expiresAt?: string}) => Promise<{externalId: string, secret: string, keyHint: string, expiresAt: string}>} issue - `credentialId` names a team secret an Admin adds, so each one has its own `externalId`; `expiresAt` is when the portal wants it to expire
+ * @property {(params: {userId: string, modelSlug: string|null, tier: 'research'|'team', teamId?: string|null, environment: string|null, credentialId?: string, expiresAt?: string, displayName?: string}) => Promise<{externalId: string, secret: string, keyHint: string, expiresAt: string}>} issue - `credentialId` names a team secret an Admin adds, so each one has its own `externalId`; `expiresAt` is when the portal wants it to expire; `displayName` is the optional name an Admin gave it (1 to 30 characters), which an issuer that has no place for it ignores
  * @property {(params: {externalId: string, expiresAt: string, environment: string|null}) => Promise<{externalId: string}>} renew
  * @property {(params: {externalId: string, environment: string|null}) => Promise<{externalId: string, secret: string, keyHint: string}>} rotate
  * @property {(params: {externalId: string, environment: string|null}) => Promise<{externalId: string}>} revoke

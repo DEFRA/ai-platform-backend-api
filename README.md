@@ -663,9 +663,15 @@ mocked (`null` otherwise).
 
 **Client secrets.** Where `CLIENT_SECRET_ENVIRONMENTS` allows (default `infradev,sandbox,dev`) a team holds up to three
 unexpired client secrets per environment. The team's first model there creates the first (no expiry; it counts in the three).
-`POST /v1/teams/{teamId}/environments/{environment}/client-secrets` (team admin; `Idempotency-Key`, no body) adds one that
-expires after `CLIENT_SECRET_TTL_DAYS` (90) and answers `201 {credential: {id, keyHint, expiresAt, environment}, secret}` with
-`Cache-Control: no-store`; the value is shown once and held only in the vault. A replay of the key answers `200 {credential}`
+`POST /v1/teams/{teamId}/environments/{environment}/client-secrets` (team admin; `Idempotency-Key`; optional body `{name}`) adds one that
+expires after `CLIENT_SECRET_TTL_DAYS` (90) and answers `201 {credential: {id, keyHint, expiresAt, environment, name}, secret}` with
+`Cache-Control: no-store`; the value is shown once and held only in the vault. The optional `name` tells secrets apart: trimmed,
+1 to 30 characters of letters, numbers, spaces, hyphens, underscores and full stops (else `400`), not unique, `null` when none, kept
+by rotation and returned by `GET /v1/credentials/{id}` and the environment's `clientSecrets.items[].name`. It is stored on the
+credential as `name` (a missing one reads as `null`, so no backfill) and passed to the issuer as `displayName`; for an Entra app
+registration that is the Graph `passwordCredential.displayName` (the description the Azure portal shows), and the `externalId` the
+issuer answers is its `keyId`, kept as `externalGatewaySubscriptionId`. The mock issuer ignores it. The name is never logged or
+audited. A replay of the key answers `200 {credential}`
 without the value; a key made for another environment is `409 idempotency-key-reused`. Refusals: `409 credential-limit-reached`
 (three unexpired; revoked and expired ones free a place), `409 client-secrets-not-allowed` (the environment is outside
 `CLIENT_SECRET_ENVIRONMENTS`: applications federate there), `409 environment-not-set-up` (no team file yet), `404
