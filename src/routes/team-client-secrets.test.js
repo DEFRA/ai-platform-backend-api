@@ -672,11 +672,14 @@ describe('#team-client-secrets routes', () => {
         })
         const { id } = result.credential
 
-        await server.inject({
+        const rotated = await server.inject({
           method: 'POST',
           url: `/v1/credentials/${id}/rotate`,
           headers: fixtures.as('cs-name-7')
         })
+
+        expect(rotated.statusCode).toBe(200)
+        expect(rotated.result.credential.name).toBe('local-dev')
 
         const credential = await server.inject({
           method: 'GET',
