@@ -68,10 +68,6 @@ const ROUTES = [
     ACCESS.platformAdmin
   ],
   [
-    'POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/revoke',
-    ACCESS.platformAdmin
-  ],
-  [
     'POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/{credentialId}/revoke',
     ACCESS.platformAdmin
   ],

@@ -12,8 +12,7 @@ import {
 import {
   disableCredentials,
   enableCredentials,
-  revokeCredential,
-  revokeCredentials
+  revokeCredential
 } from '#/services/admin-credential-service.js'
 import { redispatchApply } from '#/services/team-deployment-service.js'
 import { idempotentHeaders } from '#/routes/member-schemas.js'
@@ -160,13 +159,6 @@ export const adminTeamDeployments = [
     takesReason: false,
     perform: (request, params) =>
       enableCredentials(request.db, request.locker, params)
-  }),
-  credentialRoute('revoke', {
-    takesReason: true,
-    perform: (request, params) =>
-      revokeCredentials(request.db, request.locker, params, {
-        logger: request.logger
-      })
   }),
   {
     method: 'POST',

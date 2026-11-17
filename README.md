@@ -511,14 +511,15 @@ retry rule, `isRetryable` in `operations-retry.js`) and the credential in each o
 `deployment-not-found` for an unknown team or an environment the team or the instance does not have. The built
 `/{id}/retry` and `/{id}/reconcile` keep their paths.
 
-`POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/disable`, `/enable` and `/revoke` act on the team's
+`POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/disable` and `/enable` act on the team's
 non-federated credentials in **one** environment (the `credentials` records with `tier: 'team'` and `credentialType:
 'oauth'`; federations, the gateway and Entra are not touched). A person who ticks several environments makes one call
-for each, so each is idempotent and a failure names its environment. `disable` and `revoke` take `Idempotency-Key` (a
+for each, so each is idempotent and a failure names its environment. `disable` takes `Idempotency-Key` (a
 version 4 UUID) and `{ reason }` (1 to 500 characters once trimmed; 400 `reason-required` or `reason-too-long`; any other
 invalid input is 400 `invalid-request`); the same key with another reason is 409 `idempotency-key-reused`, the same key
 and reason is a repeat (`200`, no second event). The reason is stored only in the audit event: it is not logged and
-never shown to the team. `enable` takes no body.
+never shown to the team. `enable` takes no body. There is no whole-environment revoke: a Platform Admin revokes one
+client secret at a time (below).
 
 - **Disable** sets `teamDeployments.adminBlocked: true` with `adminBlockedAt` and `adminBlockedBy` on that team and
   environment's document (a flag that is absent reads "not blocked", so there is no backfill) and changes no credential
@@ -530,13 +531,14 @@ never shown to the team. `enable` takes no body.
   `{environment, credential: {status: 'disabled', blockedAt, held}}`.
 - **Enable** clears the flag; a revoked credential stays revoked. Answers `{environment, credential}` with the
   credential's own status. An environment that is not disabled is a no-op.
-- **Revoke** takes each `active` team credential record in the environment through the built revoke path
+- **Revoke one secret** (`POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/{credentialId}/revoke`,
+  same `Idempotency-Key` and `{ reason }`) takes the one team client secret named through the built revoke path
   (`revokeCredentialRecord` in `credential-lifecycle.js`, shared with the team's revoke: gateway subscription deleted,
-  secret removed from the vault, `revoked` with `revokedReason: 'admin-revoked'`) and answers `{environment, revoked: n}`.
-  One `admin.credentials.revoke` event covers the environment. An issuer failure stops at that record, leaves it active,
-  audits a `failure` (code `upstream-unavailable`) and answers 502 `upstream-unavailable`; repeating revokes the rest.
-  Nothing left to revoke (`revoked: 0`, no event, no 409) is a no-op, so a caller that offered Revoke only for an
-  `active` credential (`credential.held` while disabled) can tell nothing was revoked.
+  secret removed from the vault, `revoked` with `revokedReason: 'admin-revoked'`), leaving the team's other secrets and
+  the environment's block as they are, and answers `{environment, credentialId, revoked}`. One `admin.credential.revoke`
+  event is about the secret. A secret already revoked, or a repeat of the key and reason, is a no-op (`revoked: false`,
+  no event); 404 `credential-not-found` for an id that is not the team's secret in that environment. An issuer failure
+  leaves the secret active, audits a `failure` (code `upstream-unavailable`) and answers 502 `upstream-unavailable`.
 
 **Disable team and Enable team** (B31, design F) make a team view-only in the portal; nothing at the gateway, in Entra
 or in GitOps changes, so the team's credentials and models keep working. `POST /v1/admin/teams/{id}/disable` takes
