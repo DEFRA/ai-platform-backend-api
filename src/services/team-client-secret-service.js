@@ -274,8 +274,8 @@ async function addUnderLock(db, locker, context, deps) {
  * issuer as `displayName`; it is never audited or logged. While a Platform
  * Admin has disabled the team's credentials in the environment nothing is
  * made (`409 credentials-disabled`, audited, with no word of why). While a
- * Platform Admin has disabled the team or the environment it is `409
- * team-disabled`, audited as an `access.denied`.
+ * Platform Admin has disabled the environment it is `409 team-disabled`,
+ * audited as an `access.denied`. Disabling the team alone does not stop it.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{teamId: string, environment: string, name?: string, actor: {userId: string}, idempotencyKey: string}} params - `teamId` is the team's id or slug

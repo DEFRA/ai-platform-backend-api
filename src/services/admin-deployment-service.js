@@ -459,7 +459,7 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
       memberCount
     },
     environment,
-    teamDisabled: isEnvironmentDisabled(team, environment),
+    environmentDisabled: isEnvironmentDisabled(team, environment),
     status: worstStatusOf(entries),
     credential: credentialIn(environment),
     clientSecrets: {

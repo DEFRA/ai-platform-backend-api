@@ -195,6 +195,23 @@ describe('#team-lock', () => {
       ])
     })
 
+    test('reads the team when it is called, so a disable that landed since the caller looked is seen, and a check that passed does not hold a later disable off (best effort, not a lock)', async () => {
+      const teamId = await teamWith({ status: 'active' })
+
+      await expect(attempt(teamId, LOCK_SCOPE.team)).resolves.toBeUndefined()
+
+      await db
+        .collection('teams')
+        .updateOne(
+          { _id: new ObjectId(teamId) },
+          { $set: { status: 'disabled' } }
+        )
+
+      await expect(attempt(teamId, LOCK_SCOPE.team)).rejects.toMatchObject({
+        data: { code: TEAM_DISABLED }
+      })
+    })
+
     test('allows the change when the team has gone, or the id names no team', async () => {
       await expect(
         attempt(new ObjectId().toString(), LOCK_SCOPE.team)

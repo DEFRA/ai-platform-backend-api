@@ -23,24 +23,29 @@ export function eventIdOf(
 
 /**
  * Whether this Idempotency-Key already did this action: the success event it
- * wrote is the record. The same key with another reason is another request:
- * `409 idempotency-key-reused`, so a caller is never told their reason was
+ * wrote is the record. The same key with another reason, or (when the action
+ * takes environments) other environments, is another request:
+ * `409 idempotency-key-reused`, so a caller is never told their request was
  * saved when another was.
  * @param {import('mongodb').Db} db
  * @param {string} eventId
  * @param {string} reason
+ * @param {string[]} [requested] - The environments the repeat asks for, in the order they were stored; leave out for an action that takes none
  * @returns {Promise<boolean>}
  */
-export async function isReplay(db, eventId, reason) {
+export async function isReplay(db, eventId, reason, requested) {
   const earlier = await db
     .collection('auditEvents')
-    .findOne({ _id: eventId }, { projection: { reason: 1 } })
+    .findOne(
+      { _id: eventId },
+      { projection: { reason: 1, requestedEnvironments: 1 } }
+    )
 
   if (!earlier) {
     return false
   }
 
-  if (earlier.reason !== reason) {
+  if (earlier.reason !== reason || differs(earlier, requested)) {
     throw boomWithCode(
       Boom.conflict,
       'This idempotency key was used for a different request',
@@ -49,4 +54,17 @@ export async function isReplay(db, eventId, reason) {
   }
 
   return true
+}
+
+function differs(earlier, requested) {
+  if (requested === undefined) {
+    return false
+  }
+
+  const stored = earlier.requestedEnvironments ?? []
+
+  return (
+    stored.length !== requested.length ||
+    stored.some((environment, index) => environment !== requested[index])
+  )
 }

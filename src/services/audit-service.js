@@ -28,7 +28,7 @@ function roleOf(role, actor) {
  * no person, tenant or token. `actorUserId` alone names a person a step acts for.
  * Only named claims are copied, so no token can reach a record.
  * @param {import('mongodb').Db} db
- * @param {{actor?: {userId?: string|null, oid?: string, tid?: string, azp?: string, uti?: string|null}, actorUserId?: string, role?: string|null, action: string, resource: string, resourceId: string, outcome: 'success'|'failure', code?: string, reason?: string, eventId?: string, subjectOid?: string, teamId?: string, environment?: string, environments?: string[]}} params - `eventId` makes the insert idempotent: a second insert of the same event fails with a duplicate key error; `subjectOid` is the Entra object ID of the person the action was done to (distinct from the actor's `oid`), never a name or email; `teamId` and `environment` name the team and the environment an event is about, left out when it names neither; `environments` lists the environments a team-wide action changed (Disable and Enable team), and may be empty
+ * @param {{actor?: {userId?: string|null, oid?: string, tid?: string, azp?: string, uti?: string|null}, actorUserId?: string, role?: string|null, action: string, resource: string, resourceId: string, outcome: 'success'|'failure', code?: string, reason?: string, eventId?: string, subjectOid?: string, teamId?: string, environment?: string, environments?: string[], requestedEnvironments?: string[]}} params - `eventId` makes the insert idempotent: a second insert of the same event fails with a duplicate key error; `subjectOid` is the Entra object ID of the person the action was done to (distinct from the actor's `oid`), never a name or email; `teamId` and `environment` name the team and the environment an event is about, left out when it names neither; `environments` lists the environments a team-wide action changed (Disable and Enable team), and may be empty; `requestedEnvironments` lists the environments the request asked for, so a repeat of its Idempotency-Key can be checked against it, and is never shown in the audit log
  */
 export async function recordAuditEvent(
   db,
@@ -46,7 +46,8 @@ export async function recordAuditEvent(
     subjectOid,
     teamId,
     environment,
-    environments
+    environments,
+    requestedEnvironments
   }
 ) {
   await db.collection('auditEvents').insertOne({
@@ -66,6 +67,7 @@ export async function recordAuditEvent(
     ...(teamId && { teamId }),
     ...(environment && { environment }),
     ...(environments && { environments }),
+    ...(requestedEnvironments && { requestedEnvironments }),
     requestId: getTraceId() ?? null
   })
 }

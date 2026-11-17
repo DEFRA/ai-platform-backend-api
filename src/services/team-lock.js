@@ -70,8 +70,14 @@ function findLockState(db, teamId) {
  * team-disabled`, audited as an `access.denied` of the team and the
  * environment. The caller's right to act has been checked first, so a
  * non-member never learns the team is disabled. The refusal says nothing of
- * why: the reason is only in the disable's own audit event. Read the team
- * again here, so a disable that landed since the caller looked is seen.
+ * why: the reason is only in the disable's own audit event.
+ *
+ * Best effort, not a lock: the team is read once, here, and the caller's write
+ * follows. A disable that landed before this read is seen; one that lands
+ * between this read and the caller's write is not, and that change completes
+ * on a team that then shows as disabled. Disable team applies "to the next
+ * change made in the portal" (design F), so this is the accepted window: a
+ * few milliseconds, and the change was allowed when it was asked for.
  * @param {import('mongodb').Db} db
  * @param {{actor: object, role?: string, teamId: string, environment?: string, scope: 'team'|'environment'}} params - `role` is the right the actor holds, for the audit row; `environment` is needed for the environment scope
  * @returns {Promise<void>}

@@ -224,6 +224,96 @@ describe('#admin team lifecycle routes', () => {
       expect(await auditRows(team, 'admin.team.disable')).toHaveLength(1)
     })
 
+    test('the same key and reason with other environments is 409 idempotency-key-reused, and the new environments are not applied', async () => {
+      const team = await seedTeam()
+      const key = randomUUID()
+
+      await disable(
+        team,
+        { reason: REASON, environments: [DEV] },
+        asAdmin(),
+        key
+      )
+
+      const { statusCode, result } = await disable(
+        team,
+        { reason: REASON, environments: [DEV, TEST] },
+        asAdmin(),
+        key
+      )
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('idempotency-key-reused')
+      expect((await stored(team)).disabledEnvironments).toEqual([DEV])
+      expect(await auditRows(team, 'admin.team.disable')).toHaveLength(1)
+    })
+
+    test('the same key and reason with environments where there were none, or none where there were some, is 409 too', async () => {
+      const none = await seedTeam()
+      const some = await seedTeam()
+      const noneKey = randomUUID()
+      const someKey = randomUUID()
+
+      await disable(none, { reason: REASON }, asAdmin(), noneKey)
+      await disable(
+        some,
+        { reason: REASON, environments: [DEV] },
+        asAdmin(),
+        someKey
+      )
+
+      expect(
+        (
+          await disable(
+            none,
+            { reason: REASON, environments: [DEV] },
+            asAdmin(),
+            noneKey
+          )
+        ).statusCode
+      ).toBe(409)
+      expect(
+        (await disable(some, { reason: REASON }, asAdmin(), someKey)).statusCode
+      ).toBe(409)
+    })
+
+    test('a repeat that lists the same environments in another order, or twice, is a replay', async () => {
+      const team = await seedTeam()
+      const key = randomUUID()
+
+      await disable(
+        team,
+        { reason: REASON, environments: [DEV, TEST] },
+        asAdmin(),
+        key
+      )
+
+      const { statusCode, result } = await disable(
+        team,
+        { reason: REASON, environments: [TEST, DEV, TEST] },
+        asAdmin(),
+        key
+      )
+
+      expect(statusCode).toBe(200)
+      expect(result.team.disabledEnvironments).toEqual([DEV, TEST])
+      expect(await auditRows(team, 'admin.team.disable')).toHaveLength(1)
+    })
+
+    test('the requested environments are kept on the event for the repeat check, and not shown in the audit log', async () => {
+      const team = await seedTeam({
+        status: 'disabled',
+        disabledEnvironments: [TEST]
+      })
+
+      await disable(team, { reason: REASON, environments: [DEV, TEST] })
+
+      const [row] = await auditRows(team, 'admin.team.disable')
+
+      expect(row.environments).toEqual([DEV])
+      expect(row.requestedEnvironments).toEqual([DEV, TEST])
+    })
+
     test('a team already disabled with nothing to add changes nothing and writes no event', async () => {
       const team = await seedTeam({
         status: 'disabled',
@@ -275,12 +365,27 @@ describe('#admin team lifecycle routes', () => {
       expect(await auditRows(team, 'admin.team.disable')).toHaveLength(1)
     })
 
-    test('disables a team pending removal', async () => {
+    test('refuses a team pending removal with 409 team-pending-removal, and changes and records nothing', async () => {
       const team = await seedTeam({ status: 'pending-removal' })
 
-      const { result } = await disable(team, { reason: REASON })
+      const { statusCode, result } = await disable(team, {
+        reason: REASON,
+        environments: [DEV]
+      })
 
-      expect(result.team.status).toBe('disabled')
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('team-pending-removal')
+      expect(await stored(team)).toMatchObject({ status: 'pending-removal' })
+      expect(await auditRows(team, 'admin.team.disable')).toEqual([])
+    })
+
+    test('a team pending removal never becomes active: Disable is refused, so Enable has nothing to lift', async () => {
+      const team = await seedTeam({ status: 'pending-removal' })
+
+      await disable(team, { reason: REASON })
+      await enable(team)
+
+      expect((await stored(team)).status).toBe('pending-removal')
     })
 
     test.each([

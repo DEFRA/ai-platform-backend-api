@@ -189,7 +189,7 @@ export const adminTeams = [
   },
   lifecycleRoute('disable', {
     description:
-      'Disables a team (Platform Admin): its members can view it but not change it (409 `team-disabled` on every change in the lock map), and the optional `environments` are disabled too (none is allowed). Takes an Idempotency-Key and a `reason` of 1 to 500 characters, kept in the audit log only. Its credentials and models keep working. 200 `{team: {id, status, disabledEnvironments}}`; a team already disabled with nothing to add, or a repeat of the key, changes and records nothing; the same key with another reason is 409 `idempotency-key-reused`; 400 `reason-required`, `reason-too-long`, `invalid-request`; 404 `team-not-found`, `environment-not-found`.',
+      'Disables a team (Platform Admin): its members can view it but not change it (409 `team-disabled` on every change in the lock map), and the optional `environments` are disabled too (none is allowed). Takes an Idempotency-Key and a `reason` of 1 to 500 characters, kept in the audit log only. Its credentials and models keep working. 200 `{team: {id, status, disabledEnvironments}}`; a team already disabled with nothing to add, or a repeat of the key, changes and records nothing; the same key with another reason or other environments is 409 `idempotency-key-reused`; a team waiting to be removed is 409 `team-pending-removal`; 400 `reason-required`, `reason-too-long`, `invalid-request`; 404 `team-not-found`, `environment-not-found`.',
     validate: {
       headers: idempotentHeaders,
       payload: disablePayload,

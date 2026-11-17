@@ -53,7 +53,7 @@ function auditAction(db, { actor, role, action, id, ...extra }) {
 }
 
 // A team credential cannot be rotated or revealed while a Platform Admin has
-// disabled its team or its environment: `409 team-disabled`, audited as an
+// disabled its environment: `409 team-disabled`, audited as an
 // `access.denied`. Revoking is not locked. Research credentials are personal
 // and never locked.
 async function assertTeamChangeAllowed(db, { credential, actor, role }) {

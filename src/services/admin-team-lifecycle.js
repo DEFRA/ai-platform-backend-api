@@ -38,6 +38,19 @@ function requireOfferedEnvironments(environments) {
   }
 }
 
+// A team waiting to be removed keeps that status: Disable would replace it with
+// `disabled`, and a later Enable would make the team `active` while its removal
+// is pending. So Disable is refused and the status the removal set stays.
+function requireNotPendingRemoval(team) {
+  if (statusOf(team) === TEAM_STATUS.pendingRemoval) {
+    throw boomWithCode(
+      Boom.conflict,
+      'This team is waiting to be removed',
+      'team-pending-removal'
+    )
+  }
+}
+
 // Without repeats, in the order this instance lists them.
 function inListedOrder(environments) {
   return [...new Set(environments)].sort(
@@ -93,8 +106,10 @@ function auditEvent(db, { actor, teamId, ...event }) {
  * it; every change in the lock map is refused until it is enabled. One
  * `admin.team.disable` event holds the reason and the environments this call
  * added. A team that is already disabled and has nothing to add, a repeat of
- * the same Idempotency-Key and reason included, changes and records nothing;
- * the same key with another reason is `409 idempotency-key-reused`.
+ * the same Idempotency-Key, reason and environments included, changes and
+ * records nothing; the same key with another reason or other environments is
+ * `409 idempotency-key-reused`. A team waiting to be removed is
+ * `409 team-pending-removal`.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{actor: object, id: string, reason: string, idempotencyKey: string, environments?: string[]}} params - `id` is the team's id or slug; `actor` is the token's credentials; `reason` is kept in the audit event only
@@ -111,18 +126,19 @@ export async function disableTeam(
 
   const teamId = found._id.toString()
   const eventId = eventIdOf(DISABLE_ACTION, { teamId, idempotencyKey })
+  const requested = inListedOrder(environments)
 
   return withStatusLock(locker, teamId, async () => {
     const team = await readTeam(db, found)
 
-    if (await isReplay(db, eventId, reason)) {
+    if (await isReplay(db, eventId, reason, requested)) {
       return viewOf(team)
     }
 
+    requireNotPendingRemoval(team)
+
     const held = disabledEnvironmentsOf(team)
-    const added = inListedOrder(environments).filter(
-      (environment) => !held.includes(environment)
-    )
+    const added = requested.filter((environment) => !held.includes(environment))
 
     if (isTeamDisabled(team) && added.length === 0) {
       return viewOf(team)
@@ -138,6 +154,7 @@ export async function disableTeam(
       actor,
       teamId,
       environments: added,
+      requestedEnvironments: requested,
       reason,
       eventId
     })

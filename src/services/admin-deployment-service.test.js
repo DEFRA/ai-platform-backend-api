@@ -700,7 +700,7 @@ describe('#admin-deployment-service', () => {
           memberCount: 2
         },
         environment: DEV,
-        teamDisabled: false,
+        environmentDisabled: false,
         status: 'needs-attention',
         credential: { status: 'active' },
         clientSecrets: {
@@ -782,7 +782,7 @@ describe('#admin-deployment-service', () => {
       expect(JSON.stringify(result)).not.toContain('secret-external-id')
     })
 
-    test('teamDisabled is true only for an environment the team is disabled in, whatever its status', async () => {
+    test('environmentDisabled is true only for an environment the team is disabled in, whatever its status, and there is no teamDisabled', async () => {
       const id = await team('Locked Team', {
         status: 'active',
         disabledEnvironments: [DEV]
@@ -791,11 +791,12 @@ describe('#admin-deployment-service', () => {
       await deployment(id, DEV, [entry()])
       await deployment(id, TEST, [entry()])
 
+      const locked = await detail({ teamId: id, environment: DEV })
+
+      expect(locked.environmentDisabled).toBe(true)
+      expect(locked).not.toHaveProperty('teamDisabled')
       expect(
-        (await detail({ teamId: id, environment: DEV })).teamDisabled
-      ).toBe(true)
-      expect(
-        (await detail({ teamId: id, environment: TEST })).teamDisabled
+        (await detail({ teamId: id, environment: TEST })).environmentDisabled
       ).toBe(false)
     })
 
