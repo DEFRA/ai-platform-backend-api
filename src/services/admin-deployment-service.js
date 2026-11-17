@@ -39,11 +39,14 @@ import { statusOf } from '#/services/team-status.js'
 /** Deployments on a page of the Platform Admin Deployments list (design F). */
 export const ADMIN_DEPLOYMENTS_PAGE_SIZE = 25
 
+const NEEDS_ATTENTION = 'needs-attention'
+const SETTING_UP = 'setting-up'
+
 /** What the list's Status filter takes, worst first. */
 export const DEPLOYMENT_STATUS_FILTERS = Object.freeze([
-  'needs-attention',
+  NEEDS_ATTENTION,
   'waiting',
-  'setting-up',
+  SETTING_UP,
   'removing',
   'ready'
 ])
@@ -59,15 +62,15 @@ export const CREDENTIAL_FILTERS = Object.freeze([
 // The group a model's status falls in. A status this map does not know is a
 // model still being set up, never a failure.
 const GROUP_OF_STATUS = new Map([
-  [CHECKS_FAILED, 'needs-attention'],
-  [DEPLOY_FAILED, 'needs-attention'],
-  [TIMED_OUT, 'needs-attention'],
+  [CHECKS_FAILED, NEEDS_ATTENTION],
+  [DEPLOY_FAILED, NEEDS_ATTENTION],
+  [TIMED_OUT, NEEDS_ATTENTION],
   [QUEUED, 'waiting'],
-  [REQUESTED, 'setting-up'],
-  [COMMITTED, 'setting-up'],
-  [DEPLOYING, 'setting-up'],
-  [DEPLOYED, 'setting-up'],
-  [VERIFIED, 'setting-up'],
+  [REQUESTED, SETTING_UP],
+  [COMMITTED, SETTING_UP],
+  [DEPLOYING, SETTING_UP],
+  [DEPLOYED, SETTING_UP],
+  [VERIFIED, SETTING_UP],
   [REMOVING, 'removing'],
   [ACTIVE, 'ready']
 ])
@@ -97,7 +100,7 @@ function liveEntries(doc) {
 }
 
 function groupOf(status) {
-  return GROUP_OF_STATUS.get(status) ?? 'setting-up'
+  return GROUP_OF_STATUS.get(status) ?? SETTING_UP
 }
 
 // The worst state of a team's models in one environment.
@@ -110,11 +113,12 @@ function worstStatusOf(entries) {
 // When a model last changed: the latest status it reached, else when it was
 // activated or requested (entries from before the times were recorded).
 function changedAtOf(entry) {
-  const times = Object.values(entry.statusTimes ?? {})
-
-  return times.length > 0
-    ? times.reduce((latest, time) => (time > latest ? time : latest))
-    : (entry.activatedAt ?? entry.createdAt ?? null)
+  return (
+    latestOf(Object.values(entry.statusTimes ?? {})) ??
+    entry.activatedAt ??
+    entry.createdAt ??
+    null
+  )
 }
 
 function latestOf(times) {
@@ -221,10 +225,9 @@ function validated({ environment, status, credential, page }) {
 
   if (
     !environments.includes(chosen) ||
-    (status !== undefined && !DEPLOYMENT_STATUS_FILTERS.includes(status)) ||
-    (credential !== undefined && !CREDENTIAL_FILTERS.includes(credential)) ||
-    !Number.isInteger(page) ||
-    page < 1
+    !isChoiceOrAbsent(status, DEPLOYMENT_STATUS_FILTERS) ||
+    !isChoiceOrAbsent(credential, CREDENTIAL_FILTERS) ||
+    !isPage(page)
   ) {
     throw invalidQuery()
   }
@@ -232,13 +235,24 @@ function validated({ environment, status, credential, page }) {
   return { environments, environment: chosen }
 }
 
-function matches(row, { search, model, status, credential }) {
-  return (
-    (!search || row.normalisedName.includes(search)) &&
-    (!model || row.models.some(({ slug }) => slug === model)) &&
-    (!status || row.status === status) &&
-    (!credential || row.credential === credential)
-  )
+function isChoiceOrAbsent(value, choices) {
+  return value === undefined || choices.includes(value)
+}
+
+function isPage(page) {
+  return Number.isInteger(page) && page >= 1
+}
+
+// Each filter the list takes passes a row it was not given a value for.
+const ROW_FILTERS = [
+  (row, { search }) => !search || row.normalisedName.includes(search),
+  (row, { model }) => !model || row.models.some(({ slug }) => slug === model),
+  (row, { status }) => !status || row.status === status,
+  (row, { credential }) => !credential || row.credential === credential
+]
+
+function matches(row, query) {
+  return ROW_FILTERS.every((passes) => passes(row, query))
 }
 
 function listRow({ doc, team, credentials, names }) {

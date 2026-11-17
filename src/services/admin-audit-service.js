@@ -50,7 +50,7 @@ function roleFilterFor(actorType) {
     return { $nin: [...TYPE_OF_ROLE.keys()] }
   }
 
-  return [...TYPE_OF_ROLE].find(([, type]) => type === actorType)[0]
+  return { $eq: [...TYPE_OF_ROLE].find(([, type]) => type === actorType)[0] }
 }
 
 function timeFilter({ from, to }) {
@@ -82,7 +82,11 @@ async function filterOf(db, query) {
 
   return {
     ...(team && { teamId: team }),
-    ...(environment && { environment }),
+    // A team-wide event (Disable and Enable team) names the environments it
+    // changed in `environments`; the others name the one they are about.
+    ...(environment && {
+      $or: [{ environment }, { environments: environment }]
+    }),
     ...(action && { action }),
     ...(actorType && { role: roleFilterFor(actorType) }),
     ...(person && { actorUserId: { $in: await actorIdsNamed(db, person) } }),

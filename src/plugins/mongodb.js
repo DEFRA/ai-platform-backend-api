@@ -112,6 +112,14 @@ async function dropIndexIfExists(collection, name) {
 }
 
 async function createIndexes(db) {
+  await createCatalogueIndexes(db)
+  await createTeamIndexes(db)
+  await createDeploymentIndexes(db)
+  await createCredentialIndexes(db)
+  await createAuditIndexes(db)
+}
+
+async function createCatalogueIndexes(db) {
   await db.collection('mongo-locks').createIndex({ id: 1 })
 
   await db.collection('models').createIndex({ slug: 1 }, { unique: true })
@@ -119,6 +127,9 @@ async function createIndexes(db) {
   await db.collection('models').createIndex({ provider: 1, offering: 1 })
   // `syncCatalogue` upserts providers by `id`.
   await db.collection('providers').createIndex({ id: 1 }, { unique: true })
+}
+
+async function createTeamIndexes(db) {
   // People are keyed on their Entra object and tenant IDs (design F).
   // Partial: a record with no `oid` (from before that keying; nothing binds
   // one now, and the 2026-11-03 backfill deletes them) stays out of the index.
@@ -173,6 +184,9 @@ async function createIndexes(db) {
       partialFilterExpression: { idempotencyKey: { $type: 'string' } }
     }
   )
+}
+
+async function createDeploymentIndexes(db) {
   await db
     .collection('teamDeployments')
     .createIndex({ teamId: 1, environment: 1 }, { unique: true })
@@ -191,6 +205,9 @@ async function createIndexes(db) {
     db.collection('teamDeployments'),
     'teamId_1_idempotencyKey_1'
   )
+}
+
+async function createCredentialIndexes(db) {
   // Partial: excludes legacy/null idempotencyKey docs from the uniqueness check.
   await ensureIndex(
     db.collection('credentials'),
@@ -211,7 +228,9 @@ async function createIndexes(db) {
   await db.collection('credentials').createIndex({ gateway: 1, status: 1 })
   // Superseded by the gateway index above once the credentials-gateway backfill renamed the field.
   await dropIndexIfExists(db.collection('credentials'), 'adapter_1_status_1')
+}
 
+async function createAuditIndexes(db) {
   await db.collection('auditEvents').createIndex({ actorUserId: 1, at: 1 })
   // The Platform Admin Audit log lists newest first, then by `_id`, with or
   // without a team: both indexes match that order, so a page is read in index

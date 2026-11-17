@@ -486,7 +486,8 @@ The Audit log tab (B31) adds `GET /v1/admin/audit?team&environment&person&action
 page, newest first, with the actor's type (`platform-admin`, `team-admin`, `team-member`, `person` for the owner role or
 no role, `system`), display names looked up for display only, the team, the environment, the filter `options` and the
 `audit.retentionDays` shown to the person. `person` matches part of an actor's display name (2 to 100 characters,
-ignoring case, at most 100 people); `from` and `to` are inclusive ISO times; any bad or unknown query is 400
+ignoring case, at most 100 people); `environment` matches an event that names that environment in `environment` or, for
+Disable team and Enable team, in the `environments` it changed; `from` and `to` are inclusive ISO times; any bad or unknown query is 400
 `invalid-query`. No object ID, tenant, token or request detail is returned, but a `reason` is returned exactly as
 stored and is not masked: an email address or name typed into a free-text reason is shown to Platform Admins, so
 reason pages should warn "Do not include names or contact details". The `person` and `search` query values are
@@ -541,7 +542,7 @@ client secret at a time (below).
   secret removed from the vault, `revoked` with `revokedReason: 'admin-revoked'`), leaving the team's other secrets and
   the environment's block as they are, and answers `{environment, credentialId, revoked}`. One `admin.credential.revoke`
   event is about the secret. A secret already revoked, or a repeat of the key and reason, is a no-op (`revoked: false`,
-  no event); 404 `credential-not-found` for an id that is not the team's secret in that environment. An issuer failure
+  no event), except a retry that records the event the failed first attempt left (`revoked: true`); 404 `credential-not-found` for an id that is not the team's secret in that environment. An issuer failure
   leaves the secret active, audits a `failure` (code `upstream-unavailable`) and answers 502 `upstream-unavailable`.
 
 **Disable team and Enable team** (B31, design F) make a team view-only in the portal; nothing at the gateway, in Entra
@@ -580,12 +581,28 @@ as `team.status` and `team.disabledEnvironments` on `GET /v1/teams/{id}`, `disab
 Disable and Enable write `admin.credentials.disable` and `admin.credentials.enable` (resource `teamDeployment`,
 `resourceId` and `teamId` the team, `environment`, role `platform-admin`, and the reason for disable); Revoke one secret
 writes `admin.credential.revoke` (resource `credential`, `resourceId` the secret, with the reason). Each is written only
-when it changed something, then calls `credentialsAccessChanged(db, {teamId, environment, change, actor})` once. That
+when it changed something, then calls `credentialsAccessChanged(db, {teamId, environment, change, actor})` once, where
+`actor` is the claims the event keeps (`userId`, `oid`, `tid`, `azp`, `uti`), never the email, name or token. That
 hook (`services/credential-block.js`) is empty today, so Disable credentials has no gateway or Entra effect yet. The
 registration-wide effects of a disable (the access window's `adminBlocked`, the service principal), the removal of a
 federated application and the refusal to request or change one while credentials are disabled are the next ship (S2,
 B31 in `docs/plans/remaining.md` of the frontend), which adds them in that hook without touching a route. Indexes `teamDeployments {environment: 1, teamId: 1}`
 and `credentials {teamId: 1, environment: 1, tier: 1}` serve the reads.
+
+**A change and its audit event stay consistent.** The change and its event are two writes with no transaction between
+them (MongoDB runs standalone in the tests), so `services/admin-pending-audit.js` stages the event first in
+`pendingAudits` (the reason never sits on a document a team can read) and the change marks its own document
+(`teamDeployments`, `teams` or the `credentials` record) with `pendingAuditId` in the same single-document update. Once
+the event is recorded the marker and the staged event go. If recording fails the request fails and the marker stays;
+the next Disable, Enable or Revoke in that environment (or Disable and Enable team for that team) records the event,
+and calls the hook, before it does anything else, so a retry never sees a no-op that will never be audited. The event
+keeps the time of the change and an id (the Idempotency-Key's, or one made when staged) so recording it twice writes it once.
+
+**Rotate and reveal hold the block lock.** A team credential's `POST /v1/credentials/{id}/rotate` and `/reveal` take the
+`credentials-block:{teamId}:{environment}` lock (before the `credential:{id}` row lock for rotate, the order a Platform
+Admin's revoke takes them in), read the credential again once they hold it, and keep it from the check of the block to
+the secret returned, so a Disable cannot land between them and no secret is made or read after it. Research credentials
+take no block lock.
 
 **Granting Platform Admin locally.** Nothing in the API assigns the role. Sign in once as the mock user (object ID
 `11111111-1111-4111-8111-111111111111`) so `PUT /v1/users/me` creates the record, then add the role in MongoDB:

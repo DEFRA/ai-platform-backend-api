@@ -387,6 +387,42 @@ describe('#admin audit log read', () => {
       expect(result.events.map(({ id }) => id)).toEqual(['box'])
     })
 
+    test('environment: a team lifecycle event that names the environments it changed is found by any of them', async () => {
+      const teamId = newTeamId()
+
+      await seed(
+        {
+          _id: 'disabled',
+          teamId,
+          action: 'admin.team.disable',
+          environments: ['infradev', 'sandbox'],
+          minutes: 1
+        },
+        {
+          _id: 'enabled',
+          teamId,
+          action: 'admin.team.enable',
+          environments: ['infradev'],
+          minutes: 2
+        },
+        { _id: 'whole-team', teamId, action: 'admin.team.disable', minutes: 3 },
+        { _id: 'box', teamId, environment: 'sandbox', minutes: 4 }
+      )
+
+      const sandbox = await get(`?team=${teamId}&environment=sandbox`)
+      const dev = await get(`?team=${teamId}&environment=infradev`)
+
+      expect(sandbox.result.events.map(({ id }) => id)).toEqual([
+        'box',
+        'disabled'
+      ])
+      expect(sandbox.result.total).toBe(2)
+      expect(dev.result.events.map(({ id }) => id)).toEqual([
+        'enabled',
+        'disabled'
+      ])
+    })
+
     test('action: only that action, exactly', async () => {
       const teamId = newTeamId()
 
