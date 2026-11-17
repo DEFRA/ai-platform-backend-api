@@ -10,6 +10,15 @@ const TEST = ENVIRONMENTS[1]
 const ADMIN = actorFor('credentials-admin', { isPlatformAdmin: true })
 const OTHER = actorFor('credentials-team-admin')
 const REASON = 'Suspected leak of a client secret'
+// What the access hook is told of the actor: the claims an audit event keeps,
+// never the email, name or token.
+const ADMIN_CLAIMS = {
+  userId: ADMIN.userId,
+  oid: ADMIN.oid,
+  tid: ADMIN.tid,
+  azp: ADMIN.azp,
+  uti: ADMIN.uti
+}
 
 describe('#admin-credential-service', () => {
   let server
@@ -42,7 +51,7 @@ describe('#admin-credential-service', () => {
 
   beforeEach(async () => {
     await Promise.all(
-      ['teamDeployments', 'teams', 'credentials'].map((name) =>
+      ['teamDeployments', 'teams', 'credentials', 'pendingAudits'].map((name) =>
         db.collection(name).deleteMany({})
       )
     )
@@ -242,7 +251,7 @@ describe('#admin-credential-service', () => {
         teamId,
         environment: DEV,
         change: 'disabled',
-        actor: ADMIN
+        actor: ADMIN_CLAIMS
       })
     })
 
@@ -392,7 +401,7 @@ describe('#admin-credential-service', () => {
         teamId,
         environment: DEV,
         change: 'enabled',
-        actor: ADMIN
+        actor: ADMIN_CLAIMS
       })
     })
 
@@ -501,7 +510,7 @@ describe('#admin-credential-service', () => {
         teamId,
         environment: DEV,
         change: 'revoked',
-        actor: ADMIN
+        actor: ADMIN_CLAIMS
       })
     })
 
@@ -643,6 +652,284 @@ describe('#admin-credential-service', () => {
         expect(logged).not.toContain(text)
         expect(JSON.stringify(error.output.payload)).not.toContain(text)
       }
+    })
+  })
+
+  describe('when an audit event cannot be written after the change', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    // Makes the success event of one action fail to be written, once.
+    function failAuditOnce(action) {
+      const original = db.collection.bind(db)
+      let failed = false
+
+      vi.spyOn(db, 'collection').mockImplementation((name, ...rest) => {
+        const collection = original(name, ...rest)
+
+        if (name !== 'auditEvents') {
+          return collection
+        }
+
+        return new Proxy(collection, {
+          get(target, property) {
+            if (property === 'insertOne') {
+              return (event, ...args) => {
+                if (!failed && event.action === action) {
+                  failed = true
+
+                  return Promise.reject(new Error('the audit is down'))
+                }
+
+                return target.insertOne(event, ...args)
+              }
+            }
+
+            const value = target[property]
+
+            return typeof value === 'function' ? value.bind(target) : value
+          }
+        })
+      })
+    }
+
+    const pending = () => db.collection('pendingAudits').countDocuments()
+    const deploymentOf = (teamId) =>
+      db.collection('teamDeployments').findOne({ teamId, environment: DEV })
+
+    test('Disable: the block stays and the reason is off the team’s document; a retry with the same key records the event once, calls the hook once and answers disabled', async () => {
+      const teamId = await team()
+      const withDeps = deps()
+      const idempotencyKey = randomUUID()
+      const action = 'admin.credentials.disable'
+
+      failAuditOnce(action)
+
+      await expect(
+        disable(teamId, { idempotencyKey }, withDeps)
+      ).rejects.toThrow('the audit is down')
+
+      expect(await blocked(teamId)).toBe(true)
+      expect(await events(teamId)).toEqual([])
+      expect(withDeps.accessChanged).not.toHaveBeenCalled()
+      expect(JSON.stringify(await deploymentOf(teamId))).not.toContain(REASON)
+
+      const retried = await disable(teamId, { idempotencyKey }, withDeps)
+
+      expect(retried.credential.status).toBe('disabled')
+      expect(await events(teamId)).toEqual([
+        expect.objectContaining({
+          _id: `${action}:${teamId}:${DEV}:${idempotencyKey}`,
+          action,
+          outcome: 'success',
+          actorUserId: ADMIN.userId,
+          environment: DEV,
+          reason: REASON
+        })
+      ])
+      expect(withDeps.accessChanged).toHaveBeenCalledTimes(1)
+      expect(withDeps.accessChanged).toHaveBeenCalledWith(db, {
+        teamId,
+        environment: DEV,
+        change: 'disabled',
+        actor: ADMIN_CLAIMS
+      })
+      expect(await deploymentOf(teamId)).not.toHaveProperty('pendingAuditId')
+      expect(await pending()).toBe(0)
+
+      await disable(teamId, { idempotencyKey }, withDeps)
+
+      expect(await events(teamId)).toHaveLength(1)
+      expect(withDeps.accessChanged).toHaveBeenCalledTimes(1)
+    })
+
+    test('Disable: a retry with another key records the first request’s event, with its reason, and no second', async () => {
+      const teamId = await team()
+
+      failAuditOnce('admin.credentials.disable')
+
+      await expect(disable(teamId)).rejects.toThrow('the audit is down')
+      await disable(teamId, { reason: 'Another reason' })
+
+      expect(await events(teamId)).toEqual([
+        expect.objectContaining({ reason: REASON })
+      ])
+      expect(await pending()).toBe(0)
+    })
+
+    test('Disable: a request that changes nothing leaves no staged event behind', async () => {
+      const teamId = await team()
+
+      await disable(teamId)
+      await disable(teamId)
+
+      expect(await events(teamId)).toHaveLength(1)
+      expect(await pending()).toBe(0)
+    })
+
+    test('Enable: the block is cleared; a retry records the event once and calls the hook once', async () => {
+      const teamId = await team()
+      const withDeps = deps()
+
+      await disable(teamId)
+      failAuditOnce('admin.credentials.enable')
+
+      await expect(enable(teamId, {}, withDeps)).rejects.toThrow(
+        'the audit is down'
+      )
+
+      expect(await blocked(teamId)).toBe(false)
+      expect(await events(teamId, 'admin.credentials.enable')).toEqual([])
+
+      const retried = await enable(teamId, {}, withDeps)
+
+      expect(retried.credential.status).toBe('none')
+      expect(await events(teamId, 'admin.credentials.enable')).toEqual([
+        expect.objectContaining({
+          outcome: 'success',
+          actorUserId: ADMIN.userId,
+          environment: DEV,
+          reason: null
+        })
+      ])
+      expect(withDeps.accessChanged).toHaveBeenCalledWith(db, {
+        teamId,
+        environment: DEV,
+        change: 'enabled',
+        actor: ADMIN_CLAIMS
+      })
+      expect(await pending()).toBe(0)
+
+      await enable(teamId, {}, withDeps)
+
+      expect(await events(teamId, 'admin.credentials.enable')).toHaveLength(1)
+    })
+
+    test('Revoke: the secret stays revoked; a retry with the same key records the event once, calls the hook once and says it revoked', async () => {
+      const teamId = await team()
+      const target = await credential(teamId, DEV)
+      const withDeps = deps()
+      const idempotencyKey = randomUUID()
+      const params = {
+        actor: ADMIN,
+        teamId,
+        environment: DEV,
+        credentialId: target._id.toString(),
+        reason: REASON,
+        idempotencyKey
+      }
+      const revoke = () =>
+        service.revokeCredential(db, locker, params, withDeps)
+
+      failAuditOnce('admin.credential.revoke')
+
+      await expect(revoke()).rejects.toThrow('the audit is down')
+
+      expect((await stored(target._id)).status).toBe('revoked')
+      expect(await events(teamId)).toEqual([])
+      expect(JSON.stringify(await stored(target._id))).not.toContain(REASON)
+
+      expect(await revoke()).toEqual({
+        environment: DEV,
+        credentialId: target._id.toString(),
+        revoked: true
+      })
+      expect(await events(teamId)).toEqual([
+        expect.objectContaining({
+          action: 'admin.credential.revoke',
+          outcome: 'success',
+          resourceId: target._id.toString(),
+          reason: REASON
+        })
+      ])
+      expect(withDeps.issuer.revoke).toHaveBeenCalledTimes(1)
+      expect(withDeps.accessChanged).toHaveBeenCalledTimes(1)
+      expect(await stored(target._id)).not.toHaveProperty('pendingAuditId')
+      expect(await pending()).toBe(0)
+
+      expect((await revoke()).revoked).toBe(false)
+      expect(await events(teamId)).toHaveLength(1)
+    })
+
+    test('the next change in the environment records what an earlier one left, whatever it is', async () => {
+      const teamId = await team()
+      const target = await credential(teamId, DEV)
+
+      failAuditOnce('admin.credential.revoke')
+
+      await expect(
+        service.revokeCredential(
+          db,
+          locker,
+          {
+            actor: ADMIN,
+            teamId,
+            environment: DEV,
+            credentialId: target._id.toString(),
+            reason: REASON,
+            idempotencyKey: randomUUID()
+          },
+          deps()
+        )
+      ).rejects.toThrow('the audit is down')
+
+      await enable(teamId)
+
+      expect(await events(teamId)).toEqual([
+        expect.objectContaining({ action: 'admin.credential.revoke' })
+      ])
+    })
+
+    test('the hook failing after the event is recorded: a retry calls the hook again and records nothing twice', async () => {
+      const teamId = await team()
+      const accessChanged = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('the hook is down'))
+        .mockResolvedValue(undefined)
+      const withDeps = deps({ accessChanged })
+      const idempotencyKey = randomUUID()
+
+      await expect(
+        disable(teamId, { idempotencyKey }, withDeps)
+      ).rejects.toThrow('the hook is down')
+
+      expect(await events(teamId)).toHaveLength(1)
+
+      await disable(teamId, { idempotencyKey }, withDeps)
+
+      expect(await events(teamId)).toHaveLength(1)
+      expect(accessChanged).toHaveBeenCalledTimes(2)
+      expect(await pending()).toBe(0)
+    })
+
+    test('the staged event of a change that did not happen is dropped when the issuer fails', async () => {
+      const teamId = await team()
+      const target = await credential(teamId, DEV)
+      const issuer = { revoke: vi.fn().mockRejectedValue(new Error('down')) }
+      const withDeps = deps({
+        issuer,
+        registry: { forCredential: vi.fn(() => ({ issuer })) }
+      })
+
+      await expect(
+        service.revokeCredential(
+          db,
+          locker,
+          {
+            actor: ADMIN,
+            teamId,
+            environment: DEV,
+            credentialId: target._id.toString(),
+            reason: REASON,
+            idempotencyKey: randomUUID()
+          },
+          withDeps
+        )
+      ).rejects.toMatchObject({ data: { code: 'upstream-unavailable' } })
+
+      expect(await pending()).toBe(0)
+      expect(await stored(target._id)).not.toHaveProperty('pendingAuditId')
     })
   })
 })

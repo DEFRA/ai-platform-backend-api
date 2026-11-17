@@ -1,4 +1,5 @@
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
+import { pendingMarker } from '#/services/admin-pending-audit.js'
 
 // A Platform Admin's block on a team's credentials in one environment (B31
 // "Disable credentials"), kept on the team's `teamDeployments` document for
@@ -75,19 +76,25 @@ export async function isEnvironmentBlocked(db, { teamId, environment }) {
  * Blocks the team's credentials in the environment: who and when are kept.
  * Idempotent: an environment already blocked keeps its first block, so the
  * result says whether this call changed anything. The caller holds the block
- * lock and has checked the document exists.
+ * lock and has checked the document exists. `pendingAuditId` is the id of the
+ * staged audit event, set in the same update (see `admin-pending-audit.js`);
+ * the staged event is the caller's, so a caller with none leaves it out.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, environment: string, actor: {userId: string}}} params
+ * @param {{teamId: string, environment: string, actor: {userId: string}, pendingAuditId?: string}} params
  * @returns {Promise<{changed: boolean}>}
  */
-export async function blockCredentials(db, { teamId, environment, actor }) {
+export async function blockCredentials(
+  db,
+  { teamId, environment, actor, pendingAuditId }
+) {
   const { modifiedCount } = await db.collection(COLLECTION).updateOne(
     { teamId, environment, adminBlocked: { $ne: true } },
     {
       $set: {
         adminBlocked: true,
         adminBlockedAt: new Date().toISOString(),
-        adminBlockedBy: actor.userId
+        adminBlockedBy: actor.userId,
+        ...(pendingAuditId && pendingMarker(pendingAuditId))
       }
     }
   )
@@ -97,18 +104,23 @@ export async function blockCredentials(db, { teamId, environment, actor }) {
 
 /**
  * Clears the block. Idempotent: an environment that is not blocked is left as
- * it is. The caller holds the block lock.
+ * it is. The caller holds the block lock. `pendingAuditId` is the id of the
+ * staged audit event, set in the same update.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, environment: string}} target
+ * @param {{teamId: string, environment: string, pendingAuditId?: string}} target
  * @returns {Promise<{changed: boolean}>}
  */
-export async function unblockCredentials(db, { teamId, environment }) {
-  const { modifiedCount } = await db
-    .collection(COLLECTION)
-    .updateOne(
-      { teamId, environment, adminBlocked: true },
-      { $unset: { adminBlocked: '', adminBlockedAt: '', adminBlockedBy: '' } }
-    )
+export async function unblockCredentials(
+  db,
+  { teamId, environment, pendingAuditId }
+) {
+  const { modifiedCount } = await db.collection(COLLECTION).updateOne(
+    { teamId, environment, adminBlocked: true },
+    {
+      $unset: { adminBlocked: '', adminBlockedAt: '', adminBlockedBy: '' },
+      ...(pendingAuditId && { $set: pendingMarker(pendingAuditId) })
+    }
+  )
 
   return { changed: modifiedCount === 1 }
 }

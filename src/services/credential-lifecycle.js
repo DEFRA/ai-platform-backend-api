@@ -6,6 +6,7 @@ import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { grantedModelSlugs } from '#/services/team-deployment-gateway.js'
 import { isEnvironmentBlocked } from '#/services/credential-block.js'
+import { pendingMarker } from '#/services/admin-pending-audit.js'
 import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 import {
   ROLE_OWNER,
@@ -313,7 +314,7 @@ async function removeSecretFromVault(vault, credential) {
  * failure throws and leaves the record active.
  * @param {import('mongodb').Db} db
  * @param {object} credential - the stored, not yet revoked, credential
- * @param {{actor: object, role: string, revokedReason?: string, audit?: boolean}} options - `revokedReason` is what the record keeps (`user-requested` unless a Platform Admin revokes); `audit` false leaves the `credential.revoke` event to the caller
+ * @param {{actor: object, role: string, revokedReason?: string, audit?: boolean, pendingAuditId?: string}} options - `revokedReason` is what the record keeps (`user-requested` unless a Platform Admin revokes); `audit` false leaves the `credential.revoke` event to the caller, which stages it and passes its id as `pendingAuditId`, set in the same update as the revoke (see `admin-pending-audit.js`)
  * @param {import('#/adapters/credential-issuer-registry.js').CredentialIssuerRegistry} [registry]
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  * @returns {Promise<object>} the revoked record
@@ -321,7 +322,13 @@ async function removeSecretFromVault(vault, credential) {
 export async function revokeCredentialRecord(
   db,
   credential,
-  { actor, role, revokedReason = 'user-requested', audit = true },
+  {
+    actor,
+    role,
+    revokedReason = 'user-requested',
+    audit = true,
+    pendingAuditId
+  },
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
@@ -347,7 +354,8 @@ export async function revokeCredentialRecord(
         status: 'revoked',
         revokedAt: now,
         revokedReason,
-        ...covered
+        ...covered,
+        ...(pendingAuditId && pendingMarker(pendingAuditId))
       }
     },
     { returnDocument: 'after' }

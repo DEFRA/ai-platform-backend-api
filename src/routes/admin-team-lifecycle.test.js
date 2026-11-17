@@ -714,4 +714,147 @@ describe('#admin team lifecycle routes', () => {
       expect((await stored(team)).status).toBe('disabled')
     })
   })
+
+  describe('when the audit event cannot be written after the update', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+
+    // Makes the audit event of one action fail to be written, once.
+    function failAuditOnce(action) {
+      const original = server.db.collection.bind(server.db)
+      let failed = false
+
+      vi.spyOn(server.db, 'collection').mockImplementation((name, ...rest) => {
+        const collection = original(name, ...rest)
+
+        if (name !== 'auditEvents') {
+          return collection
+        }
+
+        return new Proxy(collection, {
+          get(target, property) {
+            if (property === 'insertOne') {
+              return (event, ...args) => {
+                if (!failed && event.action === action) {
+                  failed = true
+
+                  return Promise.reject(new Error('the audit is down'))
+                }
+
+                return target.insertOne(event, ...args)
+              }
+            }
+
+            const value = target[property]
+
+            return typeof value === 'function' ? value.bind(target) : value
+          }
+        })
+      })
+    }
+
+    const pending = () =>
+      server.db.collection('pendingAudits').countDocuments({
+        _id: /^team-status:/
+      })
+
+    test('Disable: the team stays disabled and the reason is off the team’s document; a retry with the same key records the event once with its reason', async () => {
+      const team = await seedTeam()
+      const key = randomUUID()
+      const payload = { reason: REASON, environments: [DEV] }
+
+      failAuditOnce('admin.team.disable')
+
+      const failed = await disable(team, payload, asAdmin(), key)
+
+      expect(failed.statusCode).toBe(500)
+      expect(await stored(team)).toMatchObject({
+        status: 'disabled',
+        disabledEnvironments: [DEV]
+      })
+      expect(JSON.stringify(await stored(team))).not.toContain(REASON)
+      expect(await auditRows(team, 'admin.team.disable')).toEqual([])
+
+      const retried = await disable(team, payload, asAdmin(), key)
+
+      expect(retried.statusCode).toBe(200)
+      expect(retried.result.team).toEqual({
+        id: team.id,
+        status: 'disabled',
+        disabledEnvironments: [DEV]
+      })
+
+      const rows = await auditRows(team, 'admin.team.disable')
+
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({
+        _id: `admin.team.disable:${team.id}:${key}`,
+        outcome: 'success',
+        reason: REASON,
+        environments: [DEV],
+        requestedEnvironments: [DEV],
+        actorUserId: ADMIN
+      })
+      expect(await stored(team)).not.toHaveProperty('pendingAuditId')
+      expect(await pending()).toBe(0)
+
+      const again = await disable(team, payload, asAdmin(), key)
+
+      expect(again.statusCode).toBe(200)
+      expect(await auditRows(team, 'admin.team.disable')).toHaveLength(1)
+    })
+
+    test('Disable: a key reused with another reason after the failed attempt is still refused once the first event is recorded', async () => {
+      const team = await seedTeam()
+      const key = randomUUID()
+
+      failAuditOnce('admin.team.disable')
+      await disable(team, { reason: REASON }, asAdmin(), key)
+
+      const reused = await disable(team, { reason: 'Another' }, asAdmin(), key)
+
+      expect(reused.statusCode).toBe(409)
+      expect(reused.result.code).toBe('idempotency-key-reused')
+      expect(await auditRows(team, 'admin.team.disable')).toEqual([
+        expect.objectContaining({ reason: REASON })
+      ])
+    })
+
+    test('Enable: the team stays enabled; a retry records the event once with the environments it unlocked', async () => {
+      const team = await seedTeam({
+        status: 'disabled',
+        disabledEnvironments: [DEV, TEST]
+      })
+
+      failAuditOnce('admin.team.enable')
+
+      const failed = await enable(team, { environments: [DEV] })
+
+      expect(failed.statusCode).toBe(500)
+      expect(await stored(team)).toMatchObject({
+        status: 'active',
+        disabledEnvironments: [TEST]
+      })
+      expect(await auditRows(team, 'admin.team.enable')).toEqual([])
+
+      const retried = await enable(team, { environments: [DEV] })
+
+      expect(retried.statusCode).toBe(200)
+
+      const rows = await auditRows(team, 'admin.team.enable')
+
+      expect(rows).toHaveLength(1)
+      expect(rows[0]).toMatchObject({
+        outcome: 'success',
+        environments: [DEV],
+        actorUserId: ADMIN
+      })
+      expect(await pending()).toBe(0)
+
+      await enable(team, { environments: [DEV] })
+
+      expect(await auditRows(team, 'admin.team.enable')).toHaveLength(1)
+    })
+  })
 })

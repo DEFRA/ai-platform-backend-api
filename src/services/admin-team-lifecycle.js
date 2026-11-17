@@ -6,7 +6,11 @@ import {
   environmentRank,
   requireTeamForPlatformAdmin
 } from '#/services/admin-team-service.js'
-import { recordAuditEvent } from '#/services/audit-service.js'
+import {
+  pendingMarker,
+  settlePendingAudits,
+  stageAudit
+} from '#/services/admin-pending-audit.js'
 import { teamEnvironments } from '#/services/team-deployment-service.js'
 import { disabledEnvironmentsOf, isTeamDisabled } from '#/services/team-lock.js'
 import { TEAM_STATUS, statusOf } from '#/services/team-status.js'
@@ -88,8 +92,8 @@ function updateTeam(db, { _id }, changes) {
     .findOneAndUpdate({ _id }, { $set: changes }, { returnDocument: 'after' })
 }
 
-function auditEvent(db, { actor, teamId, ...event }) {
-  return recordAuditEvent(db, {
+function auditRecord({ actor, teamId, ...event }) {
+  return {
     actor,
     role: PLATFORM_ADMIN_ROLE,
     resource: 'team',
@@ -97,7 +101,31 @@ function auditEvent(db, { actor, teamId, ...event }) {
     teamId,
     outcome: 'success',
     ...event
+  }
+}
+
+// Records an event a change under this lock staged and did not get to record
+// (the audit insert failed), before this request looks at the team.
+async function settleTeamAudits(db, found) {
+  await settlePendingAudits(db, 'teams', { _id: found._id })
+}
+
+// Stages the event, updates the team (which marks it with the staged id) and
+// records the event, so a failure between the update and the record is
+// repaired by the next request for the team.
+async function updateAndAudit(db, found, { changes, event }) {
+  const id = `team-status:${found._id}`
+
+  await stageAudit(db, id, auditRecord(event))
+
+  const updated = await updateTeam(db, found, {
+    ...changes,
+    ...pendingMarker(id)
   })
+
+  await settleTeamAudits(db, found)
+
+  return updated
 }
 
 /**
@@ -129,6 +157,8 @@ export async function disableTeam(
   const requested = inListedOrder(environments)
 
   return withStatusLock(locker, teamId, async () => {
+    await settleTeamAudits(db, found)
+
     const team = await readTeam(db, found)
 
     if (await isReplay(db, eventId, reason, requested)) {
@@ -144,19 +174,20 @@ export async function disableTeam(
       return viewOf(team)
     }
 
-    const updated = await updateTeam(db, found, {
-      status: TEAM_STATUS.disabled,
-      disabledEnvironments: inListedOrder([...held, ...added])
-    })
-
-    await auditEvent(db, {
-      action: DISABLE_ACTION,
-      actor,
-      teamId,
-      environments: added,
-      requestedEnvironments: requested,
-      reason,
-      eventId
+    const updated = await updateAndAudit(db, found, {
+      changes: {
+        status: TEAM_STATUS.disabled,
+        disabledEnvironments: inListedOrder([...held, ...added])
+      },
+      event: {
+        action: DISABLE_ACTION,
+        actor,
+        teamId,
+        environments: added,
+        requestedEnvironments: requested,
+        reason,
+        eventId
+      }
     })
 
     return viewOf(updated)
@@ -182,6 +213,8 @@ export async function enableTeam(db, locker, { actor, id, environments }) {
   const teamId = found._id.toString()
 
   return withStatusLock(locker, teamId, async () => {
+    await settleTeamAudits(db, found)
+
     const team = await readTeam(db, found)
     const held = disabledEnvironmentsOf(team)
     const chosen = environments ?? held
@@ -192,18 +225,19 @@ export async function enableTeam(db, locker, { actor, id, environments }) {
       return viewOf(team)
     }
 
-    const updated = await updateTeam(db, found, {
-      ...(lifted && { status: TEAM_STATUS.active }),
-      disabledEnvironments: held.filter(
-        (environment) => !chosen.includes(environment)
-      )
-    })
-
-    await auditEvent(db, {
-      action: ENABLE_ACTION,
-      actor,
-      teamId,
-      environments: unlocked
+    const updated = await updateAndAudit(db, found, {
+      changes: {
+        ...(lifted && { status: TEAM_STATUS.active }),
+        disabledEnvironments: held.filter(
+          (environment) => !chosen.includes(environment)
+        )
+      },
+      event: {
+        action: ENABLE_ACTION,
+        actor,
+        teamId,
+        environments: unlocked
+      }
     })
 
     return viewOf(updated)

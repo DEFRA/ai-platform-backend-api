@@ -13,6 +13,11 @@ import {
   readCredentialStatus
 } from '#/services/admin-deployment-service.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
+import {
+  discardStagedAudit,
+  settlePendingAudits,
+  stageAudit
+} from '#/services/admin-pending-audit.js'
 import { eventIdOf, isReplay } from '#/services/admin-idempotency.js'
 import {
   blockCredentials,
@@ -55,10 +60,10 @@ async function authorise(db, { actor, teamId, environment }) {
   await findTeamDeployment(db, { teamId, environment })
 }
 
-function auditEvent(db, event) {
+function auditRecord(event) {
   const { action, actor, teamId, ...rest } = event
 
-  return recordAuditEvent(db, {
+  return {
     actor,
     role: PLATFORM_ADMIN_ROLE,
     action,
@@ -66,7 +71,71 @@ function auditEvent(db, event) {
     resourceId: teamId,
     teamId,
     ...rest
-  })
+  }
+}
+
+// The id a block's or an unblock's staged event is kept under: one per team and
+// environment, as the block lock allows one change at a time.
+function blockAuditId(teamId, environment) {
+  return `credentials-block:${teamId}:${environment}`
+}
+
+function revokeAuditId(credentialId) {
+  return `credential-revoke:${credentialId}`
+}
+
+// Records every event an earlier change under this lock staged and did not get
+// to record (the audit insert failed), calling the hook for each, before this
+// request looks at its own. Returns the ids it recorded.
+async function settleCredentialAudits(
+  db,
+  { teamId, environment },
+  accessChanged
+) {
+  const notify = (staged) =>
+    accessChanged(db, {
+      teamId,
+      environment,
+      change: staged.change,
+      actor: staged.actor
+    })
+  const target = { teamId, environment }
+  const settled = await settlePendingAudits(
+    db,
+    'teamDeployments',
+    target,
+    notify
+  )
+
+  return [
+    ...settled,
+    ...(await settlePendingAudits(
+      db,
+      'credentials',
+      { ...target, tier: 'team' },
+      notify
+    ))
+  ]
+}
+
+// Stages the event, makes the change (which marks its document with the
+// staged id) and records the event; a change that changed nothing drops the
+// event it staged.
+async function changeAndAudit(
+  db,
+  target,
+  { id, staged, change },
+  accessChanged
+) {
+  await stageAudit(db, id, staged)
+
+  const { changed } = await change(id)
+
+  if (changed) {
+    await settleCredentialAudits(db, target, accessChanged)
+  } else {
+    await discardStagedAudit(db, id)
+  }
 }
 
 /**
@@ -92,35 +161,39 @@ export async function disableCredentials(
 
   const action = 'admin.credentials.disable'
   const eventId = eventIdOf(action, { teamId, environment, idempotencyKey })
+  const target = { teamId, environment }
 
-  await withCredentialsBlockLock(locker, { teamId, environment }, async () => {
+  await withCredentialsBlockLock(locker, target, async () => {
+    await settleCredentialAudits(db, target, accessChanged)
+
     if (await isReplay(db, eventId, reason)) {
       return
     }
 
-    const { changed } = await blockCredentials(db, {
-      teamId,
-      environment,
-      actor
-    })
+    const id = blockAuditId(teamId, environment)
 
-    if (changed) {
-      await auditEvent(db, {
-        action,
-        actor,
-        teamId,
-        environment,
-        outcome: 'success',
-        reason,
-        eventId
-      })
-      await accessChanged(db, {
-        teamId,
-        environment,
-        change: 'disabled',
-        actor
-      })
-    }
+    await changeAndAudit(
+      db,
+      target,
+      {
+        id,
+        staged: {
+          ...auditRecord({
+            action,
+            actor,
+            teamId,
+            environment,
+            outcome: 'success',
+            reason,
+            eventId
+          }),
+          change: 'disabled'
+        },
+        change: (pendingAuditId) =>
+          blockCredentials(db, { ...target, actor, pendingAuditId })
+      },
+      accessChanged
+    )
   })
 
   return {
@@ -147,24 +220,31 @@ export async function enableCredentials(
 ) {
   await authorise(db, { actor, teamId, environment })
 
-  await withCredentialsBlockLock(locker, { teamId, environment }, async () => {
-    const { changed } = await unblockCredentials(db, { teamId, environment })
+  const target = { teamId, environment }
 
-    if (changed) {
-      await auditEvent(db, {
-        action: 'admin.credentials.enable',
-        actor,
-        teamId,
-        environment,
-        outcome: 'success'
-      })
-      await accessChanged(db, {
-        teamId,
-        environment,
-        change: 'enabled',
-        actor
-      })
-    }
+  await withCredentialsBlockLock(locker, target, async () => {
+    await settleCredentialAudits(db, target, accessChanged)
+
+    await changeAndAudit(
+      db,
+      target,
+      {
+        id: blockAuditId(teamId, environment),
+        staged: {
+          ...auditRecord({
+            action: 'admin.credentials.enable',
+            actor,
+            teamId,
+            environment,
+            outcome: 'success'
+          }),
+          change: 'enabled'
+        },
+        change: (pendingAuditId) =>
+          unblockCredentials(db, { ...target, pendingAuditId })
+      },
+      accessChanged
+    )
   })
 
   return {
@@ -174,9 +254,12 @@ export async function enableCredentials(
 }
 
 // Revokes one record under its own lock, read again inside it: a record that
-// was revoked meanwhile is left. Returns whether this call revoked it.
-async function revokeRecord(db, locker, { id, actor }, deps) {
+// was revoked meanwhile is left. The event is staged before the record changes
+// and the record is marked with it in the same update. Returns whether this
+// call revoked it.
+async function revokeRecord(db, locker, { id, actor, staged }, deps) {
   const lock = await acquireLockWithRetry(locker, credentialLockName(id))
+  const pendingAuditId = revokeAuditId(id)
 
   try {
     const current = await credentialsCollection(db).findOne({
@@ -188,18 +271,26 @@ async function revokeRecord(db, locker, { id, actor }, deps) {
       return false
     }
 
-    await revokeCredentialRecord(
-      db,
-      current,
-      {
-        actor,
-        role: PLATFORM_ADMIN_ROLE,
-        revokedReason: ADMIN_REVOKED,
-        audit: false
-      },
-      deps.registry,
-      deps.vault
-    )
+    await stageAudit(db, pendingAuditId, staged)
+
+    try {
+      await revokeCredentialRecord(
+        db,
+        current,
+        {
+          actor,
+          role: PLATFORM_ADMIN_ROLE,
+          revokedReason: ADMIN_REVOKED,
+          audit: false,
+          pendingAuditId
+        },
+        deps.registry,
+        deps.vault
+      )
+    } catch (error) {
+      await discardStagedAudit(db, pendingAuditId)
+      throw error
+    }
 
     return true
   } finally {
@@ -220,17 +311,20 @@ async function failRevoke(
     'Revoking the team credential failed'
   )
 
-  await auditEvent(db, {
-    action: REVOKE_ONE_ACTION,
-    actor,
-    teamId,
-    environment,
-    outcome: 'failure',
-    code: UPSTREAM_UNAVAILABLE,
-    reason,
-    resource: 'credential',
-    resourceId: credentialId
-  })
+  await recordAuditEvent(
+    db,
+    auditRecord({
+      action: REVOKE_ONE_ACTION,
+      actor,
+      teamId,
+      environment,
+      outcome: 'failure',
+      code: UPSTREAM_UNAVAILABLE,
+      reason,
+      resource: 'credential',
+      resourceId: credentialId
+    })
+  )
 
   throw boomWithCode(
     Boom.badGateway,
@@ -308,9 +402,15 @@ export async function revokeCredential(
     idempotencyKey
   })
 
-  return withCredentialsBlockLock(locker, { teamId, environment }, async () => {
+  const target = { teamId, environment }
+
+  return withCredentialsBlockLock(locker, target, async () => {
+    const recorded = await settleCredentialAudits(db, target, accessChanged)
+
     if (await isReplay(db, eventId, reason)) {
-      return { environment, credentialId, revoked: false }
+      // A retry that recorded the event the first attempt left unrecorded did
+      // revoke the secret, as far as the person who retried can tell.
+      return { environment, credentialId, revoked: recorded.includes(eventId) }
     }
 
     let revoked
@@ -319,7 +419,24 @@ export async function revokeCredential(
       revoked = await revokeRecord(
         db,
         locker,
-        { id, actor },
+        {
+          id,
+          actor,
+          staged: {
+            ...auditRecord({
+              action: REVOKE_ONE_ACTION,
+              actor,
+              teamId,
+              environment,
+              outcome: 'success',
+              reason,
+              eventId,
+              resource: 'credential',
+              resourceId: credentialId
+            }),
+            change: 'revoked'
+          }
+        },
         { registry, vault }
       )
     } catch {
@@ -331,18 +448,7 @@ export async function revokeCredential(
     }
 
     if (revoked) {
-      await auditEvent(db, {
-        action: REVOKE_ONE_ACTION,
-        actor,
-        teamId,
-        environment,
-        outcome: 'success',
-        reason,
-        eventId,
-        resource: 'credential',
-        resourceId: credentialId
-      })
-      await accessChanged(db, { teamId, environment, change: 'revoked', actor })
+      await settleCredentialAudits(db, target, accessChanged)
     }
 
     return { environment, credentialId, revoked }
