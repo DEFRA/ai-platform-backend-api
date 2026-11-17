@@ -506,7 +506,11 @@ the worst model state (`needs-attention`, `waiting`, `setting-up`, `removing`, `
 to 100 characters) is compared as text against the normalised team name, never as a pattern, and any bad or unknown
 query is 400 `invalid-query`. `GET /v1/admin/team-deployments/{teamId}/{environment}` returns the team, the status, the
 credential (`{status, blockedAt?, held?}`; while `status` is `disabled`, `held` is `active`, `revoked` or `none`, what is under the
-block, so Revoke is offered only for `active` and Revoked can be shown beside Disabled; never a secret, key hint or external ID), each model with `retryable` (the built
+block, so Revoke is offered only for `active` and Revoked can be shown beside Disabled; never a secret, key hint or external ID), `environmentDisabled`
+(see Disable team below), `clientSecrets` (`{allowed, used, limit, items}`: the team's secrets in that environment that are
+active or expired, each `{id, keyHint, expiresAt, status, name}` with the last four characters of the key and never a value;
+a revoked secret is not listed) and `federations` (the applications not removed, each `{id, name, host, service or
+principalId, status, operationId, failureReason, changingTo?}`), each model with `retryable` (the built
 retry rule, `isRetryable` in `operations-retry.js`) and the credential in each of the team's environments; 404
 `deployment-not-found` for an unknown team or an environment the team or the instance does not have. The built
 `/{id}/retry` and `/{id}/reconcile` keep their paths.
@@ -573,12 +577,14 @@ as `team.status` and `team.disabledEnvironments` on `GET /v1/teams/{id}`, `disab
 `GET /v1/admin/teams/{id}` adds `team.disabledEnvironments` and each environment's `disabled`, and `GET
 /v1/admin/team-deployments/{teamId}/{environment}` adds `environmentDisabled` (true only while this environment is in the team's disabled environments, whatever the team's status).
 
-Each action writes `admin.credentials.disable`, `.enable` or `.revoke` (resource `teamDeployment`, `resourceId` and
-`teamId` the team, `environment`, role `platform-admin`, and the reason for disable and revoke) only when it changed
-something, then calls `credentialsAccessChanged(db, {teamId, environment, change, actor})` once. That hook
-(`services/credential-block.js`) is empty today. The registration-wide gateway and Entra effects of a disable (the access
-window's `adminBlocked`, the service principal) and the federated credential work belong to phase 4 of the Platform
-Admin plan, which adds them in that hook without touching a route. Indexes `teamDeployments {environment: 1, teamId: 1}`
+Disable and Enable write `admin.credentials.disable` and `admin.credentials.enable` (resource `teamDeployment`,
+`resourceId` and `teamId` the team, `environment`, role `platform-admin`, and the reason for disable); Revoke one secret
+writes `admin.credential.revoke` (resource `credential`, `resourceId` the secret, with the reason). Each is written only
+when it changed something, then calls `credentialsAccessChanged(db, {teamId, environment, change, actor})` once. That
+hook (`services/credential-block.js`) is empty today, so Disable credentials has no gateway or Entra effect yet. The
+registration-wide effects of a disable (the access window's `adminBlocked`, the service principal), the removal of a
+federated application and the refusal to request or change one while credentials are disabled are the next ship (S2,
+B31 in `docs/plans/remaining.md` of the frontend), which adds them in that hook without touching a route. Indexes `teamDeployments {environment: 1, teamId: 1}`
 and `credentials {teamId: 1, environment: 1, tier: 1}` serve the reads.
 
 **Granting Platform Admin locally.** Nothing in the API assigns the role. Sign in once as the mock user (object ID
