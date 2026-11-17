@@ -312,6 +312,20 @@ describe('#admin team lifecycle routes', () => {
 
       expect(row.environments).toEqual([DEV])
       expect(row.requestedEnvironments).toEqual([DEV, TEST])
+
+      const { statusCode, result } = await server.inject({
+        method: 'GET',
+        url: `/v1/admin/audit?team=${team.id}`,
+        headers: asAdmin()
+      })
+      const shown = result.events.find(
+        ({ action }) => action === 'admin.team.disable'
+      )
+
+      expect(statusCode).toBe(200)
+      expect(shown).toBeDefined()
+      expect(shown).not.toHaveProperty('requestedEnvironments')
+      expect(JSON.stringify(shown)).not.toContain(TEST)
     })
 
     test('a team already disabled with nothing to add changes nothing and writes no event', async () => {
