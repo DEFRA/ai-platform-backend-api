@@ -307,6 +307,7 @@ describe('credential block effects', () => {
       await expect(
         lifecycle.revealCredential(
           db,
+          locker,
           { id, actor, reason: 'Needs to share it' },
           vault
         )
@@ -376,8 +377,111 @@ describe('credential block effects', () => {
 
       expect(rotated.secret).toBe('new-secret')
       await expect(
-        lifecycle.revealCredential(db, { id, actor, reason: 'Share' }, vault)
+        lifecycle.revealCredential(
+          db,
+          locker,
+          { id, actor, reason: 'Share' },
+          vault
+        )
       ).resolves.toBe('new-secret')
+    })
+
+    describe.each([
+      [
+        'rotate',
+        (credential, { registry, vault }) =>
+          lifecycle.rotateCredential(db, locker, credential, registry, vault),
+        ({ issuer }) => issuer.rotate
+      ],
+      [
+        'reveal',
+        (credential, { vault }) =>
+          lifecycle.revealCredential(
+            db,
+            locker,
+            { ...credential, reason: 'Share' },
+            vault
+          ),
+        (_deps, vault) => vault.get
+      ]
+    ])('%s and a Disable at the same moment', (name, act, secretCall) => {
+      async function setUp() {
+        const doc = await teamDocument()
+        const credential = await teamCredential(doc)
+        const deps = { ...stubRegistry(), vault: stubVault() }
+
+        await deps.vault.put({
+          credentialId: credential.id,
+          secret: 'held-secret'
+        })
+
+        return { doc, credential, deps }
+      }
+
+      test(`a Disable that holds the block lock is waited for: the ${name} is refused 409 credentials-disabled and no secret is made or read`, async () => {
+        const { doc, credential, deps } = await setUp()
+        const held = await locker.lock(
+          block.credentialsBlockLockName(doc.teamId, doc.environment)
+        )
+
+        const attempt = act(credential, deps)
+        const settled = attempt.catch((error) => error)
+
+        await new Promise((resolve) => setTimeout(resolve, 250))
+        await block.blockCredentials(db, { ...doc, actor: admin })
+        await held.free()
+
+        expect(await settled).toMatchObject({
+          output: { statusCode: 409 },
+          data: { code: 'credentials-disabled' }
+        })
+        expect(deps.issuer.rotate).not.toHaveBeenCalled()
+        expect(deps.vault.get).not.toHaveBeenCalled()
+      })
+
+      test(`a Disable cannot land while the ${name} is making or reading the secret: it waits for the ${name} to finish`, async () => {
+        const { doc, credential, deps } = await setUp()
+        let release
+        const gate = new Promise((resolve) => {
+          release = resolve
+        })
+        const secretOperation = secretCall(deps, deps.vault)
+
+        secretOperation.mockImplementationOnce(async () => {
+          await gate
+
+          return name === 'rotate'
+            ? { keyHint: 'wxyz', secret: 'new-secret' }
+            : 'held-secret'
+        })
+
+        const attempt = act(credential, deps)
+
+        await vi.waitFor(() => expect(secretOperation).toHaveBeenCalled())
+
+        let blockedAt = null
+        const disable = block.withCredentialsBlockLock(
+          locker,
+          doc,
+          async () => {
+            blockedAt = Date.now()
+            await block.blockCredentials(db, { ...doc, actor: admin })
+          }
+        )
+
+        await new Promise((resolve) => setTimeout(resolve, 300))
+
+        expect(blockedAt).toBeNull()
+        expect(await block.isEnvironmentBlocked(db, doc)).toBe(false)
+
+        release()
+
+        await expect(attempt).resolves.toBeDefined()
+        await disable
+
+        expect(blockedAt).not.toBeNull()
+        expect(await block.isEnvironmentBlocked(db, doc)).toBe(true)
+      })
     })
 
     test('a block in one environment does not stop the team’s credential in another', async () => {

@@ -5,7 +5,10 @@ import { requireLock } from '#/common/helpers/mongo-lock.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import { grantedModelSlugs } from '#/services/team-deployment-gateway.js'
-import { isEnvironmentBlocked } from '#/services/credential-block.js'
+import {
+  isEnvironmentBlocked,
+  withCredentialsBlockLock
+} from '#/services/credential-block.js'
 import { pendingMarker } from '#/services/admin-pending-audit.js'
 import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 import {
@@ -238,56 +241,91 @@ export async function rotateCredential(
   registry = credentialIssuerRegistry,
   vault = credentialVault
 ) {
-  const lock = await requireLock(locker, credentialLockName(id))
+  return withActionLocks(
+    db,
+    locker,
+    { id, actor, rowLock: true },
+    async ({ credential, role }) => {
+      await assertTeamChangeAllowed(db, { credential, actor, role })
+      assertNotRevoked(credential)
+      await assertCredentialsEnabled(db, {
+        credential,
+        actor,
+        role,
+        action: 'credential.rotate',
+        id
+      })
 
-  try {
-    const loaded = await loadCredentialForAction(db, { id, actor })
+      const { issuer } = registry.forCredential(credential)
+      const rotated = await issuer.rotate({
+        externalId: externalGatewaySubscriptionIdOf(credential),
+        environment: environmentOf(credential)
+      })
 
-    if (!loaded) {
-      throw Boom.notFound()
+      const now = new Date().toISOString()
+      const updated = await credentialsCollection(db).findOneAndUpdate(
+        { _id: credential._id },
+        { $set: { keyHint: rotated.keyHint, rotatedAt: now } },
+        { returnDocument: 'after' }
+      )
+
+      // Creates a new Key Vault version; the old version stays recoverable
+      // inside the 90-day soft-delete window.
+      await writeSecretToVault(db, vault, updated, rotated.secret)
+
+      await auditAction(db, { actor, role, action: 'credential.rotate', id })
+
+      return {
+        credential: await withTeamGrants(
+          db,
+          withTeamName(withRenewalsRemaining(updated))
+        ),
+        secret: rotated.secret
+      }
     }
+  )
+}
 
-    const { credential, role } = loaded
+// Runs `work` with the credential the actor may act on, holding the locks the
+// action needs. A team credential's action holds the team and environment's
+// `credentials-block` lock across the check of the block and the secret it
+// guards, so a Platform Admin's Disable cannot land between them; it is taken
+// before the row lock, the order a Platform Admin's revoke takes them in. The
+// credential is read again once the locks are held. Research credentials are
+// personal and never blocked, so they take only the row lock.
+async function withActionLocks(db, locker, { id, actor, rowLock }, work) {
+  const first = await loadCredentialForAction(db, { id, actor })
 
-    await assertTeamChangeAllowed(db, { credential, actor, role })
-    assertNotRevoked(credential)
-    await assertCredentialsEnabled(db, {
-      credential,
-      actor,
-      role,
-      action: 'credential.rotate',
-      id
-    })
-
-    const { issuer } = registry.forCredential(credential)
-    const rotated = await issuer.rotate({
-      externalId: externalGatewaySubscriptionIdOf(credential),
-      environment: environmentOf(credential)
-    })
-
-    const now = new Date().toISOString()
-    const updated = await credentialsCollection(db).findOneAndUpdate(
-      { _id: credential._id },
-      { $set: { keyHint: rotated.keyHint, rotatedAt: now } },
-      { returnDocument: 'after' }
-    )
-
-    // Creates a new Key Vault version; the old version stays recoverable
-    // inside the 90-day soft-delete window.
-    await writeSecretToVault(db, vault, updated, rotated.secret)
-
-    await auditAction(db, { actor, role, action: 'credential.rotate', id })
-
-    return {
-      credential: await withTeamGrants(
-        db,
-        withTeamName(withRenewalsRemaining(updated))
-      ),
-      secret: rotated.secret
-    }
-  } finally {
-    await lock.free()
+  if (!first) {
+    throw Boom.notFound()
   }
+
+  const { credential } = first
+  const locked = async () => {
+    const row = rowLock
+      ? await requireLock(locker, credentialLockName(id))
+      : null
+
+    try {
+      const loaded = await loadCredentialForAction(db, { id, actor })
+
+      if (!loaded) {
+        throw Boom.notFound()
+      }
+
+      return await work(loaded)
+    } finally {
+      await row?.free()
+    }
+  }
+
+  return credential.tier === 'team'
+    ? withCredentialsBlockLock(
+        locker,
+        { teamId: credential.teamId, environment: environmentOf(credential) },
+        locked
+      )
+    : locked()
 }
 
 // Soft-deletes the secret for 90 days. Best-effort: the credential is already
@@ -428,61 +466,64 @@ export async function revokeCredential(
  * only for a team credential. A platform-operator
  * override is also in the design pack, but no such role exists anywhere
  * else in this codebase yet (no operator collection/flag) - deferred until
- * that lands rather than invented here.
+ * that lands rather than invented here. A team credential's reveal holds the
+ * team and environment's block lock from the check of the block to the secret
+ * returned (it takes no row lock).
  * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
  * @param {{id: string, actor: {userId: string}, reason: string}} params
  * @param {import('#/adapters/credential-vault.js').CredentialVault} [vault]
  */
-export async function revealCredential(
+export function revealCredential(
   db,
+  locker,
   { id, actor, reason },
   vault = credentialVault
 ) {
-  const loaded = await loadCredentialForAction(db, { id, actor })
+  return withActionLocks(
+    db,
+    locker,
+    { id, actor, rowLock: false },
+    async ({ credential, role }) => {
+      await assertTeamChangeAllowed(db, { credential, actor, role })
+      assertNotRevoked(credential)
+      await assertCredentialsEnabled(db, {
+        credential,
+        actor,
+        role,
+        action: 'credential.reveal',
+        id
+      })
 
-  if (!loaded) {
-    throw Boom.notFound()
-  }
+      if (
+        credential.status === 'failed' ||
+        credential.vaultState === VAULT_UNWRITTEN
+      ) {
+        // Either never had a secret, or the vault write is still pending
+        // reconciliation - matches findCredentialForViewing's "don't disclose
+        // more than a 404" behaviour rather than a more specific error.
+        throw Boom.notFound()
+      }
 
-  const { credential, role } = loaded
+      const secret = await vault.get({
+        credentialId: credential._id.toString(),
+        issuerKey: credential.issuerKey,
+        environment: environmentOf(credential)
+      })
 
-  await assertTeamChangeAllowed(db, { credential, actor, role })
-  assertNotRevoked(credential)
-  await assertCredentialsEnabled(db, {
-    credential,
-    actor,
-    role,
-    action: 'credential.reveal',
-    id
-  })
+      if (!secret) {
+        throw Boom.notFound()
+      }
 
-  if (
-    credential.status === 'failed' ||
-    credential.vaultState === VAULT_UNWRITTEN
-  ) {
-    // Either never had a secret, or the vault write is still pending
-    // reconciliation - matches findCredentialForViewing's "don't disclose
-    // more than a 404" behaviour rather than a more specific error.
-    throw Boom.notFound()
-  }
+      await auditAction(db, {
+        actor,
+        role,
+        action: 'credential.reveal',
+        id,
+        reason
+      })
 
-  const secret = await vault.get({
-    credentialId: credential._id.toString(),
-    issuerKey: credential.issuerKey,
-    environment: environmentOf(credential)
-  })
-
-  if (!secret) {
-    throw Boom.notFound()
-  }
-
-  await auditAction(db, {
-    actor,
-    role,
-    action: 'credential.reveal',
-    id,
-    reason
-  })
-
-  return secret
+      return secret
+    }
+  )
 }

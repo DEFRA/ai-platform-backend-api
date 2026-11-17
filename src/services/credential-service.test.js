@@ -46,8 +46,8 @@ async function loadCredentialService() {
     service.renewCredential(db, locker, asUser(params), ...deps)
   revokeCredential = (db, locker, params, ...deps) =>
     service.revokeCredential(db, locker, asUser(params), ...deps)
-  revealCredential = (db, params, ...deps) =>
-    service.revealCredential(db, asUser(params), ...deps)
+  revealCredential = (db, locker, params, ...deps) =>
+    service.revealCredential(db, locker, asUser(params), ...deps)
   ;({ credentialIssuerRegistry, createCredentialIssuerRegistry } =
     await import('#/adapters/credential-issuer-registry.js'))
   ;({ createCredentialVaultRegistry } =
@@ -401,6 +401,7 @@ describe('#credential-service vault wiring', () => {
     await expect(
       revealCredential(
         db,
+        locker,
         {
           id: issued.credential._id.toString(),
           actorUserId: userId,
@@ -1524,6 +1525,7 @@ describe('#credential-service research environment', () => {
     await rotateCredential(db, locker, { id, userId }, registry, vault)
     await revealCredential(
       db,
+      locker,
       { id, actorUserId: userId, reason: 'testing' },
       vault
     )
