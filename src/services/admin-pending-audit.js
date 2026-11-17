@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb'
 
+import { mapSequentially } from '#/common/helpers/sequential.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 
 // A Platform Admin's change and its audit event are two writes, and MongoDB
@@ -107,11 +108,10 @@ export async function settlePendingAudits(db, holder, filter, notify) {
     .find({ ...filter, [MARKER]: { $exists: true } })
     .project({ [MARKER]: 1 })
     .toArray()
-  const settled = []
-
-  for (const doc of held) {
-    settled.push(await settleOne(db, holder, doc, notify))
-  }
+  // One at a time: each settle records an event and may call the access hook.
+  const settled = await mapSequentially(held, (doc) =>
+    settleOne(db, holder, doc, notify)
+  )
 
   return settled.filter(Boolean)
 }
