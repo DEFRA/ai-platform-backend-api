@@ -415,6 +415,67 @@ describe('#admin POST …/federations/{federationId}/remove', () => {
       expect(deployment.federations[0].pendingAuditId).toBeUndefined()
       expect(await stagedCount()).toBe(0)
     })
+
+    test('a removal no operation accepted, whose staged event cannot be dropped, records no success on the next request, which removes the application and records one', async () => {
+      const { team, id } = await readyApplication('fed-remove-15')
+      const headers = withKey()
+
+      vi.spyOn(
+        server.app.operations.operations,
+        'request'
+      ).mockRejectedValueOnce(new Error('the database is down'))
+      failOnce('pendingAudits', 'deleteOne', () => true)
+
+      const failed = await remove(team.teamId, id, { headers })
+
+      expect(failed.statusCode).toBe(502)
+      expect(await stagedCount()).toBe(1)
+      expect(await removalOperations(team.teamId)).toBe(0)
+
+      const retried = await remove(team.teamId, id, { headers })
+
+      expect(retried.statusCode).toBe(202)
+
+      await settleEvents()
+
+      expect(await statusOf(team.teamId, id)).toBe('removed')
+      expect(await auditOf(team.teamId, { outcome: 'success' })).toEqual([
+        expect.objectContaining({ resourceId: id, reason: REASON })
+      ])
+      expect(await stagedCount()).toBe(0)
+    })
+
+    test('a removal an operation accepted, whose reply was lost, is recorded on the next request', async () => {
+      const { team, id } = await readyApplication('fed-remove-16')
+      const headers = withKey()
+      const { operations } = server.app.operations
+      const original = operations.request.bind(operations)
+
+      vi.spyOn(operations, 'request').mockImplementationOnce(
+        async (...args) => {
+          await original(...args)
+
+          throw new Error('the reply was lost')
+        }
+      )
+
+      const failed = await remove(team.teamId, id, { headers })
+
+      expect(failed.statusCode).toBe(502)
+      expect(await removalOperations(team.teamId)).toBe(1)
+      expect(await auditOf(team.teamId, { outcome: 'success' })).toEqual([])
+
+      const retried = await remove(team.teamId, id, { headers })
+
+      expect(retried.statusCode).toBe(200)
+
+      await settleEvents()
+
+      expect(await auditOf(team.teamId, { outcome: 'success' })).toEqual([
+        expect.objectContaining({ resourceId: id, reason: REASON })
+      ])
+      expect(await stagedCount()).toBe(0)
+    })
   })
 
   describe('when the audit event cannot be written after the removal is projected', () => {

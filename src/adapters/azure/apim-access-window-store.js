@@ -8,6 +8,7 @@ import {
   API_VERSION,
   serviceBasePath
 } from '#/adapters/azure/apim-credential-issuer.js'
+import { config } from '#/config.js'
 import { resolveAipEnvironment } from '#/common/helpers/aip-environment.js'
 
 /**
@@ -18,13 +19,16 @@ import { resolveAipEnvironment } from '#/common/helpers/aip-environment.js'
  * nothing else, and the value from the fixed format. The value is changed in
  * place with a PATCH, so a missing named value is an error, never a new one;
  * Terraform creates it as `none`. The caller serialises a read and its write
- * under the credential block lock, so the write does not check the ETag.
- * @param {{armClient?: ReturnType<typeof createArmClient>, resolveEnvironment?: typeof resolveAipEnvironment}} [deps]
+ * under the credential block lock, so the write does not check the ETag. A
+ * write API Management has not finished within `writeWaitMs` rejects (the
+ * caller fails closed and a retry repeats the same write).
+ * @param {{armClient?: ReturnType<typeof createArmClient>, resolveEnvironment?: typeof resolveAipEnvironment, writeWaitMs?: number}} [deps]
  * @returns {import('#/adapters/access-window-store.js').AccessWindowStore}
  */
 export function createApimAccessWindowStore({
   armClient = createArmClient(),
-  resolveEnvironment = resolveAipEnvironment
+  resolveEnvironment = resolveAipEnvironment,
+  writeWaitMs = config.get('accessWindowWaitMs')
 } = {}) {
   function namedValuePath(environment, teamSlug) {
     const name = accessWindowNamedValueName(teamSlug)
@@ -48,7 +52,8 @@ export function createApimAccessWindowStore({
 
       await armClient.request('PATCH', path, {
         body: { properties: { value: formatAccessWindow(entries) } },
-        ifMatch: '*'
+        ifMatch: '*',
+        maxWaitMs: writeWaitMs
       })
     }
   }

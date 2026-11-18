@@ -376,6 +376,12 @@ export const config = convict({
     default: 'mock',
     env: 'ACCESS_WINDOW_STORE'
   },
+  accessWindowWaitMs: {
+    doc: "How long a team's access window write waits for API Management to finish a long-running update. Keep it under the portal's 5 s backend-call timeout, so a slow write answers 502 upstream-unavailable (the block is kept) and a retry finishes it",
+    format: 'nat',
+    default: 3000,
+    env: 'ACCESS_WINDOW_WAIT_MS'
+  },
   servicePrincipalSwitch: {
     doc: "How a team registration's service principal is turned off and on in Entra for Disable and Enable credentials: mock keeps the state in memory. The Graph adapter waits for Entra admin consent (R-D2). mock is refused in prod",
     format: ['mock'],

@@ -176,7 +176,8 @@ describe('createApimAccessWindowStore', () => {
           operationTimeoutMs: 100,
           defaultPollMs: 0
         }),
-        resolveEnvironment
+        resolveEnvironment,
+        writeWaitMs: 100
       })
     const write = () =>
       asyncStore().write({
@@ -216,6 +217,34 @@ describe('createApimAccessWindowStore', () => {
         .reply(200, { status: 'InProgress' })
 
       await expect(write()).rejects.toThrow('operation timed out')
+    })
+
+    test('throws once writeWaitMs has passed, though the client would wait longer', async () => {
+      accept()
+      nock(ARM_BASE_URL)
+        .get(OPERATION)
+        .times(1000)
+        .reply(200, { status: 'InProgress' })
+
+      const store = createApimAccessWindowStore({
+        armClient: createArmClient({
+          getCredential: () => ({
+            getToken: async () => ({ token: 'fake-token' })
+          }),
+          operationTimeoutMs: 60_000,
+          defaultPollMs: 0
+        }),
+        resolveEnvironment,
+        writeWaitMs: 50
+      })
+
+      await expect(
+        store.write({
+          environment: 'infradev',
+          teamSlug: 'cool-team',
+          entries: [entry]
+        })
+      ).rejects.toThrow('operation timed out')
     })
   })
 

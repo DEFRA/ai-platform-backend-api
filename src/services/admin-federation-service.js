@@ -7,6 +7,7 @@ import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-regis
 import { eventIdOf, isReplay } from '#/services/admin-idempotency.js'
 import { findTeamDeployment } from '#/services/admin-deployment-service.js'
 import {
+  discardStagedAudit,
   recordStagedAudit,
   stageAudit
 } from '#/services/admin-pending-audit.js'
@@ -14,7 +15,11 @@ import { recordAuditEvent } from '#/services/audit-service.js'
 import { resolveTeamTarget } from '#/services/team-desired-state.js'
 import { refusalOf } from '#/services/team-deployment-submission.js'
 import { removeUnderLock } from '#/services/team-federation-remove.js'
-import { underLock, viewOfEntry } from '#/services/team-federation-support.js'
+import {
+  isRemovalMade,
+  underLock,
+  viewOfEntry
+} from '#/services/team-federation-support.js'
 
 const REMOVE_ACTION = 'admin.federation.remove'
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
@@ -33,20 +38,26 @@ async function stageRemoval(db, scope, federationId, staged) {
 }
 
 // Records the event of a removal an earlier request projected and did not get
-// to record, then clears the marker. Runs under the deployment's lock.
+// to record, then clears the marker. A marker whose removal was never made (the
+// request failed and could not give it back) drops its event instead. Runs
+// under the deployment's lock.
 async function settleRemoval(db, scope, federationId) {
   const doc = await db
     .collection('teamDeployments')
     .findOne(scope, { projection: { federations: 1 } })
-  const id = doc?.federations?.find(
-    (entry) => entry.id === federationId
-  )?.pendingAuditId
+  const entry = doc?.federations?.find((each) => each.id === federationId)
+  const id = entry?.pendingAuditId
 
   if (!id) {
     return
   }
 
-  await recordStagedAudit(db, id)
+  if (await isRemovalMade(db, scope, entry)) {
+    await recordStagedAudit(db, id)
+  } else {
+    await discardStagedAudit(db, id)
+  }
+
   await db
     .collection('teamDeployments')
     .updateOne(

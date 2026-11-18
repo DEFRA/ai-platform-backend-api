@@ -634,6 +634,131 @@ describe('#credential-access-effects through the admin credential service', () =
     })
   })
 
+  describe('a window write API Management has not finished within the wait', () => {
+    const ARM = 'https://management.azure.com'
+    const OPERATION = '/operations/slow-1'
+    const realFetch = globalThis.fetch
+    const WAIT_MS = 50
+    let slowDeps
+    let nock
+    let fetchBefore
+
+    beforeAll(async () => {
+      fetchBefore = globalThis.fetch
+      globalThis.fetch = realFetch
+      nock = (await import('nock')).default
+
+      const { createArmClient } = await import('#/adapters/azure/arm-client.js')
+      const { createApimAccessWindowStore } =
+        await import('#/adapters/azure/apim-access-window-store.js')
+      const store = createApimAccessWindowStore({
+        armClient: createArmClient({
+          getCredential: () => ({ getToken: async () => ({ token: 't' }) }),
+          defaultPollMs: 0
+        }),
+        resolveEnvironment: () => ({
+          subscriptionId: 'sub',
+          resourceGroup: 'rg',
+          apimName: 'apim'
+        }),
+        writeWaitMs: WAIT_MS
+      })
+      const principal = createMockServicePrincipalSwitch()
+      const logger = { warn: vi.fn(), info: vi.fn(), debug: vi.fn() }
+
+      slowDeps = {
+        accessChanged: (database, change) =>
+          effects.credentialsAccessChanged(database, change, {
+            store,
+            servicePrincipal: principal
+          }),
+        logger
+      }
+    })
+
+    afterAll(() => {
+      globalThis.fetch = fetchBefore
+    })
+
+    afterEach(() => {
+      nock.cleanAll()
+    })
+
+    // The named value starts as none; its write is accepted, and the operation
+    // reports `status` until it is changed.
+    function gateway(status) {
+      nock.cleanAll()
+      nock(ARM)
+        .persist()
+        .get(/\/namedValues\//)
+        .reply(200, { properties: { value: 'none' } })
+      nock(ARM)
+        .persist()
+        .patch(/\/namedValues\//)
+        .reply(202, '', { 'azure-asyncoperation': `${ARM}${OPERATION}` })
+      nock(ARM).persist().get(OPERATION).reply(200, { status })
+    }
+
+    test('Disable answers 502 within the wait and keeps the block; a retry with the same key finishes it and records the success once', async () => {
+      const { teamId } = await team()
+      const idempotencyKey = randomUUID()
+
+      gateway('InProgress')
+
+      const started = Date.now()
+
+      await expect(
+        disable(teamId, { deps: slowDeps, idempotencyKey })
+      ).rejects.toMatchObject(bad)
+      expect(Date.now() - started).toBeLessThan(3000)
+      expect(await flagged(teamId)).toBe(true)
+      expect(await deploymentOf(teamId)).not.toHaveProperty(
+        'servicePrincipalDisabledAt'
+      )
+
+      gateway('Succeeded')
+
+      const retried = await disable(teamId, { deps: slowDeps, idempotencyKey })
+
+      expect(retried.credential.status).toBe('disabled')
+      expect(await deploymentOf(teamId)).toHaveProperty(
+        'servicePrincipalDisabledAt'
+      )
+      expect(
+        (await events(teamId, 'admin.credentials.disable')).map(
+          ({ outcome }) => outcome
+        )
+      ).toEqual(expect.arrayContaining(['failure', 'success']))
+      expect(await events(teamId, 'admin.credentials.disable')).toHaveLength(2)
+    })
+
+    test('Enable answers 502 within the wait and leaves the block set; a retry clears it and records the success once', async () => {
+      const { teamId } = await team()
+      const r = rig(teamId)
+
+      await disable(teamId, { deps: r.deps })
+      gateway('InProgress')
+
+      await expect(enable(teamId, { deps: slowDeps })).rejects.toMatchObject(
+        bad
+      )
+      expect(await flagged(teamId)).toBe(true)
+
+      gateway('Succeeded')
+
+      const retried = await enable(teamId, { deps: slowDeps })
+
+      expect(retried.credential.status).not.toBe('disabled')
+      expect(await flagged(teamId)).toBe(false)
+      expect(
+        (await events(teamId, 'admin.credentials.enable')).map(
+          ({ outcome }) => outcome
+        )
+      ).toEqual(expect.arrayContaining(['failure', 'success']))
+      expect(await events(teamId, 'admin.credentials.enable')).toHaveLength(2)
+    })
+  })
+
   describe('credentialsAccessChanged', () => {
     test('a revoke of one secret changes neither the window nor the service principal', async () => {
       const { teamId } = await team()

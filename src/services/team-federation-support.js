@@ -4,7 +4,10 @@ import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { TEAM_ADMIN } from '#/common/helpers/auth/access.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import { ITEM_KINDS, isFederationItem } from '#/operations/operation-items.js'
-import { findByIdempotencyKey } from '#/operations/operation-repository.js'
+import {
+  findByIdempotencyKey,
+  operationsOf
+} from '#/operations/operation-repository.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { refusalOf, traceOf } from '#/services/team-deployment-submission.js'
 import { resolveTeamTarget } from '#/services/team-desired-state.js'
@@ -248,6 +251,32 @@ export async function isAcceptedFor(db, { teamId, key }, entry) {
       (item) => isFederationItem(item) && item.entryId === entry.id
     ) ?? false
   )
+}
+
+// Whether a removal was made of the application: it is removing or removed, or
+// an operation holds the removal item of the generation the entry took.
+export async function isRemovalMade(db, { teamId, environment }, entry) {
+  if (
+    entry.status === FEDERATION_STATUS.REMOVING ||
+    entry.status === FEDERATION_STATUS.REMOVED
+  ) {
+    return true
+  }
+
+  const operation = await operationsOf(db).findOne({
+    teamId,
+    environment,
+    items: {
+      $elemMatch: {
+        kind: ITEM_KINDS.FEDERATION,
+        entryId: entry.id,
+        change: 'remove',
+        generation: entry.generation
+      }
+    }
+  })
+
+  return operation !== null
 }
 
 export function operationRequestOf(context, environment, item, extra) {

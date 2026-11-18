@@ -167,6 +167,64 @@ describe('#createArmClient', () => {
       )
     })
 
+    test('a call’s own maxWaitMs bounds the wait, whatever the client’s timeout', async () => {
+      nock(ARM_BASE_URL)
+        .patch('/path')
+        .reply(202, '', {
+          'azure-asyncoperation': `${ARM_BASE_URL}${OPERATION}`
+        })
+      nock(ARM_BASE_URL)
+        .get(OPERATION)
+        .times(1000)
+        .reply(200, { status: 'InProgress' })
+
+      const started = Date.now()
+
+      await expect(
+        (await client({ operationTimeoutMs: 60_000 })).request(
+          'PATCH',
+          '/path',
+          { maxWaitMs: 50 }
+        )
+      ).rejects.toThrow(
+        'ARM request failed: PATCH /path -> operation timed out'
+      )
+      expect(Date.now() - started).toBeLessThan(5000)
+    })
+
+    test('releases the body of the 202 and of each polled 202', async () => {
+      const cancelled = vi.fn()
+      const reply = (status, headers, body) =>
+        new Response(
+          body ??
+            new ReadableStream({
+              start: (controller) => controller.enqueue(new Uint8Array([1])),
+              cancel: cancelled
+            }),
+          { status, headers }
+        )
+      const location = { location: `${ARM_BASE_URL}${OPERATION}` }
+      const replies = [
+        reply(202, location),
+        reply(202, location),
+        reply(200, {}, JSON.stringify({ id: 'done' }))
+      ]
+      const fetchMock = vi.fn(async () => replies.shift())
+
+      vi.stubGlobal('fetch', fetchMock)
+
+      try {
+        await expect((await client()).request('PUT', '/path')).resolves.toEqual(
+          { id: 'done' }
+        )
+      } finally {
+        vi.stubGlobal('fetch', realFetch)
+      }
+
+      expect(fetchMock).toHaveBeenCalledTimes(3)
+      expect(cancelled).toHaveBeenCalledTimes(2)
+    })
+
     test('follows Location until it answers 200 and returns that body', async () => {
       nock(ARM_BASE_URL)
         .put('/path')

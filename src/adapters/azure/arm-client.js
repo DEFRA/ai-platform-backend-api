@@ -48,9 +48,10 @@ function pollDelayOf(response, defaultPollMs) {
  * `management.azure.com`, authenticated with an Entra bearer token. A `202
  * Accepted` is followed (`Azure-AsyncOperation`, else `Location`, at the
  * `Retry-After` pace) until the operation ends, so a resolved request is a
- * finished one; Failed, Canceled, no status URL or `operationTimeoutMs` throws.
+ * finished one; Failed, Canceled, no status URL or the wait (`operationTimeoutMs`,
+ * or a call's own `maxWaitMs`) running out throws.
  * @param {{getCredential?: () => import('@azure/identity').TokenCredential, operationTimeoutMs?: number, defaultPollMs?: number}} [deps]
- * @returns {{request: (method: string, path: string, options?: {body?: object, ifMatch?: string}) => Promise<object|null>}}
+ * @returns {{request: (method: string, path: string, options?: {body?: object, ifMatch?: string, maxWaitMs?: number}) => Promise<object|null>}}
  */
 export function createArmClient({
   getCredential = getArmCredential,
@@ -92,14 +93,21 @@ export function createArmClient({
     return new Error(`ARM request failed: ${method} ${path} -> ${what}`)
   }
 
-  async function awaitOperation(method, path, accepted) {
+  // A body nobody reads keeps its socket until garbage collection.
+  async function discard(response) {
+    await response.body?.cancel()
+  }
+
+  async function awaitOperation(method, path, accepted, maxWaitMs) {
     const status = statusOf(accepted)
+
+    await discard(accepted)
 
     if (!status) {
       throw failure(method, path, 'accepted with no status URL')
     }
 
-    const signal = AbortSignal.timeout(operationTimeoutMs)
+    const signal = AbortSignal.timeout(maxWaitMs)
     let delay = pollDelayOf(accepted, defaultPollMs)
 
     try {
@@ -109,10 +117,13 @@ export function createArmClient({
         const response = await send('GET', status.url, { signal })
 
         if (!response.ok) {
+          await discard(response)
           throw failure(method, path, `${response.status} while polling`)
         }
 
-        if (response.status !== ACCEPTED) {
+        if (response.status === ACCEPTED) {
+          await discard(response)
+        } else {
           const result = await parsed(response)
           const state = String(result?.status ?? '').toLowerCase()
 
@@ -141,14 +152,15 @@ export function createArmClient({
   }
 
   async function request(method, path, options = {}) {
-    const response = await send(method, `${ARM_BASE_URL}${path}`, options)
+    const { maxWaitMs = operationTimeoutMs, ...sendOptions } = options
+    const response = await send(method, `${ARM_BASE_URL}${path}`, sendOptions)
 
     if (!response.ok) {
       throw failure(method, path, response.status)
     }
 
     if (response.status === ACCEPTED) {
-      return awaitOperation(method, path, response)
+      return awaitOperation(method, path, response, maxWaitMs)
     }
 
     return parsed(response)
