@@ -18,6 +18,7 @@ import { refusalOf, traceOf } from '#/services/team-deployment-submission.js'
 import { resolveTeamTarget } from '#/services/team-desired-state.js'
 import { resolveTeamId } from '#/services/team-service.js'
 import { toDeploymentView } from '#/services/team-deployment-view.js'
+import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 
 const REMOVE_ACTION = 'teamDeployment.remove'
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
@@ -64,6 +65,14 @@ export async function removeDeployment(
   if (!located || !findEntry(located, id)) {
     return null
   }
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId,
+    environment: located.environment,
+    scope: LOCK_SCOPE.environment
+  })
 
   const principal = principalOf(actor)
   const lock = await acquireLockWithRetry(
@@ -169,6 +178,8 @@ async function requestRemoval(db, doc, entry, context, operations) {
       action: REMOVE_ACTION,
       actor: context.actor,
       role: context.role,
+      teamId: doc.teamId,
+      environment: doc.environment,
       outcome: 'failure',
       code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
     })
@@ -188,6 +199,8 @@ async function submitRemoval(db, doc, entry, context, operations) {
     action: REMOVE_ACTION,
     actor: context.actor,
     role: context.role,
+    teamId: doc.teamId,
+    environment: doc.environment,
     reason: `remove operation ${operation._id}`
   })
 

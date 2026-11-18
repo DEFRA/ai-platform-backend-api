@@ -1130,4 +1130,54 @@ describe('#backfillRegistry', () => {
       expect(await members(teamId)).toEqual(after)
     })
   })
+
+  describe('2026-11-12-teams-status-default', () => {
+    const backfillId = '2026-11-12-teams-status-default'
+
+    test('sets status active on a team with none, and leaves a status already set alone', async () => {
+      const { insertedIds } = await db.collection('teams').insertMany([
+        {
+          name: 'No status',
+          normalisedName: 'backfill-no-status',
+          slug: 'backfill-no-status'
+        },
+        {
+          name: 'Disabled',
+          normalisedName: 'backfill-disabled',
+          slug: 'backfill-disabled',
+          status: 'disabled'
+        },
+        {
+          name: 'Pending',
+          normalisedName: 'backfill-pending',
+          slug: 'backfill-pending',
+          status: 'pending-removal'
+        }
+      ])
+
+      const { modifiedCount } = await findBackfill(backfillId).run(db)
+
+      expect(modifiedCount).toBeGreaterThanOrEqual(1)
+
+      const statuses = await db
+        .collection('teams')
+        .find({ _id: { $in: Object.values(insertedIds) } })
+        .sort({ normalisedName: 1 })
+        .toArray()
+
+      expect(statuses.map((team) => team.status)).toEqual([
+        'disabled',
+        'active',
+        'pending-removal'
+      ])
+    })
+
+    test('changes nothing the second time it runs', async () => {
+      await findBackfill(backfillId).run(db)
+
+      expect(await findBackfill(backfillId).run(db)).toEqual({
+        modifiedCount: 0
+      })
+    })
+  })
 })

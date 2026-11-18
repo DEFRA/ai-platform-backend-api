@@ -1,4 +1,7 @@
+import { ObjectId } from 'mongodb'
+
 import { teamEnvironments } from '#/services/team-deployment-service.js'
+import { TEAM_DISABLED, isEnvironmentDisabled } from '#/services/team-lock.js'
 import {
   FEDERATION_STATUS,
   MAX_FEDERATIONS,
@@ -18,6 +21,7 @@ import { readTeamFiles } from '#/services/team-service.js'
  */
 export const FEDERATION_REFUSALS = Object.freeze({
   NOT_AVAILABLE: 'environment-not-available',
+  TEAM_DISABLED,
   NOT_SET_UP: 'environment-not-set-up',
   EXISTS: 'federation-exists',
   TRUSTED_ELSEWHERE: 'federation-trusted-elsewhere',
@@ -32,13 +36,14 @@ const OCCUPYING_STATUSES = [
 
 /**
  * What the team holds in each of the environments asked about that this
- * instance offers: the team file on `main` (null when there is none) and the
- * team's document with the applications asked for. An environment not
- * offered is not in the map. A failed read of the files is `502
- * upstream-unavailable`.
+ * instance offers: the team file on `main` (null when there is none), the
+ * team's document with the applications asked for, and whether a Platform
+ * Admin has disabled the environment for the team (read now, so a disable
+ * that landed since is seen). An environment not offered is not in the map. A
+ * failed read of the files is `502 upstream-unavailable`.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, team: {slug: string}, environments: string[], registry: import('#/adapters/tenant-orchestrator-registry.js').TenantOrchestratorRegistry}} params
- * @returns {Promise<Map<string, {file: object|null, doc: object|null}>>}
+ * @returns {Promise<Map<string, {file: object|null, doc: object|null, disabled: boolean}>>}
  */
 export async function readRegistrations(
   db,
@@ -48,7 +53,7 @@ export async function readRegistrations(
   const asked = environments.filter((environment) =>
     offered.includes(environment)
   )
-  const [files, docs] = await Promise.all([
+  const [files, docs, lock] = await Promise.all([
     readTeamFiles(
       registry,
       team.slug,
@@ -57,7 +62,13 @@ export async function readRegistrations(
     db
       .collection('teamDeployments')
       .find({ teamId, environment: { $in: asked } })
-      .toArray()
+      .toArray(),
+    db
+      .collection('teams')
+      .findOne(
+        { _id: new ObjectId(teamId) },
+        { projection: { disabledEnvironments: 1 } }
+      )
   ])
 
   return new Map(
@@ -67,7 +78,8 @@ export async function readRegistrations(
         file:
           files.find((found) => found.environment === environment)?.document ??
           null,
-        doc: docs.find((found) => found.environment === environment) ?? null
+        doc: docs.find((found) => found.environment === environment) ?? null,
+        disabled: isEnvironmentDisabled(lock, environment)
       }
     ])
   )
@@ -102,7 +114,8 @@ async function isTrustedElsewhere(db, { teamId, environment, trustKey }) {
 
 /**
  * Why an application cannot be federated in an environment, or null. An
- * environment this instance does not offer, or the team has not set up, is
+ * environment this instance does not offer, one a Platform Admin has
+ * disabled for the team (`team-disabled`), or one the team has not set up, is
  * refused first; then an application the team's registration holds already
  * (by workload or by name, including what a change in progress is changing an
  * application to); then a workload another team trusts; then a registration
@@ -110,7 +123,7 @@ async function isTrustedElsewhere(db, { teamId, environment, trustKey }) {
  * which is left out of what the registration holds: it counts once, as the
  * application it replaces.
  * @param {import('mongodb').Db} db
- * @param {{teamId: string, environment: string, registration?: {file: object|null, doc: object|null}, definition: {host: string, name: string, service?: string, principalId?: string}, except?: {id?: string, name?: string}}} params
+ * @param {{teamId: string, environment: string, registration?: {file: object|null, doc: object|null, disabled?: boolean}, definition: {host: string, name: string, service?: string, principalId?: string}, except?: {id?: string, name?: string}}} params
  * @returns {Promise<string|null>}
  */
 export async function refusalFor(
@@ -119,6 +132,10 @@ export async function refusalFor(
 ) {
   if (!registration) {
     return FEDERATION_REFUSALS.NOT_AVAILABLE
+  }
+
+  if (registration.disabled) {
+    return FEDERATION_REFUSALS.TEAM_DISABLED
   }
 
   const { file, doc } = registration

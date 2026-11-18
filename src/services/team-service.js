@@ -3,6 +3,7 @@ import { ObjectId } from 'mongodb'
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
+import { existingTeamId } from '#/common/helpers/team-id.js'
 import {
   TEAM_SLUG_PATTERN,
   deriveTeamSlug,
@@ -11,18 +12,23 @@ import {
 import { serviceCodeVerifier } from '#/adapters/service-code-verifier-registry.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
+import { withoutPendingMarker } from '#/services/admin-pending-audit.js'
 import { readTeamEnvironments } from '#/services/team-desired-state.js'
+import { TEAM_STATUS, statusOf } from '#/services/team-status.js'
+import {
+  LOCK_SCOPE,
+  disabledEnvironmentsOf,
+  requireTeamChangeAllowed
+} from '#/services/team-lock.js'
 import { TEAM_ADMIN, requireTeamRole } from '#/common/helpers/auth/access.js'
 
 // Two names that differ only in punctuation ("Data Team" and "Data Team!")
 // pass the name check but derive one slug, so a clash needs a numbered retry.
 const MAX_SLUG_ATTEMPTS = 10
 
-// A team id as `ObjectId#toString` writes it. A slug must start with a letter
-// and may in theory be 24 hex characters, so an id-shaped value is an id only
-// when a team has it, and is otherwise looked up as a slug.
-const TEAM_ID_PATTERN = /^[0-9a-f]{24}$/
-
+// An id-shaped value is a team's id only when a team has it (`existingTeamId`),
+// since a slug may in theory be 24 hex characters; it is otherwise looked up
+// as a slug.
 function membershipLock(teamId) {
   return `team-members:${teamId}`
 }
@@ -39,13 +45,10 @@ function membershipLock(teamId) {
  * @returns {Promise<string|null>}
  */
 export async function resolveTeamId(db, idOrSlug) {
-  if (
-    TEAM_ID_PATTERN.test(idOrSlug) &&
-    (await db
-      .collection('teams')
-      .findOne({ _id: new ObjectId(idOrSlug) }, { projection: { _id: 1 } }))
-  ) {
-    return idOrSlug
+  const id = await existingTeamId(db, idOrSlug)
+
+  if (id) {
+    return id
   }
 
   if (!TEAM_SLUG_PATTERN.test(idOrSlug)) {
@@ -89,7 +92,7 @@ function normaliseServiceCode(serviceCode) {
  * team-by-name upsert previously used in user-service.js before Route 1.
  * @param {string} name
  */
-function normaliseName(name) {
+export function normaliseName(name) {
   return name.toLowerCase().trim().replace(/\s+/g, '-')
 }
 
@@ -170,6 +173,7 @@ export async function createTeam(
     serviceCode: code,
     verified,
     description: description || null,
+    status: TEAM_STATUS.active,
     createdBy,
     idempotencyKey,
     createdAt: now
@@ -207,6 +211,7 @@ export async function createTeam(
     action: 'team.create',
     resource: 'team',
     resourceId: insertedId.toString(),
+    teamId: insertedId.toString(),
     outcome: 'success'
   })
 
@@ -243,7 +248,7 @@ export async function listTeamsForUser(db, { userId }) {
     .toArray()
 
   return teams.map((team) => ({
-    ...team,
+    ...withoutPendingMarker(team),
     role: roleByTeamId.get(team._id.toString()) ?? null
   }))
 }
@@ -265,9 +270,16 @@ export async function updateTeam(
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamRole(db, actor, teamId, {
+  const role = await requireTeamRole(db, actor, teamId, {
     role: TEAM_ADMIN,
     action: "change the team's details"
+  })
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId,
+    scope: LOCK_SCOPE.team
   })
 
   const changes = {}
@@ -300,6 +312,7 @@ export async function updateTeam(
       action: 'team.setServiceCode',
       resource: 'team',
       resourceId: teamId,
+      teamId,
       outcome: 'success',
       code: changes.serviceCode
     })
@@ -312,11 +325,12 @@ export async function updateTeam(
       action: 'team.setDescription',
       resource: 'team',
       resourceId: teamId,
+      teamId,
       outcome: 'success'
     })
   }
 
-  return { team }
+  return { team: withoutPendingMarker(team) }
 }
 
 /**
@@ -357,7 +371,11 @@ export async function findTeamById(
   const files = await readTeamFiles(registry, team.slug)
 
   return {
-    team,
+    team: {
+      ...withoutPendingMarker(team),
+      status: statusOf(team),
+      disabledEnvironments: disabledEnvironmentsOf(team)
+    },
     members: await withMemberDisplayNames(db, members),
     environments: files.map(({ environment, document }) => ({
       environment,
@@ -398,7 +416,7 @@ export async function readTeamFiles(registry, slug, excluding = []) {
  * @param {import('mongodb').Db} db
  * @param {object[]} members
  */
-async function withMemberDisplayNames(db, members) {
+export async function withMemberDisplayNames(db, members) {
   const userIds = members
     .filter((member) => member.userId && ObjectId.isValid(member.userId))
     .map((member) => new ObjectId(member.userId))
@@ -430,13 +448,14 @@ async function withMemberDisplayNames(db, members) {
 }
 
 /**
- * A member of this team an admin may act on: an active one.
+ * A member of this team an admin may act on: an active one. Anyone else is
+ * `404 member-not-found`.
  * @param {import('mongodb').Db} db
  * @param {{teamId: string, memberId: string}} params
  */
 async function findManageableMember(db, { teamId, memberId }) {
   if (!ObjectId.isValid(memberId)) {
-    throw Boom.notFound()
+    throw memberNotFound()
   }
 
   const member = await db
@@ -444,10 +463,18 @@ async function findManageableMember(db, { teamId, memberId }) {
     .findOne({ _id: new ObjectId(memberId), teamId, status: 'active' })
 
   if (!member) {
-    throw Boom.notFound()
+    throw memberNotFound()
   }
 
   return member
+}
+
+function memberNotFound() {
+  return boomWithCode(
+    Boom.notFound,
+    'This person is not a member of the team',
+    'member-not-found'
+  )
 }
 
 /**
@@ -486,17 +513,48 @@ export async function removeMember(
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamRole(db, actor, teamId, {
+  const role = await requireTeamRole(db, actor, teamId, {
     role: TEAM_ADMIN,
     action: 'remove members'
   })
 
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId,
+    scope: LOCK_SCOPE.team
+  })
+
+  await removeTeamMember(db, locker, {
+    teamId,
+    actor,
+    actingRole: TEAM_ADMIN,
+    memberId
+  })
+}
+
+/**
+ * The removal itself, once the caller's right to make it has been checked (a
+ * team Admin's by {@link removeMember}, a Platform Admin's by its own route),
+ * as {@link removeMember} describes it. `actingRole` is the right the removal
+ * used, which its audit event records (`admin` or `platform-admin`). A member
+ * who is not in the team, or is already removed, is `404 member-not-found`.
+ * @param {import('mongodb').Db} db
+ * @param {import('mongo-locks').LockManager} locker
+ * @param {{teamId: string, actor: {userId: string}, actingRole: string, memberId: string}} params - `teamId` is the team's id, already resolved
+ */
+export async function removeTeamMember(
+  db,
+  locker,
+  { teamId, actor, actingRole, memberId }
+) {
   // Counting the admins and then writing is not atomic, so two admins
   // removing or demoting each other at once could leave the team with none.
   const lock = await acquireLockWithRetry(locker, membershipLock(teamId))
+  let member
 
   try {
-    const member = await findManageableMember(db, { teamId, memberId })
+    member = await findManageableMember(db, { teamId, memberId })
 
     if (member.role === 'admin') {
       await refuseIfLastAdmin(db, teamId)
@@ -516,13 +574,24 @@ export async function removeMember(
     await lock.free()
   }
 
+  const removed = ObjectId.isValid(member.userId)
+    ? await db
+        .collection('users')
+        .findOne(
+          { _id: new ObjectId(member.userId) },
+          { projection: { oid: 1 } }
+        )
+    : null
+
   await recordAuditEvent(db, {
     actor,
-    role: TEAM_ADMIN,
+    role: actingRole,
     action: 'team.removeMember',
     resource: 'team',
     resourceId: teamId,
-    outcome: 'success'
+    teamId,
+    outcome: 'success',
+    ...(removed?.oid && { subjectOid: removed.oid })
   })
 }
 
@@ -541,9 +610,16 @@ export async function setMemberRole(
 ) {
   const teamId = await requireTeamId(db, teamRef)
 
-  await requireTeamRole(db, actor, teamId, {
+  const held = await requireTeamRole(db, actor, teamId, {
     role: TEAM_ADMIN,
     action: "change a member's role"
+  })
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role: held,
+    teamId,
+    scope: LOCK_SCOPE.team
   })
 
   const lock = await acquireLockWithRetry(locker, membershipLock(teamId))
@@ -577,6 +653,7 @@ export async function setMemberRole(
     action: 'team.setMemberRole',
     resource: 'team',
     resourceId: teamId,
+    teamId,
     outcome: 'success',
     code: role
   })

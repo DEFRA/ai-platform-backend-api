@@ -25,6 +25,7 @@ import { refusalOf, traceOf } from '#/services/team-deployment-submission.js'
 import { resolveTeamTarget } from '#/services/team-desired-state.js'
 import { resolveTeamId } from '#/services/team-service.js'
 import { toDeploymentView } from '#/services/team-deployment-view.js'
+import { LOCK_SCOPE, requireTeamChangeAllowed } from '#/services/team-lock.js'
 
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
 const REQUEST_ACTION = 'teamDeployment.request'
@@ -54,6 +55,36 @@ function requireTeamEnvironment(environment) {
       'environment-not-available'
     )
   }
+}
+
+// Setting up an environment the team has no record in is a change of the team,
+// refused while it is disabled; a change of an environment it has is refused
+// only while that environment is disabled.
+async function requireDeploymentAllowed(
+  db,
+  { actor, role, teamId, environment }
+) {
+  const record = await db
+    .collection('teamDeployments')
+    .findOne({ teamId, environment }, { projection: { _id: 1 } })
+
+  if (!record) {
+    await requireTeamChangeAllowed(db, {
+      actor,
+      role,
+      teamId,
+      environment,
+      scope: LOCK_SCOPE.team
+    })
+  }
+
+  await requireTeamChangeAllowed(db, {
+    actor,
+    role,
+    teamId,
+    environment,
+    scope: LOCK_SCOPE.environment
+  })
 }
 
 /**
@@ -87,7 +118,9 @@ export async function viewOf(db, doc, entry) {
  * request is all or nothing up front - a model that is not eligible, or that
  * the team already has, refuses the whole request before anything is
  * created - and idempotent by key: replaying a key (a merged request's too)
- * returns its entries. A request that cannot be accepted queues nothing. The
+ * returns its entries. A request that cannot be accepted queues nothing. While
+ * a Platform Admin has disabled the team (for an environment the team has not
+ * set up yet) or the environment, the request is `409 team-disabled`. The
  * change is submitted as the requester's `entra:{oid}`, from the token.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
@@ -119,6 +152,8 @@ export async function requestDeployments(
   }
 
   const role = await requireTeamRole(db, actor, teamId)
+
+  await requireDeploymentAllowed(db, { actor, role, teamId, environment })
 
   const slugs = [...new Set(modelSlugs)]
 
@@ -240,6 +275,8 @@ async function addDeployments(db, params, operations) {
       action: REQUEST_ACTION,
       actor: params.actor,
       role: params.role,
+      teamId,
+      environment,
       ...(operation.state === QUEUED ? { code: QUEUED } : {})
     })
   )
@@ -353,6 +390,8 @@ async function submitOperation(
           action: REQUEST_ACTION,
           actor,
           role,
+          teamId,
+          environment,
           outcome: 'failure',
           code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
         })
@@ -466,6 +505,8 @@ export async function redispatchApply(db, { id, actor, kind }, { operations }) {
       action: `teamDeployment.${kind}`,
       actor,
       role: PLATFORM_ADMIN_ROLE,
+      teamId: located.teamId,
+      environment: located.environment,
       outcome: 'failure',
       code: UPSTREAM_UNAVAILABLE
     })
@@ -481,6 +522,8 @@ export async function redispatchApply(db, { id, actor, kind }, { operations }) {
     action: `teamDeployment.${kind}`,
     actor,
     role: PLATFORM_ADMIN_ROLE,
+    teamId: located.teamId,
+    environment: located.environment,
     reason:
       written && written.state !== operation.state
         ? `${operation.state} -> ${written.state}`

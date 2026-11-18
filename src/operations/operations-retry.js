@@ -279,12 +279,23 @@ async function reacquireSlot(ctx, operation) {
   }
 }
 
+/**
+ * Whether a Platform Admin retry is accepted for an operation: one that
+ * timed out or failed its apply, or a held write. A `checks-failed` one is
+ * not: its change was refused and needs a new request.
+ * @param {{state: string, held?: object}} operation
+ * @returns {boolean}
+ */
+export function isRetryable(operation) {
+  return (
+    operation.state === TIMED_OUT ||
+    operation.state === DEPLOY_FAILED ||
+    Boolean(operation.held)
+  )
+}
+
 function assertRetryable(operation) {
-  if (
-    operation.state !== TIMED_OUT &&
-    operation.state !== DEPLOY_FAILED &&
-    !operation.held
-  ) {
+  if (!isRetryable(operation)) {
     throw boomWithCode(
       Boom.conflict,
       'Only a failed deployment can be retried',

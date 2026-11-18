@@ -33,6 +33,7 @@ const ROUTES = [
   ['GET /v1/teams/{teamId}/operations/{operationId}', ACCESS.teamMember],
   ['GET /v1/teams/{teamId}/environments', ACCESS.teamMember],
   ['GET /v1/teams/{teamId}/environments/{environment}', ACCESS.teamMember],
+  ['GET /v1/teams/{teamId}/status-changes', ACCESS.teamMember],
   [
     'PUT /v1/teams/{teamId}/environments/{environment}/limits',
     ACCESS.teamAdmin
@@ -52,7 +53,32 @@ const ROUTES = [
     ACCESS.teamAdmin
   ],
   ['POST /v1/admin/team-deployments/{id}/retry', ACCESS.platformAdmin],
-  ['POST /v1/admin/team-deployments/{id}/reconcile', ACCESS.platformAdmin]
+  ['POST /v1/admin/team-deployments/{id}/reconcile', ACCESS.platformAdmin],
+  ['GET /v1/admin/team-deployments', ACCESS.platformAdmin],
+  [
+    'GET /v1/admin/team-deployments/{teamId}/{environment}',
+    ACCESS.platformAdmin
+  ],
+  [
+    'POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/disable',
+    ACCESS.platformAdmin
+  ],
+  [
+    'POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/enable',
+    ACCESS.platformAdmin
+  ],
+  [
+    'POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/{credentialId}/revoke',
+    ACCESS.platformAdmin
+  ],
+  ['GET /v1/admin/teams', ACCESS.platformAdmin],
+  ['GET /v1/admin/audit', ACCESS.platformAdmin],
+  ['GET /v1/admin/teams/{id}', ACCESS.platformAdmin],
+  ['POST /v1/admin/teams/{id}/people/search', ACCESS.platformAdmin],
+  ['POST /v1/admin/teams/{id}/members', ACCESS.platformAdmin],
+  ['DELETE /v1/admin/teams/{id}/members/{memberId}', ACCESS.platformAdmin],
+  ['POST /v1/admin/teams/{id}/disable', ACCESS.platformAdmin],
+  ['POST /v1/admin/teams/{id}/enable', ACCESS.platformAdmin]
 ]
 
 describe('#route access', () => {

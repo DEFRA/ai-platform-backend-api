@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { ObjectId } from 'mongodb'
+
 import {
   signInAs as signInWithToken,
   withTestUsers
@@ -137,6 +139,7 @@ describe('#teams routes', () => {
     expect(result.team.slug).toBe('flood-risk-team')
     expect(result.team.serviceCode).toBe('ABC')
     expect(result.team.verified).toBe(false)
+    expect(result.team.status).toBe('active')
   })
 
   test('POST /v1/teams stores the service code in upper case', async () => {
@@ -409,6 +412,94 @@ describe('#teams routes', () => {
     expect(result.team.name).toBe('My Team 5')
     expect(result.members).toHaveLength(1)
     expect(result.members[0].role).toBe('admin')
+  })
+
+  test('GET /v1/teams/{id} shows the status and the disabled environments, none for a team that was never disabled, and no reason', async () => {
+    const headers = {
+      'x-user-id': 'team-user-5-lock',
+      'idempotency-key': randomUUID()
+    }
+    const created = await server.inject({
+      method: 'POST',
+      url: '/v1/teams',
+      headers,
+      payload: { name: 'My Team 5 Lock', serviceCode: 'ABC' }
+    })
+    const read = () =>
+      server.inject({
+        method: 'GET',
+        url: `/v1/teams/${created.result.team._id}`,
+        headers: { 'x-user-id': 'team-user-5-lock' }
+      })
+
+    expect((await read()).result.team).toMatchObject({
+      status: 'active',
+      disabledEnvironments: []
+    })
+
+    await server.db
+      .collection('teams')
+      .updateOne(
+        { _id: created.result.team._id },
+        { $set: { status: 'disabled', disabledEnvironments: ['sandbox'] } }
+      )
+
+    const { result } = await read()
+
+    expect(result.team).toMatchObject({
+      status: 'disabled',
+      disabledEnvironments: ['sandbox']
+    })
+    expect(JSON.stringify(result)).not.toMatch(/reason/i)
+
+    await server.db
+      .collection('teams')
+      .updateOne(
+        { _id: created.result.team._id },
+        { $unset: { status: '', disabledEnvironments: '' } }
+      )
+
+    expect((await read()).result.team).toMatchObject({
+      status: 'active',
+      disabledEnvironments: []
+    })
+  })
+
+  test('GET /v1/teams and /v1/teams/{id} never show the pending audit marker of an admin change', async () => {
+    const team = await teamWithAdmin('team-pending-marker')
+
+    await server.db
+      .collection('teams')
+      .updateOne(
+        { _id: new ObjectId(team.teamId) },
+        { $set: { pendingAuditId: `team-status:${team.teamId}` } }
+      )
+
+    const list = await server.inject({
+      method: 'GET',
+      url: '/v1/teams',
+      headers: { 'x-user-id': team.adminId }
+    })
+    const one = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${team.teamId}`,
+      headers: { 'x-user-id': team.adminId }
+    })
+
+    expect(list.result.items).toHaveLength(1)
+    expect(JSON.stringify(list.result)).not.toContain('pendingAuditId')
+    expect(one.statusCode).toBe(200)
+    expect(JSON.stringify(one.result)).not.toContain('pendingAuditId')
+
+    const changed = await server.inject({
+      method: 'PATCH',
+      url: `/v1/teams/${team.teamId}`,
+      headers: { 'x-user-id': team.adminId },
+      payload: { description: 'Changed while an admin change is pending' }
+    })
+
+    expect(changed.statusCode).toBe(200)
+    expect(JSON.stringify(changed.result)).not.toContain('pendingAuditId')
   })
 
   test('GET /v1/teams/{id} returns 404 for a non-member', async () => {
@@ -1738,6 +1829,95 @@ describe('#teams routes', () => {
 
         expect(statusCode).toBe(404)
         expect(mockTeamFileReader.getCurrentDocument).not.toHaveBeenCalled()
+      })
+    })
+  })
+
+  describe('audit events name the team they are about', () => {
+    const auditOf = (teamId, action) =>
+      server.db
+        .collection('auditEvents')
+        .findOne({ resourceId: teamId, action })
+
+    test('team.create', async () => {
+      const team = await teamWithAdmin('audit-team-create')
+
+      expect(await auditOf(team.teamId, 'team.create')).toMatchObject({
+        teamId: team.teamId
+      })
+    })
+
+    test('team.setServiceCode and team.setDescription, by id or by slug', async () => {
+      const team = await teamWithAdmin('audit-team-details')
+
+      const { statusCode } = await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${team.slug}`,
+        headers: { 'x-user-id': team.adminId },
+        payload: { serviceCode: 'xyz', description: 'Named' }
+      })
+
+      expect(statusCode).toBe(200)
+      expect(await auditOf(team.teamId, 'team.setServiceCode')).toMatchObject({
+        teamId: team.teamId
+      })
+      expect(await auditOf(team.teamId, 'team.setDescription')).toMatchObject({
+        teamId: team.teamId
+      })
+    })
+
+    test('team.setMemberRole', async () => {
+      const team = await teamWithAdmin('audit-team-role')
+      const { userId } = await insertActiveMember(team.teamId, 'audit-role')
+      const member = await server.db
+        .collection('teamMembers')
+        .findOne({ teamId: team.teamId, userId })
+
+      const { statusCode } = await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${team.teamId}/members/${member._id}`,
+        headers: { 'x-user-id': team.adminId },
+        payload: { role: 'admin' }
+      })
+
+      expect(statusCode).toBe(200)
+      expect(await auditOf(team.teamId, 'team.setMemberRole')).toMatchObject({
+        teamId: team.teamId
+      })
+    })
+
+    test('a refused admin action by a member (admin-required)', async () => {
+      const team = await teamWithAdmin('audit-team-refused')
+      const { userId } = await insertActiveMember(team.teamId, 'audit-plain')
+
+      const { statusCode } = await server.inject({
+        method: 'PATCH',
+        url: `/v1/teams/${team.teamId}`,
+        headers: { 'x-user-id': userId },
+        payload: { description: 'Not allowed' }
+      })
+
+      expect(statusCode).toBe(403)
+      expect(await auditOf(team.teamId, 'access.denied')).toMatchObject({
+        code: 'admin-required',
+        teamId: team.teamId
+      })
+    })
+
+    test('a refusal of someone who is not a member (not-a-member), by slug too', async () => {
+      const team = await teamWithAdmin('audit-team-outsider')
+      const outsider = await signInAs('audit-outsider')
+
+      const { statusCode } = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${team.slug}`,
+        headers: { 'x-user-id': outsider }
+      })
+
+      expect(statusCode).toBe(404)
+      expect(await auditOf(team.teamId, 'access.denied')).toMatchObject({
+        code: 'not-a-member',
+        teamId: team.teamId
       })
     })
   })

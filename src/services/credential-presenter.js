@@ -3,6 +3,7 @@ import { recordAuditEvent } from '#/services/audit-service.js'
 import { systemActor } from '#/common/helpers/auth/system-actor.js'
 import { grantedModelSlugs } from '#/services/team-deployment-gateway.js'
 import { credentialsCollection } from '#/services/credential-common.js'
+import { withoutPendingMarker } from '#/services/admin-pending-audit.js'
 
 /**
  * Marks a credential `expired` if its `expiresAt` has passed, auditing the transition.
@@ -83,10 +84,15 @@ export function withTeamName(credential) {
 }
 
 // How every credential leaves the service: lazily expired, with its
-// allowance and, for a team's, its name and coverage.
+// allowance and, for a team's, its name and coverage, and never the marker
+// of an unaudited admin change.
 export async function presentCredential(db, credential) {
   return withTeamGrants(
     db,
-    withTeamName(withRenewalsRemaining(await applyLazyExpiry(db, credential)))
+    withTeamName(
+      withRenewalsRemaining(
+        withoutPendingMarker(await applyLazyExpiry(db, credential))
+      )
+    )
   )
 }

@@ -112,6 +112,14 @@ async function dropIndexIfExists(collection, name) {
 }
 
 async function createIndexes(db) {
+  await createCatalogueIndexes(db)
+  await createTeamIndexes(db)
+  await createDeploymentIndexes(db)
+  await createCredentialIndexes(db)
+  await createAuditIndexes(db)
+}
+
+async function createCatalogueIndexes(db) {
   await db.collection('mongo-locks').createIndex({ id: 1 })
 
   await db.collection('models').createIndex({ slug: 1 }, { unique: true })
@@ -119,6 +127,9 @@ async function createIndexes(db) {
   await db.collection('models').createIndex({ provider: 1, offering: 1 })
   // `syncCatalogue` upserts providers by `id`.
   await db.collection('providers').createIndex({ id: 1 }, { unique: true })
+}
+
+async function createTeamIndexes(db) {
   // People are keyed on their Entra object and tenant IDs (design F).
   // Partial: a record with no `oid` (from before that keying; nothing binds
   // one now, and the 2026-11-03 backfill deletes them) stays out of the index.
@@ -139,6 +150,8 @@ async function createIndexes(db) {
   // unique across the platform. The `2026-10-14-add-team-slug` backfill gives
   // older teams one before this index is created.
   await ensureIndex(db.collection('teams'), { slug: 1 }, { unique: true })
+  // The Platform Admin Teams list filters by status and pages by name.
+  await db.collection('teams').createIndex({ status: 1, normalisedName: 1 })
   // Makes the Idempotency-Key replay on POST /v1/teams atomic rather than
   // check-then-insert, so concurrent retries cannot create two teams.
   // Partial: excludes legacy/null idempotencyKey docs from the uniqueness check.
@@ -171,9 +184,18 @@ async function createIndexes(db) {
       partialFilterExpression: { idempotencyKey: { $type: 'string' } }
     }
   )
+}
+
+async function createDeploymentIndexes(db) {
   await db
     .collection('teamDeployments')
     .createIndex({ teamId: 1, environment: 1 }, { unique: true })
+  // The Platform Admin Deployments list reads one environment's documents.
+  await db
+    .collection('teamDeployments')
+    .createIndex({ environment: 1, teamId: 1 })
+  // A model transition finds its entry by id alone (`locateEntry`).
+  await db.collection('teamDeployments').createIndex({ 'deployments.id': 1 })
   // Superseded by the index above once `deployments[]` consolidated every
   // legacy one-row-per-model document (see the backfill registry) - the
   // migration itself runs before this, so these are always safe to drop.
@@ -185,6 +207,9 @@ async function createIndexes(db) {
     db.collection('teamDeployments'),
     'teamId_1_idempotencyKey_1'
   )
+}
+
+async function createCredentialIndexes(db) {
   // Partial: excludes legacy/null idempotencyKey docs from the uniqueness check.
   await ensureIndex(
     db.collection('credentials'),
@@ -194,14 +219,26 @@ async function createIndexes(db) {
       partialFilterExpression: { idempotencyKey: { $type: 'string' } }
     }
   )
+  // The Platform Admin Deployments pages read a team's credential records in
+  // one environment (the list reads a page of teams at once).
+  await db
+    .collection('credentials')
+    .createIndex({ teamId: 1, environment: 1, tier: 1 })
   await db.collection('credentials').createIndex({ userId: 1, status: 1 })
   await db.collection('credentials').createIndex({ status: 1, expiresAt: 1 })
   // Per-gateway work (reconcile, bulk revoke) selects by gateway and status.
   await db.collection('credentials').createIndex({ gateway: 1, status: 1 })
   // Superseded by the gateway index above once the credentials-gateway backfill renamed the field.
   await dropIndexIfExists(db.collection('credentials'), 'adapter_1_status_1')
+}
 
+async function createAuditIndexes(db) {
   await db.collection('auditEvents').createIndex({ actorUserId: 1, at: 1 })
+  // The Platform Admin Audit log lists newest first, then by `_id`, with or
+  // without a team: both indexes match that order, so a page is read in index
+  // order and never sorted in memory.
+  await db.collection('auditEvents').createIndex({ at: -1, _id: -1 })
+  await db.collection('auditEvents').createIndex({ teamId: 1, at: -1, _id: -1 })
   await createOperationIndexes(db)
   // `at` must be a BSON Date (not an ISO string) for this TTL index to expire documents
   await db

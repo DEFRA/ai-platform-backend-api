@@ -473,6 +473,152 @@ Platform Admins
 `committed` and `apply` after it (a fresh attempt from `deploy-failed`; a `timed-out` operation resumes from the state it
 left), and `reconcile` asks the worker to report what GitHub holds.
 
+The Platform Admin Teams tab (B31) adds `isPlatformAdmin` to `PUT` and `GET /v1/users/me`, which any signed-in person
+can call: it is read from the person's record on every request. The routes below are `platform-admin` only (403
+`platform-admin-required`, audited): `GET /v1/admin/teams?search&status&page` (10 a page by name; 400 `invalid-query`)
+and `GET /v1/admin/teams/{id}` (id or slug; each environment's team file status and `removeAfter`; 404
+`team-not-found`); and the member routes `POST /v1/admin/teams/{id}/people/search` (`{ search }`), `POST .../members`
+(`Idempotency-Key`, `{ oid, role }`; 403 `self-add-refused` for adding yourself) and `DELETE .../members/{memberId}`,
+which work in any team status and share the team Admin routes' member core, audited with role `platform-admin`.
+
+The Audit log tab (B31) adds `GET /v1/admin/audit?team&environment&person&action&actorType&from&to&page`
+(`platform-admin` only: 403 `platform-admin-required`, audited; reading the log is not audited). It returns 10 events a
+page, newest first, with the actor's type (`platform-admin`, `team-admin`, `team-member`, `person` for the owner role or
+no role, `system`), display names looked up for display only, the team, the environment, the filter `options` and the
+`audit.retentionDays` shown to the person. `person` matches part of an actor's display name (2 to 100 characters,
+ignoring case, at most 100 people); `environment` matches an event that names that environment in `environment` or, for
+Disable team and Enable team, in the `environments` it changed; `from` and `to` are inclusive ISO times; any bad or unknown query is 400
+`invalid-query`. No object ID, tenant, token or request detail is returned, but a `reason` is returned exactly as
+stored and is not masked: an email address or name typed into a free-text reason is shown to Platform Admins, so
+reason pages should warn "Do not include names or contact details". The `person` and `search` query values are
+redacted from the request log (`logger-options.js`). Indexes `auditEvents {at: -1, _id: -1}` and
+`{teamId: 1, at: -1, _id: -1}` serve the list order. Team events written
+here name their team (`teamId`) and, for deployments, the environment; the credential lifecycle events (B18) and
+`teamLimits.change` do not yet (DF1: to be completed when the colleague's credential work is done, limits events after
+the limits PR #77), so the Team and Environment filters leave those out until then. `teamDeployment.credential` already
+names its team.
+
+The Deployments tab (B31) adds these `platform-admin` only routes (403 `platform-admin-required`, audited; 401
+`invalid-token` for an app-only token). `GET /v1/admin/team-deployments?environment&search&model&status&credential&page`
+lists one environment (the first configured one by default), a row per team that still has a model there, 10 a page by
+team name: `{teamId, teamName, environment, models: [{slug, name}], status, credential, lastChangedAt}`, with `status`
+the worst model state (`needs-attention`, `waiting`, `setting-up`, `removing`, `ready`) and `credential` one of
+`active`, `disabled`, `revoked`, `none`; `options` lists the configured environments and the models shown. `search` (2
+to 100 characters) is compared as text against the normalised team name, never as a pattern, and any bad or unknown
+query is 400 `invalid-query`. `GET /v1/admin/team-deployments/{teamId}/{environment}` returns the team, the status, the
+credential (`{status, blockedAt?, held?}`; while `status` is `disabled`, `held` is `active`, `revoked` or `none`, what is under the
+block, so Revoke is offered only for `active` and Revoked can be shown beside Disabled; never a secret, key hint or external ID), `environmentDisabled`
+(see Disable team below), `clientSecrets` (`{allowed, used, limit, items}`: the team's secrets in that environment that are
+active or expired, each `{id, keyHint, expiresAt, status, name}` with the last four characters of the key and never a value;
+a revoked secret is not listed) and `federations` (the applications not removed, each `{id, name, host, service or
+principalId, status, operationId, failureReason, changingTo?}`), each model with `retryable` (the built
+retry rule, `isRetryable` in `operations-retry.js`) and the credential in each of the team's environments; 404
+`deployment-not-found` for an unknown team or an environment the team or the instance does not have. The built
+`/{id}/retry` and `/{id}/reconcile` keep their paths.
+
+`POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/disable` and `/enable` act on the team's
+non-federated credentials in **one** environment (the `credentials` records with `tier: 'team'` and `credentialType:
+'oauth'`; federations, the gateway and Entra are not touched). A person who ticks several environments makes one call
+for each, so each is idempotent and a failure names its environment. `disable` takes `Idempotency-Key` (a
+version 4 UUID) and `{ reason }` (1 to 500 characters once trimmed; 400 `reason-required` or `reason-too-long`; any other
+invalid input is 400 `invalid-request`); the same key with another reason is 409 `idempotency-key-reused`, the same key
+and reason is a repeat (`200`, no second event). The reason is stored only in the audit event: it is not logged and
+never shown to the team. `enable` takes no body. There is no whole-environment revoke: a Platform Admin revokes one
+client secret at a time (below).
+
+- **Disable** sets `teamDeployments.adminBlocked: true` with `adminBlockedAt` and `adminBlockedBy` on that team and
+  environment's document (a flag that is absent reads "not blocked", so there is no backfill) and changes no credential
+  record. While it is set no team credential is created there (`grantTeamCredential`, which model activation, retry and
+  the recovery sweep all go through, takes the `credentials-block:{teamId}:{environment}` lock and reads the flag inside
+  it), and the team's `POST /v1/credentials/{id}/rotate` and `/reveal` for a credential of that environment are
+  `409 credentials-disabled`, audited as their own action with `outcome: 'failure'` and no reason. The team's own revoke
+  still works, research credentials are never blocked, and nothing a team does clears the flag. Answers
+  `{environment, credential: {status: 'disabled', blockedAt, held}}`.
+- **Enable** clears the flag; a revoked credential stays revoked. Answers `{environment, credential}` with the
+  credential's own status. An environment that is not disabled is a no-op.
+- **Revoke one secret** (`POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/{credentialId}/revoke`,
+  same `Idempotency-Key` and `{ reason }`) takes the one team client secret named through the built revoke path
+  (`revokeCredentialRecord` in `credential-lifecycle.js`, shared with the team's revoke: gateway subscription deleted,
+  secret removed from the vault, `revoked` with `revokedReason: 'admin-revoked'`), leaving the team's other secrets and
+  the environment's block as they are, and answers `{environment, credentialId, revoked}`. One `admin.credential.revoke`
+  event is about the secret. A secret already revoked, or a repeat of the key and reason, is a no-op (`revoked: false`,
+  no event), except a retry that records the event the failed first attempt left (`revoked: true`); 404 `credential-not-found` for an id that is not the team's secret in that environment. An issuer failure
+  leaves the secret active, audits a `failure` (code `upstream-unavailable`) and answers 502 `upstream-unavailable`.
+
+**Disable team and Enable team** (B31, design F) make a team view-only in the portal; nothing at the gateway, in Entra
+or in GitOps changes, so the team's credentials and models keep working. `POST /v1/admin/teams/{id}/disable` takes
+`Idempotency-Key` and `{ reason, environments? }` (reason as above; `environments` optional, may be empty, each a
+configured environment else 404 `environment-not-found`), and `POST /v1/admin/teams/{id}/enable` takes `{ environments? }`
+(absent: every disabled environment) and no reason. Both answer `200 {team: {id, status, disabledEnvironments}}` and are
+`platform-admin` only (403 `platform-admin-required`, 404 `team-not-found`, 400 `invalid-request`). They set the team's
+own `status` (`disabled`, never `adminBlocked`) and `disabledEnvironments` (absent reads as none; never queried, so no
+backfill) in one update under the `team-status:{teamId}` lock, with one audit event, `admin.team.disable` (with the
+reason and the environments added) or `admin.team.enable` (the environments unlocked, no reason). Disabling a team that
+is already disabled with nothing to add, a repeat of the key and reason, and enabling a team that is not disabled with
+nothing to unlock change and record nothing; the same key with another reason or other environments is 409
+`idempotency-key-reused`, and Disable on a team waiting to be removed (`pending-removal`) is 409 `team-pending-removal`,
+so Enable can never make such a team `active`. Enable
+lifts the team lock at once and leaves any environment not named disabled; it never touches `adminBlocked`, and
+enabling credentials never touches the team.
+
+While the team is disabled, the team-wide changes (`PATCH /v1/teams/{id}`, adding, changing and removing members, and
+setting up an environment the team has no record in) are `409 team-disabled`; while an environment is in
+`disabledEnvironments`, the changes in that environment (requesting or removing models, limits, client secrets, rotating
+and revealing a team credential, and changing or removing an application) are too, whatever the team's status. An
+environment not disabled stays usable. `requireTeamChangeAllowed` (`team-lock.js`) is the one guard, called right after
+the role check. It is best effort, not a lock: it reads the team once and the change's own write follows, so a disable
+that lands between the two is not seen by that change (Disable team applies to the next change, design F). The refusal is audited as `access.denied` with the team and the environment, and says "This team is
+disabled. You can view it but not change it." with no reason. A federation request in a disabled environment is `409
+federation-refused` with `team-disabled` for it, and the dry run reports `team-disabled`. Not locked: every read, revoking
+a team credential or client secret, research credentials, system steps and every `/v1/admin/**` route. Members read it
+as `team.status` and `team.disabledEnvironments` on `GET /v1/teams/{id}`, `disabled` on each environment of `GET
+/v1/teams/{teamId}/environments[/{environment}]`, and `GET /v1/teams/{teamId}/status-changes?environment&limit`
+(limit 1 to 50, ten by default; 400 `invalid-query`; 404 for a non-member, audited), which returns `{items: [{change:
+'disabled'|'enabled', environments, at}]}` newest first from the successful events only, never the reason or the admin.
+`GET /v1/admin/teams/{id}` adds `team.disabledEnvironments` and each environment's `disabled`, and `GET
+/v1/admin/team-deployments/{teamId}/{environment}` adds `environmentDisabled` (true only while this environment is in the team's disabled environments, whatever the team's status).
+
+Disable and Enable write `admin.credentials.disable` and `admin.credentials.enable` (resource `teamDeployment`,
+`resourceId` and `teamId` the team, `environment`, role `platform-admin`, and the reason for disable); Revoke one secret
+writes `admin.credential.revoke` (resource `credential`, `resourceId` the secret, with the reason). Each is written only
+when it changed something, then calls `credentialsAccessChanged(db, {teamId, environment, change, actor})` once, where
+`actor` is the claims the event keeps (`userId`, `oid`, `tid`, `azp`, `uti`), never the email, name or token. That
+hook (`services/credential-block.js`) is empty today, so Disable credentials has no gateway or Entra effect yet. The
+registration-wide effects of a disable (the access window's `adminBlocked`, the service principal), the removal of a
+federated application and the refusal to request or change one while credentials are disabled are the next ship (S2,
+B31 in `docs/plans/remaining.md` of the frontend), which adds them in that hook without touching a route. Indexes `teamDeployments {environment: 1, teamId: 1}`
+and `credentials {teamId: 1, environment: 1, tier: 1}` serve the reads.
+
+**A change and its audit event stay consistent.** The change and its event are two writes with no transaction between
+them (MongoDB runs standalone in the tests), so `services/admin-pending-audit.js` stages the event first in
+`pendingAudits` (the reason never sits on a document a team can read) and the change marks its own document
+(`teamDeployments`, `teams` or the `credentials` record) with `pendingAuditId` in the same single-document update. Once
+the event is recorded the marker and the staged event go. If recording fails the request fails and the marker stays;
+the next Disable, Enable or Revoke in that environment (or Disable and Enable team for that team) records the event,
+and calls the hook, before it does anything else, so a retry never sees a no-op that will never be audited. The event
+keeps the time of the change and an id (the Idempotency-Key's, or one made when staged) so recording it twice writes it once.
+
+**Rotate and reveal hold the block lock.** A team credential's `POST /v1/credentials/{id}/rotate` and `/reveal` take the
+`credentials-block:{teamId}:{environment}` lock (before the `credential:{id}` row lock for rotate, the order a Platform
+Admin's revoke takes them in), read the credential again once they hold it, and keep it from the check of the block to
+the secret returned, so a Disable cannot land between them and no secret is made or read after it. Research credentials
+take no block lock.
+
+**Granting Platform Admin locally.** Nothing in the API assigns the role. Sign in once as the mock user (object ID
+`11111111-1111-4111-8111-111111111111`) so `PUT /v1/users/me` creates the record, then add the role in MongoDB:
+
+```js
+db.users.updateOne(
+  { oid: '11111111-1111-4111-8111-111111111111' },
+  { $addToSet: { roles: 'platform-admin' } }
+)
+```
+
+The role is read on every request, so it takes effect on the next call, with no new sign-in.
+
+`teams.status` (`active`, `disabled`, `pending-removal`; absent reads active) is set by the
+`2026-11-12-teams-status-default` backfill and by `createTeam`. `auditEvents` may carry `teamId` and `environment`.
+
 The document itself is built by
 [`team-desired-state.js`](src/services/team-desired-state.js) (WS6), always from the file `main`
 holds now rather than from the portal's own record, since the file is written whole and an engineer
@@ -556,7 +702,8 @@ issuer answers is its `keyId`, kept as `externalGatewaySubscriptionId`. The mock
 audited. A replay of the key answers `200 {credential}`
 without the value; a key made for another environment is `409 idempotency-key-reused`. Refusals: `409 credential-limit-reached`
 (three unexpired; revoked and expired ones free a place), `409 client-secrets-not-allowed` (the environment is outside
-`CLIENT_SECRET_ENVIRONMENTS`: applications federate there), `409 environment-not-set-up` (no team file yet), `404
+`CLIENT_SECRET_ENVIRONMENTS`: applications federate there), `409 credentials-disabled` (a Platform Admin has disabled the team's
+credentials in the environment), `409 environment-not-set-up` (no team file yet), `404
 environment-not-available`, `403 admin-required` for a Member and `404` for a non-member; every refusal and addition is
 audited (`credential.issue`, role admin). Rotate, revoke and reveal are the existing `/v1/credentials/{id}` routes, team admin
 only for team credentials; rotate now answers `no-store` as reveal does. The environment summary returns `clientSecrets`

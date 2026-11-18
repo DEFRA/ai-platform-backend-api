@@ -340,6 +340,57 @@ describe('#users routes', () => {
     expect(statusCode).toBe(404)
   })
 
+  describe('isPlatformAdmin', () => {
+    // A person the portal's database holds as a Platform Admin.
+    async function makePlatformAdmin(oid, email) {
+      await server.db.collection('users').insertOne({
+        oid,
+        tid: TENANT_ID,
+        email,
+        displayName: 'Admin Person',
+        roles: ['research-user', 'platform-admin']
+      })
+    }
+
+    function getMe(oid) {
+      return server.inject({
+        method: 'GET',
+        url: '/v1/users/me',
+        headers: bearer(delegatedClaims({ oid }))
+      })
+    }
+
+    test('PUT and GET /v1/users/me say true for a person holding the platform-admin role', async () => {
+      const oid = randomUUID()
+
+      await makePlatformAdmin(oid, 'is.admin@defra.gov.uk')
+
+      expect((await signIn({ oid })).result.isPlatformAdmin).toBe(true)
+      expect((await getMe(oid)).result.isPlatformAdmin).toBe(true)
+    })
+
+    test('PUT and GET /v1/users/me say false for everyone else, a new person included', async () => {
+      const oid = randomUUID()
+
+      expect((await signIn({ oid })).result.isPlatformAdmin).toBe(false)
+      expect((await getMe(oid)).result.isPlatformAdmin).toBe(false)
+    })
+
+    test('says false at the next call once the role is removed, with no new sign-in', async () => {
+      const oid = randomUUID()
+
+      await makePlatformAdmin(oid, 'was.admin@defra.gov.uk')
+      expect((await getMe(oid)).result.isPlatformAdmin).toBe(true)
+
+      await server.db
+        .collection('users')
+        .updateOne({ oid }, { $set: { roles: ['research-user'] } })
+
+      expect((await getMe(oid)).result.isPlatformAdmin).toBe(false)
+      expect((await signIn({ oid })).result.isPlatformAdmin).toBe(false)
+    })
+  })
+
   describe('GET /v1/users/me', () => {
     test('returns the person the token describes, with no team yet', async () => {
       const oid = randomUUID()

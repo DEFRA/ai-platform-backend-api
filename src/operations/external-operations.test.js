@@ -61,6 +61,7 @@ describe('external-operations', () => {
   beforeEach(async () => {
     await db.collection('operations').deleteMany({})
     await db.collection('auditEvents').deleteMany({})
+    await db.collection('teams').deleteMany({})
     logger = { warn: vi.fn(), error: vi.fn() }
     corroborator = {
       corroborateRun: vi.fn().mockResolvedValue({ ok: true }),
@@ -521,6 +522,31 @@ describe('external-operations', () => {
           reason: 'submit requested'
         })
       })
+
+      test('names the team the run is for by its id, never its slug, and the environment', async () => {
+        const { insertedId } = await db
+          .collection('teams')
+          .insertOne({ name: 'Alpha', slug: 'alpha' })
+
+        await external.record(externalEvent('requested'))
+
+        const [event] = await auditEvents()
+
+        expect(event).toMatchObject({
+          teamId: insertedId.toString(),
+          environment: 'infradev'
+        })
+        expect(event.teamId).not.toBe('alpha')
+      })
+
+      test('names no team when no team holds the slug, but still the environment', async () => {
+        await external.record(externalEvent('requested'))
+
+        const [event] = await auditEvents()
+
+        expect(event).toMatchObject({ environment: 'infradev' })
+        expect(event).not.toHaveProperty('teamId')
+      })
     })
   })
 
@@ -560,13 +586,17 @@ describe('external-operations', () => {
     test('audits it once as operation.external with the type break-glass', async () => {
       const { operation } = await external.recordBreakGlass(breakGlass())
 
-      expect(await auditEvents()).toEqual([
+      const events = await auditEvents()
+
+      expect(events).toEqual([
         expect.objectContaining({
           action: 'operation.external',
           resourceId: operation._id,
-          code: 'break-glass'
+          code: 'break-glass',
+          environment: 'infradev'
         })
       ])
+      expect(events[0]).not.toHaveProperty('teamId')
     })
 
     test('records a commit once, however often it is reported', async () => {

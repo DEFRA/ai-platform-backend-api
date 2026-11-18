@@ -1,4 +1,5 @@
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
+import { existingTeamId } from '#/common/helpers/team-id.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 
 // Design F: Platform Admin is a portal role held in the portal's database,
@@ -64,12 +65,12 @@ export async function getActiveTeamIds(db, actor) {
  * right, a 404 that hides a resource included, goes through here.
  * @param {import('mongodb').Db} db
  * @param {object} actor
- * @param {{resource: string, resourceId: string, code: string, role?: string|null, error: Error}} refusal
+ * @param {{resource: string, resourceId: string, code: string, role?: string|null, teamId?: string, environment?: string, error: Error}} refusal - `teamId` is the id of the team the refusal is about, for a refusal of a team's right; `environment` names the environment when the refusal is about one
  */
 export async function refuse(
   db,
   actor,
-  { resource, resourceId, code, role = null, error }
+  { resource, resourceId, code, role = null, teamId, environment, error }
 ) {
   await recordAuditEvent(db, {
     actor,
@@ -77,6 +78,8 @@ export async function refuse(
     action: 'access.denied',
     resource,
     resourceId: String(resourceId),
+    teamId,
+    environment,
     outcome: 'failure',
     code
   })
@@ -104,9 +107,13 @@ export async function requireTeamRole(
   const held = await getTeamRole(db, actor, teamId)
 
   if (!held) {
+    // A refusal of someone who is not a member says nothing of whether the
+    // team exists, so it names the team only when there is one: a made-up id
+    // or a slug must never reach the audit log as a team.
     throw await refuse(db, actor, {
       resource: 'team',
       resourceId: teamId,
+      teamId: await existingTeamId(db, teamId),
       code: 'not-a-member',
       error: Boom.notFound()
     })
@@ -116,6 +123,7 @@ export async function requireTeamRole(
     throw await refuse(db, actor, {
       resource: 'team',
       resourceId: teamId,
+      teamId,
       code: 'admin-required',
       role: held,
       error: boomWithCode(
@@ -127,6 +135,18 @@ export async function requireTeamRole(
   }
 
   return held
+}
+
+/**
+ * Whether the actor holds the Platform Admin role, as read from the portal's
+ * database when the token was validated on this request, so a role removed
+ * since the last call is already gone. The one answer the admin routes and
+ * `/v1/users/me` share (design F "Who can use it").
+ * @param {{isPlatformAdmin?: boolean}|undefined} actor
+ * @returns {boolean}
+ */
+export function isPlatformAdmin(actor) {
+  return actor?.isPlatformAdmin === true
 }
 
 /**
@@ -142,7 +162,7 @@ export async function requirePlatformAdmin(
   actor,
   { resource = 'platform', resourceId = 'platform' } = {}
 ) {
-  if (!actor.isPlatformAdmin) {
+  if (!isPlatformAdmin(actor)) {
     throw await refuse(db, actor, {
       resource,
       resourceId,
@@ -154,4 +174,31 @@ export async function requirePlatformAdmin(
       )
     })
   }
+}
+
+/**
+ * A Platform Admin may not add themselves to a team (B31 "No self-add"): the
+ * add would give them a team role they could then use as a member. Refused as
+ * `403 self-add-refused`, audited, and nothing is written.
+ * @param {import('mongodb').Db} db
+ * @param {{oid?: string}} actor
+ * @param {{teamId: string, oid: string}} target - the team and the Entra object ID being added
+ */
+export async function requireNotSelfAdd(db, actor, { teamId, oid }) {
+  if (actor.oid?.toLowerCase() !== oid.toLowerCase()) {
+    return
+  }
+
+  throw await refuse(db, actor, {
+    resource: 'team',
+    resourceId: teamId,
+    teamId,
+    code: 'self-add-refused',
+    role: PLATFORM_ADMIN_ROLE,
+    error: boomWithCode(
+      Boom.forbidden,
+      'A Platform Admin cannot add themselves to a team',
+      'self-add-refused'
+    )
+  })
 }

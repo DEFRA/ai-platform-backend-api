@@ -24,7 +24,7 @@ export const teamClientSecrets = [
     options: {
       app: { access: ACCESS.teamAdmin },
       description:
-        "Adds a client secret to the team's registration in one environment (team admin), with an optional short name (1 to 30 characters: letters, numbers, spaces, hyphens, underscores and full stops) to tell secrets apart: it expires in 90 days, is shown once with no-store and the team holds at most three that have not expired. 201 with the credential and the secret and a Location header of the credential (/v1/credentials/{id}); 200 with the credential only, and no Location, for a replayed Idempotency-Key. Only where client secrets are allowed (409 client-secrets-not-allowed).",
+        "Adds a client secret to the team's registration in one environment (team admin), with an optional short name (1 to 30 characters: letters, numbers, spaces, hyphens, underscores and full stops) to tell secrets apart: it expires in 90 days, is shown once with no-store and the team holds at most three that have not expired. 201 with the credential and the secret and a Location header of the credential (/v1/credentials/{id}); 200 with the credential only, and no Location, for a replayed Idempotency-Key. Only where client secrets are allowed (409 client-secrets-not-allowed), and not while a Platform Admin has disabled the team's credentials there (409 credentials-disabled).",
       validate: {
         headers: Joi.object({
           'idempotency-key': Joi.string().guid({ version: 'uuidv4' }).required()

@@ -1,0 +1,70 @@
+import { Boom, boomWithCode } from '#/common/helpers/boom-with-code.js'
+
+// What a Platform Admin's action that takes an Idempotency-Key and a reason
+// shares (B31): the id of the success event the key makes, and the check of a
+// repeat against it. Used by the credential and the team actions.
+
+/**
+ * The id of the success event an Idempotency-Key makes for an action: the
+ * team, the environment and the one resource when the action is for them, and
+ * the key.
+ * @param {string} action
+ * @param {{teamId: string, environment?: string, resourceId?: string, idempotencyKey: string}} parts
+ * @returns {string}
+ */
+export function eventIdOf(
+  action,
+  { teamId, environment, resourceId, idempotencyKey }
+) {
+  return [action, teamId, environment, resourceId, idempotencyKey]
+    .filter(Boolean)
+    .join(':')
+}
+
+/**
+ * Whether this Idempotency-Key already did this action: the success event it
+ * wrote is the record. The same key with another reason, or (when the action
+ * takes environments) other environments, is another request:
+ * `409 idempotency-key-reused`, so a caller is never told their request was
+ * saved when another was.
+ * @param {import('mongodb').Db} db
+ * @param {string} eventId
+ * @param {string} reason
+ * @param {string[]} [requested] - The environments the repeat asks for, in the order they were stored; leave out for an action that takes none
+ * @returns {Promise<boolean>}
+ */
+export async function isReplay(db, eventId, reason, requested) {
+  const earlier = await db
+    .collection('auditEvents')
+    .findOne(
+      { _id: eventId },
+      { projection: { reason: 1, requestedEnvironments: 1 } }
+    )
+
+  if (!earlier) {
+    return false
+  }
+
+  if (earlier.reason !== reason || differs(earlier, requested)) {
+    throw boomWithCode(
+      Boom.conflict,
+      'This idempotency key was used for a different request',
+      'idempotency-key-reused'
+    )
+  }
+
+  return true
+}
+
+function differs(earlier, requested) {
+  if (requested === undefined) {
+    return false
+  }
+
+  const stored = earlier.requestedEnvironments ?? []
+
+  return (
+    stored.length !== requested.length ||
+    stored.some((environment, index) => environment !== requested[index])
+  )
+}

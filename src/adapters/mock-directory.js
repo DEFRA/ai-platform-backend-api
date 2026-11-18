@@ -2,6 +2,7 @@ import { readFileSync } from 'node:fs'
 import Boom from '@hapi/boom'
 
 import { boomWithCode } from '#/common/helpers/boom-with-code.js'
+import { escapeRegex } from '#/common/helpers/escape-regex.js'
 
 /**
  * Translate a database failure into the directory-unavailable 503.
@@ -45,15 +46,6 @@ function userDocToDirectoryPerson(userDoc) {
 
 function words(text) {
   return text.toLowerCase().split(/\s+/).filter(Boolean)
-}
-
-/**
- * Escape special regex characters in a string for use in MongoDB regex.
- * @param {string} str
- * @returns {string}
- */
-function escapeRegex(str) {
-  return str.replace(/[.*+?^${}()|[\]\\]/g, String.raw`\$&`)
 }
 
 /**

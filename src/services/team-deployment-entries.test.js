@@ -1,3 +1,5 @@
+import { ObjectId } from 'mongodb'
+
 import {
   SYSTEM_ACTOR,
   auditDeployment
@@ -90,6 +92,94 @@ describe('#auditDeployment', () => {
     expect(await eventFor('entry-person')).toMatchObject({
       actorUserId: 'person-1',
       role: 'admin'
+    })
+  })
+
+  describe('the team and environment of the event', () => {
+    afterEach(() => {
+      vi.restoreAllMocks()
+    })
+    async function insertFile(entryId) {
+      const teamId = new ObjectId().toString()
+
+      await db.collection('teamDeployments').insertOne({
+        teamId,
+        environment: 'sandbox',
+        deployments: [{ id: entryId }]
+      })
+
+      return teamId
+    }
+
+    test('are read from the team file holding the entry when a caller passes only its id', async () => {
+      const teamId = await insertFile('entry-located')
+
+      await auditDeployment(
+        db,
+        { id: 'entry-located' },
+        { action: 'deployment.step' }
+      )
+
+      expect(await eventFor('entry-located')).toMatchObject({
+        teamId,
+        environment: 'sandbox'
+      })
+    })
+
+    test('are the ones the caller passes, without a read, when it knows them', async () => {
+      const findOne = vi.spyOn(
+        db.collection('teamDeployments').constructor.prototype,
+        'findOne'
+      )
+
+      await auditDeployment(
+        db,
+        { id: 'entry-told' },
+        {
+          action: 'deployment.request',
+          teamId: 'team-told',
+          environment: 'dev'
+        }
+      )
+
+      expect(findOne).not.toHaveBeenCalled()
+      expect(await eventFor('entry-told')).toMatchObject({
+        teamId: 'team-told',
+        environment: 'dev'
+      })
+    })
+
+    test('are left out, and the event is still written, when no team file holds the entry', async () => {
+      await auditDeployment(
+        db,
+        { id: 'entry-gone' },
+        { action: 'deployment.step' }
+      )
+
+      const event = await eventFor('entry-gone')
+
+      expect(event).toMatchObject({ action: 'deployment.step' })
+      expect(event).not.toHaveProperty('teamId')
+      expect(event).not.toHaveProperty('environment')
+    })
+
+    test('are left out, and the event is still written, when the read fails', async () => {
+      await insertFile('entry-unreadable')
+      vi.spyOn(
+        db.collection('teamDeployments').constructor.prototype,
+        'findOne'
+      ).mockRejectedValueOnce(new Error('read failed'))
+
+      await auditDeployment(
+        db,
+        { id: 'entry-unreadable' },
+        { action: 'deployment.step' }
+      )
+
+      const event = await eventFor('entry-unreadable')
+
+      expect(event).toMatchObject({ action: 'deployment.step' })
+      expect(event).not.toHaveProperty('teamId')
     })
   })
 })

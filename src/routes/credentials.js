@@ -174,7 +174,7 @@ export const credentials = [
       }
     },
     handler: async (request, h) => {
-      const secret = await revealCredential(request.db, {
+      const secret = await revealCredential(request.db, request.locker, {
         id: request.params.id,
         actor: request.auth.credentials,
         reason: request.payload.reason

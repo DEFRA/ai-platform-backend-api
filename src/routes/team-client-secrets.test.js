@@ -416,6 +416,75 @@ describe('#team-client-secrets routes', () => {
       ).toHaveLength(1)
     })
 
+    test('while a Platform Admin has disabled the environment: 409 credentials-disabled, nothing made, audited without the reason', async () => {
+      const team = await deployedTeam('cs-block-1')
+      const before = (await secretsOf(team)).length
+      const { blockCredentials } =
+        await import('#/services/credential-block.js')
+
+      await blockCredentials(server.db, {
+        teamId: team.teamId,
+        environment: 'sandbox',
+        actor: { userId: 'platform-admin-1' }
+      })
+
+      const { statusCode, result } = await add(team, 'cs-block-1')
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('credentials-disabled')
+      expect(await secretsOf(team)).toHaveLength(before)
+
+      const events = await auditOf({
+        action: 'credential.issue',
+        resourceId: team.teamId,
+        code: 'credentials-disabled'
+      })
+
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({
+        outcome: 'failure',
+        role: 'admin',
+        reason: 'sandbox'
+      })
+    })
+
+    test('a replayed key is refused too while disabled, and a secret can be added again once enabled', async () => {
+      const team = await deployedTeam('cs-block-2')
+      const key = randomUUID()
+      const block = await import('#/services/credential-block.js')
+      const target = { teamId: team.teamId, environment: 'sandbox' }
+
+      expect((await add(team, 'cs-block-2', { key })).statusCode).toBe(201)
+
+      await block.blockCredentials(server.db, {
+        ...target,
+        actor: { userId: 'platform-admin-1' }
+      })
+
+      const replay = await add(team, 'cs-block-2', { key })
+
+      expect(replay.statusCode).toBe(409)
+      expect(replay.result.code).toBe('credentials-disabled')
+
+      await block.unblockCredentials(server.db, target)
+
+      expect((await add(team, 'cs-block-2')).statusCode).toBe(201)
+    })
+
+    test('disabling another environment of the team does not stop this one', async () => {
+      const team = await deployedTeam('cs-block-3')
+      const { blockCredentials } =
+        await import('#/services/credential-block.js')
+
+      await blockCredentials(server.db, {
+        teamId: team.teamId,
+        environment: 'infradev',
+        actor: { userId: 'platform-admin-1' }
+      })
+
+      expect((await add(team, 'cs-block-3')).statusCode).toBe(201)
+    })
+
     test('an environment the team has not set up: 409 environment-not-set-up', async () => {
       const team = await fixtures.newTeam('cs-setup-1')
 
