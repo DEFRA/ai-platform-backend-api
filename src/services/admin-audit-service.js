@@ -10,7 +10,7 @@ import { SYSTEM_ROLE } from '#/common/helpers/auth/system-actor.js'
 import { escapeRegex } from '#/common/helpers/escape-regex.js'
 
 /** Events on a page of the Platform Admin Audit log (design F). */
-export const AUDIT_PAGE_SIZE = 25
+export const AUDIT_PAGE_SIZE = 10
 
 // The most people a Person filter considers: a name this common is too broad
 // to be a useful filter, and the cap keeps the lookup bounded.

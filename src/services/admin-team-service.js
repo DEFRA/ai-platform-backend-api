@@ -18,7 +18,7 @@ import {
 } from '#/services/team-lock.js'
 
 /** Teams on a page of the Platform Admin Teams list (design F). */
-export const ADMIN_TEAMS_PAGE_SIZE = 25
+export const ADMIN_TEAMS_PAGE_SIZE = 10
 
 /**
  * The Platform Admin's view of a team that does not exist. The caller has

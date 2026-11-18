@@ -194,6 +194,8 @@ async function createDeploymentIndexes(db) {
   await db
     .collection('teamDeployments')
     .createIndex({ environment: 1, teamId: 1 })
+  // A model transition finds its entry by id alone (`locateEntry`).
+  await db.collection('teamDeployments').createIndex({ 'deployments.id': 1 })
   // Superseded by the index above once `deployments[]` consolidated every
   // legacy one-row-per-model document (see the backfill registry) - the
   // migration itself runs before this, so these are always safe to drop.

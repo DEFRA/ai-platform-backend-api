@@ -138,7 +138,7 @@ describe('#admin teams reads', () => {
           }
         ],
         page: 1,
-        pageSize: 25,
+        pageSize: 10,
         total: 2
       })
     })
@@ -160,7 +160,7 @@ describe('#admin teams reads', () => {
       ])
     })
 
-    test('pages 25 at a time, in name order, with the total', async () => {
+    test('pages 10 at a time, in name order, with the total', async () => {
       const prefix = `zp-${randomUUID().slice(0, 6)}`
 
       for (let index = 0; index < 30; index++) {
@@ -172,29 +172,30 @@ describe('#admin teams reads', () => {
 
       const first = await get(`/v1/admin/teams?search=${prefix}`)
       const second = await get(`/v1/admin/teams?search=${prefix}&page=2`)
-      const beyond = await get(`/v1/admin/teams?search=${prefix}&page=3`)
+      const third = await get(`/v1/admin/teams?search=${prefix}&page=3`)
+      const beyond = await get(`/v1/admin/teams?search=${prefix}&page=4`)
 
-      expect(first.result.teams).toHaveLength(25)
+      expect(first.result.teams).toHaveLength(10)
       expect(first.result.total).toBe(30)
       expect(first.result.teams[0].name).toBe(`${prefix} 00`)
-      expect(first.result.teams[24].name).toBe(`${prefix} 24`)
+      expect(first.result.teams[9].name).toBe(`${prefix} 09`)
       expect(second.result.page).toBe(2)
-      expect(second.result.teams.map(({ name }) => name)).toEqual([
-        `${prefix} 25`,
-        `${prefix} 26`,
-        `${prefix} 27`,
-        `${prefix} 28`,
-        `${prefix} 29`
-      ])
+      expect(second.result.teams.map(({ name }) => name)).toEqual(
+        Array.from(
+          { length: 10 },
+          (_, index) => `${prefix} ${String(index + 10)}`
+        )
+      )
+      expect(third.result.teams).toHaveLength(10)
       expect(beyond.statusCode).toBe(200)
       expect(beyond.result.teams).toEqual([])
       expect(beyond.result.total).toBe(30)
     })
 
-    test('answers a page of 25 teams in under a second', async () => {
+    test('answers a page of 10 teams in under a second', async () => {
       const prefix = `zt-${randomUUID().slice(0, 6)}`
 
-      for (let index = 0; index < 25; index++) {
+      for (let index = 0; index < 10; index++) {
         const team = await insertTeam({ name: `${prefix} ${index}` })
 
         await addMembers(team.id, 2)
@@ -207,7 +208,7 @@ describe('#admin teams reads', () => {
       )
 
       expect(statusCode).toBe(200)
-      expect(result.teams).toHaveLength(25)
+      expect(result.teams).toHaveLength(10)
       expect(performance.now() - started).toBeLessThan(1000)
     })
 
@@ -217,7 +218,7 @@ describe('#admin teams reads', () => {
       )
 
       expect(statusCode).toBe(200)
-      expect(result).toEqual({ teams: [], page: 1, pageSize: 25, total: 0 })
+      expect(result).toEqual({ teams: [], page: 1, pageSize: 10, total: 0 })
     })
 
     test('filters by status, and counts a team with no status as active', async () => {

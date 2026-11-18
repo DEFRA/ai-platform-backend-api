@@ -26,6 +26,19 @@ export function pendingMarker(id) {
   return { [MARKER]: id }
 }
 
+/**
+ * A document without its pending-audit marker, for any view a team can read:
+ * the marker is internal and says an admin change is not yet audited.
+ * @template {object} T
+ * @param {T} doc
+ * @returns {Omit<T, 'pendingAuditId'>}
+ */
+export function withoutPendingMarker(doc) {
+  const { [MARKER]: _marker, ...rest } = doc
+
+  return rest
+}
+
 // Only the named claims the audit event keeps: never the email, name or token.
 function claimsOf({ userId, oid, tid, azp, uti }) {
   return { userId, oid, tid, azp, uti }

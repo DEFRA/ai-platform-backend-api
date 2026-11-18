@@ -475,14 +475,14 @@ left), and `reconcile` asks the worker to report what GitHub holds.
 
 The Platform Admin Teams tab (B31) adds `isPlatformAdmin` to `PUT` and `GET /v1/users/me`, which any signed-in person
 can call: it is read from the person's record on every request. The routes below are `platform-admin` only (403
-`platform-admin-required`, audited): `GET /v1/admin/teams?search&status&page` (25 a page by name; 400 `invalid-query`)
+`platform-admin-required`, audited): `GET /v1/admin/teams?search&status&page` (10 a page by name; 400 `invalid-query`)
 and `GET /v1/admin/teams/{id}` (id or slug; each environment's team file status and `removeAfter`; 404
 `team-not-found`); and the member routes `POST /v1/admin/teams/{id}/people/search` (`{ search }`), `POST .../members`
 (`Idempotency-Key`, `{ oid, role }`; 403 `self-add-refused` for adding yourself) and `DELETE .../members/{memberId}`,
 which work in any team status and share the team Admin routes' member core, audited with role `platform-admin`.
 
 The Audit log tab (B31) adds `GET /v1/admin/audit?team&environment&person&action&actorType&from&to&page`
-(`platform-admin` only: 403 `platform-admin-required`, audited; reading the log is not audited). It returns 25 events a
+(`platform-admin` only: 403 `platform-admin-required`, audited; reading the log is not audited). It returns 10 events a
 page, newest first, with the actor's type (`platform-admin`, `team-admin`, `team-member`, `person` for the owner role or
 no role, `system`), display names looked up for display only, the team, the environment, the filter `options` and the
 `audit.retentionDays` shown to the person. `person` matches part of an actor's display name (2 to 100 characters,
@@ -500,7 +500,7 @@ names its team.
 
 The Deployments tab (B31) adds these `platform-admin` only routes (403 `platform-admin-required`, audited; 401
 `invalid-token` for an app-only token). `GET /v1/admin/team-deployments?environment&search&model&status&credential&page`
-lists one environment (the first configured one by default), a row per team that still has a model there, 25 a page by
+lists one environment (the first configured one by default), a row per team that still has a model there, 10 a page by
 team name: `{teamId, teamName, environment, models: [{slug, name}], status, credential, lastChangedAt}`, with `status`
 the worst model state (`needs-attention`, `waiting`, `setting-up`, `removing`, `ready`) and `credential` one of
 `active`, `disabled`, `revoked`, `none`; `options` lists the configured environments and the models shown. `search` (2

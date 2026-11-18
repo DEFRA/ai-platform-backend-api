@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { ObjectId } from 'mongodb'
+
 import {
   signInAs as signInWithToken,
   withTestUsers
@@ -461,6 +463,43 @@ describe('#teams routes', () => {
       status: 'active',
       disabledEnvironments: []
     })
+  })
+
+  test('GET /v1/teams and /v1/teams/{id} never show the pending audit marker of an admin change', async () => {
+    const team = await teamWithAdmin('team-pending-marker')
+
+    await server.db
+      .collection('teams')
+      .updateOne(
+        { _id: new ObjectId(team.teamId) },
+        { $set: { pendingAuditId: `team-status:${team.teamId}` } }
+      )
+
+    const list = await server.inject({
+      method: 'GET',
+      url: '/v1/teams',
+      headers: { 'x-user-id': team.adminId }
+    })
+    const one = await server.inject({
+      method: 'GET',
+      url: `/v1/teams/${team.teamId}`,
+      headers: { 'x-user-id': team.adminId }
+    })
+
+    expect(list.result.items).toHaveLength(1)
+    expect(JSON.stringify(list.result)).not.toContain('pendingAuditId')
+    expect(one.statusCode).toBe(200)
+    expect(JSON.stringify(one.result)).not.toContain('pendingAuditId')
+
+    const changed = await server.inject({
+      method: 'PATCH',
+      url: `/v1/teams/${team.teamId}`,
+      headers: { 'x-user-id': team.adminId },
+      payload: { description: 'Changed while an admin change is pending' }
+    })
+
+    expect(changed.statusCode).toBe(200)
+    expect(JSON.stringify(changed.result)).not.toContain('pendingAuditId')
   })
 
   test('GET /v1/teams/{id} returns 404 for a non-member', async () => {

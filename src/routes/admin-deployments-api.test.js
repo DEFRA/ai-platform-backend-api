@@ -118,7 +118,7 @@ describe('#admin team-deployments Deployments tab routes', () => {
       expect(statusCode).toBe(200)
       expect(result).toMatchObject({
         page: 1,
-        pageSize: 25,
+        pageSize: 10,
         total: 1,
         environment: DEV,
         options: { environments: ENVIRONMENTS }

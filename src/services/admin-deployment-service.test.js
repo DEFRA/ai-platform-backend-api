@@ -130,7 +130,7 @@ describe('#admin-deployment-service', () => {
 
       expect(result).toMatchObject({
         page: 1,
-        pageSize: 25,
+        pageSize: 10,
         total: 2,
         environment: DEV
       })
@@ -285,9 +285,9 @@ describe('#admin-deployment-service', () => {
 
     test.each([
       [0, 1, 0],
-      [25, 1, 25],
-      [26, 1, 25],
-      [26, 2, 1]
+      [10, 1, 10],
+      [11, 1, 10],
+      [11, 2, 1]
     ])('with %i teams, page %i holds %i rows', async (count, page, onPage) => {
       for (let index = 0; index < count; index += 1) {
         const id = await team(`Paged Team ${String(index).padStart(3, '0')}`)
@@ -297,7 +297,7 @@ describe('#admin-deployment-service', () => {
 
       const result = await list({ environment: DEV, page })
 
-      expect(result).toMatchObject({ total: count, page, pageSize: 25 })
+      expect(result).toMatchObject({ total: count, page, pageSize: 10 })
       expect(result.deployments).toHaveLength(onPage)
     })
 

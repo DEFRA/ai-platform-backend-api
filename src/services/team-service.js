@@ -12,6 +12,7 @@ import {
 import { serviceCodeVerifier } from '#/adapters/service-code-verifier-registry.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
+import { withoutPendingMarker } from '#/services/admin-pending-audit.js'
 import { readTeamEnvironments } from '#/services/team-desired-state.js'
 import { TEAM_STATUS, statusOf } from '#/services/team-status.js'
 import {
@@ -247,7 +248,7 @@ export async function listTeamsForUser(db, { userId }) {
     .toArray()
 
   return teams.map((team) => ({
-    ...team,
+    ...withoutPendingMarker(team),
     role: roleByTeamId.get(team._id.toString()) ?? null
   }))
 }
@@ -329,7 +330,7 @@ export async function updateTeam(
     })
   }
 
-  return { team }
+  return { team: withoutPendingMarker(team) }
 }
 
 /**
@@ -371,7 +372,7 @@ export async function findTeamById(
 
   return {
     team: {
-      ...team,
+      ...withoutPendingMarker(team),
       status: statusOf(team),
       disabledEnvironments: disabledEnvironmentsOf(team)
     },

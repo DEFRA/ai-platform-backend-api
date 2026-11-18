@@ -37,7 +37,7 @@ import { normaliseName } from '#/services/team-service.js'
 import { statusOf } from '#/services/team-status.js'
 
 /** Deployments on a page of the Platform Admin Deployments list (design F). */
-export const ADMIN_DEPLOYMENTS_PAGE_SIZE = 25
+export const ADMIN_DEPLOYMENTS_PAGE_SIZE = 10
 
 const NEEDS_ATTENTION = 'needs-attention'
 const SETTING_UP = 'setting-up'

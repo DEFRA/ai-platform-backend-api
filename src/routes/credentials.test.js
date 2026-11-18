@@ -1126,6 +1126,35 @@ describe('#credentials routes', () => {
     expect(result.items[0].secret).toBeUndefined()
   })
 
+  test('GET /v1/credentials and /v1/credentials/{id} never show the pending audit marker of an admin change', async () => {
+    const adminId = 'team-cred-pending-marker'
+    const teamId = await createTeamWithActiveDeployment(adminId)
+    const credential = await teamCredentialOf(teamId)
+
+    await server.db
+      .collection('credentials')
+      .updateOne(
+        { _id: credential._id },
+        { $set: { pendingAuditId: `credential-revoke:${credential._id}` } }
+      )
+
+    const list = await server.inject({
+      method: 'GET',
+      url: '/v1/credentials',
+      headers: { 'x-user-id': adminId }
+    })
+    const one = await server.inject({
+      method: 'GET',
+      url: `/v1/credentials/${credential._id}`,
+      headers: { 'x-user-id': adminId }
+    })
+
+    expect(list.result.items).toHaveLength(1)
+    expect(JSON.stringify(list.result)).not.toContain('pendingAuditId')
+    expect(one.statusCode).toBe(200)
+    expect(JSON.stringify(one.result)).not.toContain('pendingAuditId')
+  })
+
   // A signed-in person who is an active member of the team, as an Admin's add
   // from the directory leaves them: their own `users` record, and a
   // membership written straight to the database so the team's creator (a

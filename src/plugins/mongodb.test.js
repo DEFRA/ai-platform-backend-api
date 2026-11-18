@@ -170,6 +170,25 @@ describe('#mongoDb', () => {
       await client.close()
     })
 
+    test('indexes a deployment entry by its id, which the model transitions look up without a team', async () => {
+      // Dynamic import needed due to config being updated by vitest-mongodb
+      const { config } = await import('#/config.js')
+      const client = await MongoClient.connect(config.get('mongo.mongoUrl'))
+      const db = client.db(config.get('mongo.databaseName'))
+      const { createServer } = await import('#/server.js')
+      const created = await createServer()
+      await created.initialize()
+
+      const keys = (await db.collection('teamDeployments').indexes()).map(
+        (index) => index.key
+      )
+
+      expect(keys).toContainEqual({ 'deployments.id': 1 })
+
+      await created.stop({ timeout: 1000 })
+      await client.close()
+    })
+
     test('replaces the adapter/status credentials index with gateway/status', async () => {
       // Dynamic import needed due to config being updated by vitest-mongodb
       const { config } = await import('#/config.js')

@@ -155,7 +155,7 @@ describe('#admin audit log read', () => {
           }
         ],
         page: 1,
-        pageSize: 25,
+        pageSize: 10,
         total: 1,
         retentionDays: 14,
         options: {
@@ -327,10 +327,10 @@ describe('#admin audit log read', () => {
 
     test.each([
       [0, 1, 0, 0],
-      [25, 1, 25, 25],
-      [26, 1, 25, 26],
-      [26, 2, 1, 26],
-      [26, 3, 0, 26]
+      [10, 1, 10, 10],
+      [11, 1, 10, 11],
+      [11, 2, 1, 11],
+      [11, 3, 0, 11]
     ])(
       'with %i events, page %i holds %i and the total is %i',
       async (count, page, onPage, total) => {
@@ -345,7 +345,7 @@ describe('#admin audit log read', () => {
 
         const { result } = await get(`?team=${teamId}&page=${page}`)
 
-        expect(result).toMatchObject({ page, pageSize: 25, total })
+        expect(result).toMatchObject({ page, pageSize: 10, total })
         expect(result.events).toHaveLength(onPage)
       }
     )
@@ -690,10 +690,10 @@ describe('#admin audit log read', () => {
       )
       await seed({ teamId: newTeamId() })
 
-      const { result } = await get(`?team=${teamId}&page=2`)
+      const { result } = await get(`?team=${teamId}&page=3`)
 
-      expect(result).toMatchObject({ page: 2, total: 30 })
-      expect(result.events).toHaveLength(5)
+      expect(result).toMatchObject({ page: 3, total: 30 })
+      expect(result.events).toHaveLength(10)
     })
   })
 
@@ -794,7 +794,7 @@ describe('#admin audit log read', () => {
         const { statusCode, result } = await get(query)
 
         expect(statusCode).toBe(200)
-        expect(result.events).toHaveLength(25)
+        expect(result.events).toHaveLength(10)
         expect(performance.now() - started).toBeLessThan(1000)
       }
     })
@@ -808,7 +808,7 @@ describe('#admin audit log read', () => {
         const plan = await events()
           .find(filterOf())
           .sort({ at: -1, _id: -1 })
-          .limit(25)
+          .limit(10)
           .explain('queryPlanner')
         const stages = JSON.stringify(plan.queryPlanner.winningPlan)
 
