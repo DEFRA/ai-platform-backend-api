@@ -2,7 +2,11 @@ import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { requirePlatformAdmin } from '#/common/helpers/auth/access.js'
-import { findOperation } from '#/operations/operation-repository.js'
+import {
+  findOperation,
+  findTeamOperations
+} from '#/operations/operation-repository.js'
+import { isLimitsItem } from '#/operations/operation-items.js'
 import {
   ACTIVE,
   CHECKS_FAILED,
@@ -24,6 +28,7 @@ import { findModelBySlug } from '#/services/models-service.js'
 import { REMOVING } from '#/services/team-deployment-entries.js'
 import { teamEnvironments } from '#/services/team-deployment-service.js'
 import {
+  FEDERATION_STATUS,
   federationViewOf,
   liveFederationsOf
 } from '#/services/team-federation-entries.js'
@@ -34,6 +39,7 @@ import {
 } from '#/services/team-client-secrets.js'
 import { isEnvironmentDisabled } from '#/services/team-lock.js'
 import { normaliseName } from '#/services/team-service.js'
+import { MAX_OPERATIONS_LIMIT } from '#/services/team-operations-service.js'
 import { statusOf } from '#/services/team-status.js'
 
 /** Deployments on a page of the Platform Admin Deployments list (design F). */
@@ -274,6 +280,36 @@ function listRow({ doc, team, credentials, names }) {
   }
 }
 
+// A row for every team with a model in the environment, by team name, and the
+// names of the models they hold.
+async function deploymentRows(db, environment) {
+  const docs = (
+    await deploymentDocumentsCursor(db, environment).toArray()
+  ).filter((doc) => liveEntries(doc).length > 0)
+  const teamIds = docs.map(({ teamId }) => teamId)
+  const [teams, credentials, names] = await Promise.all([
+    teamRecords(db, teamIds),
+    teamCredentialsCursor(db, { teamIds, environment }).toArray(),
+    modelNames(
+      db,
+      new Set(docs.flatMap((doc) => liveEntries(doc).map((e) => e.modelSlug)))
+    )
+  ])
+  const credentialsByTeam = groupBy(credentials, ({ teamId }) => teamId)
+  const rows = docs
+    .map((doc) =>
+      listRow({
+        doc,
+        team: teams.get(doc.teamId),
+        credentials: credentialsByTeam.get(doc.teamId) ?? [],
+        names
+      })
+    )
+    .sort((a, b) => a.normalisedName.localeCompare(b.normalisedName))
+
+  return { rows, names }
+}
+
 /**
  * One page of the deployments in one environment for a Platform Admin: a row
  * per team that still has a model there, by team name, with its models, the
@@ -293,32 +329,7 @@ export async function listTeamDeployments(
   await requirePlatformAdmin(db, actor)
 
   const chosen = validated({ environment, status, credential, page })
-  const docs = (
-    await deploymentDocumentsCursor(db, chosen.environment).toArray()
-  ).filter((doc) => liveEntries(doc).length > 0)
-  const teamIds = docs.map(({ teamId }) => teamId)
-  const [teams, credentials, names] = await Promise.all([
-    teamRecords(db, teamIds),
-    teamCredentialsCursor(db, {
-      teamIds,
-      environment: chosen.environment
-    }).toArray(),
-    modelNames(
-      db,
-      new Set(docs.flatMap((doc) => liveEntries(doc).map((e) => e.modelSlug)))
-    )
-  ])
-  const credentialsByTeam = groupBy(credentials, ({ teamId }) => teamId)
-  const rows = docs
-    .map((doc) =>
-      listRow({
-        doc,
-        team: teams.get(doc.teamId),
-        credentials: credentialsByTeam.get(doc.teamId) ?? [],
-        names
-      })
-    )
-    .sort((a, b) => a.normalisedName.localeCompare(b.normalisedName))
+  const { rows, names } = await deploymentRows(db, chosen.environment)
   const wanted = rows.filter((row) =>
     matches(row, {
       search: search?.trim() ? normaliseName(search) : undefined,
@@ -380,6 +391,50 @@ async function retryableOf(db, entry) {
   const operation = await findOperation(db, operationId)
 
   return operation ? isRetryable(operation) : false
+}
+
+// Whether a retry is accepted for a federated application: decided by its
+// operation, which is only read for one that is not ready.
+async function federationRow(db, entry) {
+  const operation =
+    entry.operationId && entry.status !== FEDERATION_STATUS.READY
+      ? await findOperation(db, entry.operationId)
+      : null
+
+  return {
+    ...federationViewOf(entry),
+    retryable: operation ? isRetryable(operation) : false
+  }
+}
+
+const ATTENTION_STATES = new Set([CHECKS_FAILED, DEPLOY_FAILED, TIMED_OUT])
+
+// The team's latest change that holds only limits, while it has failed, timed
+// out or is held: a limits change has no model row, so this is where a
+// Platform Admin sees it. Absent once it is settled or a newer one has.
+async function limitsAttentionOf(db, { teamId, environment }) {
+  const operations = await findTeamOperations(db, {
+    teamId,
+    environment,
+    limit: MAX_OPERATIONS_LIMIT
+  })
+  const latest = operations.find(
+    ({ items }) => items?.length > 0 && items.every(isLimitsItem)
+  )
+
+  if (!latest || !(ATTENTION_STATES.has(latest.state) || latest.held)) {
+    return {}
+  }
+
+  return {
+    limitsOperation: {
+      id: latest._id,
+      state: latest.state,
+      failureReason: latest.error?.code ?? null,
+      updatedAt: latest.updatedAt,
+      retryable: isRetryable(latest)
+    }
+  }
 }
 
 async function modelRow(db, entry, names) {
@@ -444,7 +499,14 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
         .collection('teamDeployments')
         .find(
           { teamId },
-          { projection: { environment: 1, adminBlocked: 1, adminBlockedAt: 1 } }
+          {
+            projection: {
+              environment: 1,
+              adminBlocked: 1,
+              adminBlockedAt: 1,
+              servicePrincipalDisabledAt: 1
+            }
+          }
         )
         .toArray(),
       teamCredentialsCursor(db, { teamIds: [teamId] }).toArray(),
@@ -476,11 +538,16 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
     environmentDisabled: isEnvironmentDisabled(team, environment),
     status: worstStatusOf(entries),
     credential: credentialIn(environment),
+    // Absent until the first disable, so it reads null with no backfill.
+    servicePrincipalDisabledAt: doc.servicePrincipalDisabledAt ?? null,
     clientSecrets: {
       ...clientSecretsSummaryOf(environment, secrets),
       items: secrets.map((secret) => clientSecretViewOf(secret))
     },
-    federations: liveFederationsOf(doc).map(federationViewOf),
+    federations: await Promise.all(
+      liveFederationsOf(doc).map((entry) => federationRow(db, entry))
+    ),
+    ...(await limitsAttentionOf(db, { teamId, environment })),
     deployments: await Promise.all(
       entries.map((entry) => modelRow(db, entry, names))
     ),
@@ -489,6 +556,12 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
       .sort(
         (a, b) => environmentRank(a) - environmentRank(b) || a.localeCompare(b)
       )
-      .map((where) => ({ environment: where, credential: credentialIn(where) }))
+      .map((where) => ({
+        environment: where,
+        credential: credentialIn(where),
+        servicePrincipalDisabledAt:
+          docs.find((d) => d.environment === where)
+            ?.servicePrincipalDisabledAt ?? null
+      }))
   }
 }

@@ -229,8 +229,16 @@ describe('#admin team-deployments Deployments tab routes', () => {
           })
         ],
         environments: [
-          { environment: DEV, credential: { status: 'active' } },
-          { environment: TEST, credential: { status: 'none' } }
+          {
+            environment: DEV,
+            credential: { status: 'active' },
+            servicePrincipalDisabledAt: null
+          },
+          {
+            environment: TEST,
+            credential: { status: 'none' },
+            servicePrincipalDisabledAt: null
+          }
         ]
       })
       expect(JSON.stringify(result)).not.toContain('ext-')

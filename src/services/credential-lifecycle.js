@@ -44,7 +44,8 @@ const MS_PER_DAY =
 
 const CREDENTIALS_DISABLED = 'credentials-disabled'
 
-function auditAction(db, { actor, role, action, id, ...extra }) {
+// `credential` adds the team and environment the Audit log filters by.
+function auditAction(db, { actor, role, action, id, credential, ...extra }) {
   return recordAuditEvent(db, {
     actor,
     role,
@@ -52,6 +53,10 @@ function auditAction(db, { actor, role, action, id, ...extra }) {
     resource: 'credential',
     resourceId: id,
     outcome: 'success',
+    ...(credential && {
+      teamId: credential.teamId,
+      environment: environmentOf(credential)
+    }),
     ...extra
   })
 }
@@ -212,7 +217,8 @@ export async function renewCredential(
       actor,
       role: ROLE_OWNER,
       action: 'credential.renew',
-      id
+      id,
+      credential
     })
 
     return withRenewalsRemaining(updated)
@@ -273,7 +279,13 @@ export async function rotateCredential(
       // inside the 90-day soft-delete window.
       await writeSecretToVault(db, vault, updated, rotated.secret)
 
-      await auditAction(db, { actor, role, action: 'credential.rotate', id })
+      await auditAction(db, {
+        actor,
+        role,
+        action: 'credential.rotate',
+        id,
+        credential
+      })
 
       return {
         credential: await withTeamGrants(
@@ -404,7 +416,8 @@ export async function revokeCredentialRecord(
       actor,
       role,
       action: 'credential.revoke',
-      id: credential._id.toString()
+      id: credential._id.toString(),
+      credential
     })
   }
 
@@ -520,6 +533,7 @@ export function revealCredential(
         role,
         action: 'credential.reveal',
         id,
+        credential,
         reason
       })
 

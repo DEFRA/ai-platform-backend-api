@@ -511,10 +511,19 @@ block, so Revoke is offered only for `active` and Revoked can be shown beside Di
 (see Disable team below), `clientSecrets` (`{allowed, used, limit, items}`: the team's secrets in that environment that are
 active or expired, each `{id, keyHint, expiresAt, status, name}` with the last four characters of the key and never a value;
 a revoked secret is not listed) and `federations` (the applications not removed, each `{id, name, host, service or
-principalId, status, operationId, failureReason, changingTo?}`), each model with `retryable` (the built
-retry rule, `isRetryable` in `operations-retry.js`) and the credential in each of the team's environments; 404
+principalId, status, operationId, failureReason, changingTo?, retryable}`), each model with `retryable` (the built
+retry rule, `isRetryable` in `operations-retry.js`), `limitsOperation` (`{id, state, failureReason, updatedAt, retryable}`, the team's
+latest limits-only change while it has failed, timed out, been refused by its checks or is held; absent otherwise) and the credential in each of the team's environments; 404
 `deployment-not-found` for an unknown team or an environment the team or the instance does not have. The built
 `/{id}/retry` and `/{id}/reconcile` keep their paths.
+
+`POST /v1/admin/operations/{operationId}/retry` and `/reconcile` (`platform-admin` only; 403 `platform-admin-required`, 401
+`invalid-token`) recover a change that holds no model, such as a federation or limits change, by the operation's id over the
+built operations service. `retry` is the built retry, accepted where `isRetryable` says yes and otherwise 409
+`operation-not-retryable`; `reconcile` asks the worker what GitHub holds, in any state. 202 `{operation: {id, state}}`; 404
+`operation-not-found` (also for an operation that is not a change to a team file); 502 `upstream-unavailable` when the
+command cannot be dispatched. Audited as `admin.operation.retry` and `admin.operation.reconcile` with the team, the
+environment and, as `reason`, the state change (`deploy-failed -> deploying`); a failed dispatch is a `failure` event.
 
 `POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/disable` and `/enable` act on the team's
 non-federated credentials in **one** environment (the `credentials` records with `tier: 'team'` and `credentialType:
@@ -544,6 +553,14 @@ client secret at a time (below).
   event is about the secret. A secret already revoked, or a repeat of the key and reason, is a no-op (`revoked: false`,
   no event), except a retry that records the event the failed first attempt left (`revoked: true`); 404 `credential-not-found` for an id that is not the team's secret in that environment. An issuer failure
   leaves the secret active, audits a `failure` (code `upstream-unavailable`) and answers 502 `upstream-unavailable`.
+- **Remove a federated application** (`POST /v1/admin/team-deployments/{teamId}/{environment}/federations/{federationId}/remove`,
+  same `Idempotency-Key` and `{ reason }`) runs the built removal (`removeUnderLock` in `team-federation-remove.js`, the
+  environment's team file submitted without the entry) with the Platform Admin as actor and past the team lock, so it works on a
+  disabled team and for a Platform Admin who is not a member. Answers `{federation, operationId}`: 202 while it is being removed,
+  200 for an application already removed or a repeat of the key and reason; 404 `deployment-not-found`,
+  `federation-not-found`; 409 `federation-in-progress` while it is being set up, `idempotency-key-reused` for the key with another
+  reason. One `admin.federation.remove` event (team, environment, reason) is about the application; a refusal after the lookup is
+  audited as a `failure`.
 
 **Disable team and Enable team** (B31, design F) make a team view-only in the portal; nothing at the gateway, in Entra
 or in GitOps changes, so the team's credentials and models keep working. `POST /v1/admin/teams/{id}/disable` takes
@@ -583,10 +600,20 @@ Disable and Enable write `admin.credentials.disable` and `admin.credentials.enab
 writes `admin.credential.revoke` (resource `credential`, `resourceId` the secret, with the reason). Each is written only
 when it changed something, then calls `credentialsAccessChanged(db, {teamId, environment, change, actor})` once, where
 `actor` is the claims the event keeps (`userId`, `oid`, `tid`, `azp`, `uti`), never the email, name or token. That
-hook (`services/credential-block.js`) is empty today, so Disable credentials has no gateway or Entra effect yet. The
-registration-wide effects of a disable (the access window's `adminBlocked`, the service principal), the removal of a
-federated application and the refusal to request or change one while credentials are disabled are the next ship (S2,
-B31 in `docs/plans/remaining.md` of the frontend), which adds them in that hook without touching a route. Indexes `teamDeployments {environment: 1, teamId: 1}`
+hook (`services/credential-access-effects.js`) does the registration-wide effects, all under the block lock and each
+idempotent, so a retry repeats them. Disable sets `adminBlocked`, then writes the client's entry in the team's access
+window `suspended`, then switches the registration's service principal off and keeps the time Entra confirmed on the
+`teamDeployments` record as `servicePrincipalDisabledAt`. Enable switches the principal on (only where the ordinary
+window allows the client), then restores the ordinary window, and clears `adminBlocked` last. If a step fails, the
+block is kept (a Disable stays disabled, an Enable stays disabled), a `failure` event with code `upstream-unavailable`
+is audited and the request is `502 upstream-unavailable`; repeating it retries. The window store and the service
+principal switch are mock adapters until the gateway and Entra consent are in place (`ACCESS_WINDOW_STORE`,
+`SERVICE_PRINCIPAL_SWITCH`; the mock is refused in `prod`). `GET /v1/admin/team-deployments/{teamId}/{environment}`
+gives `servicePrincipalDisabledAt` for the environment and on each entry of `environments[]` (an ISO time, or `null`
+for one never disabled), so the Enable page can say when the old tokens have expired. While credentials are disabled
+a federation request is `409 federation-refused` with `credentials-disabled` for the environment (the dry run reports
+it) and a change is `409 credentials-disabled`, both checked under the same block lock as a grant, so a Disable
+landing meanwhile cannot let one through; removing an application stays allowed. Indexes `teamDeployments {environment: 1, teamId: 1}`
 and `credentials {teamId: 1, environment: 1, tier: 1}` serve the reads.
 
 **A change and its audit event stay consistent.** The change and its event are two writes with no transaction between
@@ -643,7 +670,7 @@ Every one is for a team member (a non-member is `404`, audited, and nothing is r
 slug, and carries the team in every query.
 `GET /v1/teams/{teamId}/environments` lists each environment in `TEAM_ENVIRONMENTS` order and `.../environments/{environment}`
 shows one (`404 environment-not-available` for one this instance does not offer): whether the team has a file there
-(`setUp`), whether the environment is paused, its models (`models.count` counts the ready ones, `items` every one not removed), the
+(`setUp`), whether the environment is paused, `credentialsDisabled` (a boolean, true while a Platform Admin has disabled the team's credentials there, with no reason), its models (`models.count` counts the ready ones, `items` every one not removed), the
 limits its file holds (the same read as `GET /v1/teams/{id}`, so `502 upstream-unavailable` when GitHub cannot be read), `applications`
 (`used` is 0 until federation, B18), the latest change and whether one is in progress. The one environment also returns `models` as
 `GET /deployments` gives them, `limitBounds` and `pendingLimits`.
@@ -739,6 +766,9 @@ credential keeps what it covered when it was revoked; a later model activation c
 | :------------------------------------- | :------------------------------ | :-------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `TENANT_ORCHESTRATOR`                  | `mock`                          | `mock` or `sqs`. Prod refuses `mock`; `sqs` needs the commands topic ARN, the events queue URL and the GitHub App (`GITHUB_CLIENT_ID` or `GITHUB_APP_ID`, `GITHUB_APP_INSTALLATION_ID`, `GITHUB_APP_PRIVATE_KEY`)                                                                 |
 | `TEAM_ENVIRONMENTS`                    | `infradev`                      | Comma-separated environments this instance may deploy a team's models to (D1): `infradev` on the CDP dev instance, `sandbox` on test; anything else is `403 environment-not-available`                                                                                            |
+| `ACCESS_WINDOW_STORE`                  | `mock`                          | `mock` or `apim`. Where a team's access window is written: `apim` writes the team's `aip-{slug}-access` named value (and only that) and needs the named value write role. Prod refuses `mock`                                                                                     |
+| `SERVICE_PRINCIPAL_SWITCH`             | `mock`                          | `mock` only until Entra admin consent lets the Graph adapter arrive: how a team registration's service principal is turned off and on for Disable and Enable credentials. Prod refuses `mock`                                                                                     |
+| `ACCESS_WINDOW_WAIT_MS`                | `3000`                          | How long an access window write waits for API Management to finish a long-running update. Keep it under the portal's 5 s backend-call timeout: a slower write is `502 upstream-unavailable` with the block kept, and a retry finishes it                                          |
 | `GITOPS_TENANTS_REPO`                  | `DEFRA/ai-platform-tenants`     | Team files, `environments/{env}/{slug}.json`                                                                                                                                                                                                                                      |
 | `GITOPS_DEPLOYMENTS_REPO`              | `DEFRA/ai-platform-deployments` | Platform pins, `environments/{env}/platform.json`                                                                                                                                                                                                                                 |
 | `GITOPS_COMMANDS_TOPIC_ARN`            | none                            | `aip_gitops_commands.fifo`, the backend-owned topic commands are published to; required for `sqs`                                                                                                                                                                                 |

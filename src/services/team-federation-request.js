@@ -2,6 +2,7 @@ import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-regis
 import { isFederationItem } from '#/operations/operation-items.js'
 import { findByIdempotencyKey } from '#/operations/operation-repository.js'
 import { projectOperation } from '#/operations/operation-projection.js'
+import { withCredentialsBlockLock } from '#/services/credential-block.js'
 import { teamEnvironments } from '#/services/team-deployment-service.js'
 import { resolveTeamTarget } from '#/services/team-desired-state.js'
 import { findMemberTeam } from '#/services/team-environments-service.js'
@@ -229,25 +230,31 @@ async function checkedAndQueued(db, context, environment) {
 
 // One environment of a request: a key already used answers with its
 // operation; otherwise the checks are made again under the locks, so two
-// requests together see each other, and the application is queued.
+// requests together see each other, and the application is queued. The
+// credentials-block lock is the outermost, as for a grant, so a Platform
+// Admin's Disable cannot land between the check of the block and the queue.
 async function federateIn(db, context, environment) {
-  return underLock(context.locker, context.teamId, environment, async () => {
-    const replayed = await replayIn(db, context, environment)
+  const target = { teamId: context.teamId, environment }
 
-    if (replayed) {
-      return {
-        ...(await existingResult(db, context, environment, replayed)),
-        replay: true
+  return withCredentialsBlockLock(context.locker, target, () =>
+    underLock(context.locker, context.teamId, environment, async () => {
+      const replayed = await replayIn(db, context, environment)
+
+      if (replayed) {
+        return {
+          ...(await existingResult(db, context, environment, replayed)),
+          replay: true
+        }
       }
-    }
 
-    return underTrustLock(
-      context.locker,
-      environment,
-      trustKeyOf(context.definition),
-      () => checkedAndQueued(db, context, environment)
-    )
-  })
+      return underTrustLock(
+        context.locker,
+        environment,
+        trustKeyOf(context.definition),
+        () => checkedAndQueued(db, context, environment)
+      )
+    })
+  )
 }
 
 // Every environment that has no operation for the key yet must pass the

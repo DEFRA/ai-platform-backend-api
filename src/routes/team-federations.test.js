@@ -1592,6 +1592,156 @@ describe('#team-federations routes', () => {
     })
   })
 
+  describe('while a Platform Admin has disabled the team’s credentials in the environment', () => {
+    function disableCredentials(team, environment = 'sandbox') {
+      return server.db
+        .collection('teamDeployments')
+        .updateOne(
+          { teamId: team.teamId, environment },
+          { $set: { adminBlocked: true } },
+          { upsert: true }
+        )
+    }
+
+    test('refuses a request as federation-refused with credentials-disabled for the environment, queues nothing and audits the refusal', async () => {
+      const team = await deployedTeam('fed-cd-1')
+
+      await disableCredentials(team)
+
+      const operationsBefore = (await operationsOf(team)).length
+      const { statusCode, result } = await post(team, 'fed-cd-1', CDP)
+
+      expect(statusCode).toBe(409)
+      expect(result).toMatchObject({
+        code: 'federation-refused',
+        environments: [{ environment: 'sandbox', code: 'credentials-disabled' }]
+      })
+      expect(JSON.stringify(result)).not.toMatch(/reason/i)
+      expect(await operationsOf(team)).toHaveLength(operationsBefore)
+      expect(await entriesOf(team)).toEqual([])
+      expect(
+        await auditOf(team, {
+          action: 'teamFederation.request',
+          code: 'credentials-disabled'
+        })
+      ).toEqual([
+        expect.objectContaining({ outcome: 'failure', reason: 'sandbox' })
+      ])
+    })
+
+    test('refuses the dry run with credentials-disabled for the environment', async () => {
+      const team = await deployedTeam('fed-cd-2')
+
+      await disableCredentials(team)
+
+      const { statusCode, result } = await check(team, 'fed-cd-2', CDP)
+
+      expect(statusCode).toBe(200)
+      expect(result).toEqual({
+        environments: [{ environment: 'sandbox', code: 'credentials-disabled' }]
+      })
+    })
+
+    test('refuses a change as 409 credentials-disabled and leaves the application as it was', async () => {
+      const label = 'fed-cd-3'
+      const team = await deployedTeam(label)
+      const { result: asked } = await post(team, label, CDP)
+
+      await settleEvents()
+      await disableCredentials(team)
+
+      const id = asked.federations[0].id
+      const before = await entriesOf(team)
+      const { statusCode, result } = await patch(team, label, id, {
+        service: 'delta-api'
+      })
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('credentials-disabled')
+      expect(await entriesOf(team)).toEqual(before)
+    })
+
+    // A Disable that holds the block lock when the request has passed its
+    // first look at the block, and lands before the request queues.
+    async function withDisableInFlight(team, request) {
+      const held = await server.locker.lock(
+        `credentials-block:${team.teamId}:sandbox`
+      )
+      const settled = request()
+
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      await disableCredentials(team)
+      await held.free()
+
+      return settled
+    }
+
+    test('a Disable landing between the check and the queue refuses the request and queues nothing', async () => {
+      const team = await deployedTeam('fed-cd-5')
+      const operationsBefore = (await operationsOf(team)).length
+
+      const { statusCode, result } = await withDisableInFlight(team, () =>
+        post(team, 'fed-cd-5', CDP)
+      )
+
+      expect(statusCode).toBe(409)
+      expect(result).toMatchObject({
+        code: 'federation-refused',
+        environments: [{ environment: 'sandbox', code: 'credentials-disabled' }]
+      })
+      expect(await operationsOf(team)).toHaveLength(operationsBefore)
+      expect(await entriesOf(team)).toEqual([])
+    })
+
+    test('a Disable landing between the check and the queue refuses the change and leaves the application as it was', async () => {
+      const label = 'fed-cd-6'
+      const team = await deployedTeam(label)
+      const { result: asked } = await post(team, label, CDP)
+
+      await settleEvents()
+
+      const before = await entriesOf(team)
+      const operationsBefore = (await operationsOf(team)).length
+      const { statusCode, result } = await withDisableInFlight(team, () =>
+        patch(team, label, asked.federations[0].id, { service: 'delta-api' })
+      )
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('credentials-disabled')
+      expect(await entriesOf(team)).toEqual(before)
+      expect(await operationsOf(team)).toHaveLength(operationsBefore)
+    })
+
+    test('still lets an Admin remove an application', async () => {
+      const label = 'fed-cd-4'
+      const team = await deployedTeam(label)
+      const { result: asked } = await post(team, label, CDP)
+
+      await settleEvents()
+      await disableCredentials(team)
+
+      const { statusCode, result } = await remove(
+        team,
+        label,
+        asked.federations[0].id
+      )
+
+      expect(statusCode).toBe(202)
+      expect(result.federation.status).toBe('removing')
+    })
+
+    test('does not refuse an environment where credentials are not disabled', async () => {
+      const team = await deployedTeam('fed-cd-5')
+
+      withInfradev(team)
+      await disableCredentials(team, 'infradev')
+
+      const { statusCode } = await post(team, 'fed-cd-5', CDP)
+
+      expect(statusCode).toBe(202)
+    })
+  })
+
   describe('what review of the federation service found', () => {
     // Makes the operation save and then fail, as a failure of what follows
     // the save (its own projection or publish) does.

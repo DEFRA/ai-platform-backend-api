@@ -1,5 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
+import { ObjectId } from 'mongodb'
+
 // What a Platform Admin's block on a team's credentials in one environment
 // does to the paths that create, show or change a team credential (P1-AC8).
 describe('credential block effects', () => {
@@ -384,6 +386,77 @@ describe('credential block effects', () => {
           vault
         )
       ).resolves.toBe('new-secret')
+    })
+
+    test('rotate and reveal of an id that matches nothing are a 404, with no issuer or vault call', async () => {
+      const { actor } = await teamCredential(await teamDocument())
+      const id = new ObjectId().toString()
+      const { issuer, registry } = stubRegistry()
+      const vault = stubVault()
+
+      await expect(
+        lifecycle.rotateCredential(db, locker, { id, actor }, registry, vault)
+      ).rejects.toMatchObject({ output: { statusCode: 404 } })
+      await expect(
+        lifecycle.revealCredential(
+          db,
+          locker,
+          { id, actor, reason: 'Share' },
+          vault
+        )
+      ).rejects.toMatchObject({ output: { statusCode: 404 } })
+
+      expect(issuer.rotate).not.toHaveBeenCalled()
+      expect(vault.get).not.toHaveBeenCalled()
+    })
+
+    // A locker whose every lock is taken just before the credential is deleted.
+    function lockerThatRemoves(id) {
+      return {
+        lock: async (name) => {
+          const held = await locker.lock(name)
+
+          await db
+            .collection('credentials')
+            .deleteOne({ _id: new ObjectId(id) })
+
+          return held
+        }
+      }
+    }
+
+    test('a rotate of a credential that is gone once the locks are held is a 404 and calls no issuer', async () => {
+      const { id, actor } = await teamCredential(await teamDocument())
+      const { issuer, registry } = stubRegistry()
+      const vault = stubVault()
+
+      await expect(
+        lifecycle.rotateCredential(
+          db,
+          lockerThatRemoves(id),
+          { id, actor },
+          registry,
+          vault
+        )
+      ).rejects.toMatchObject({ output: { statusCode: 404 } })
+
+      expect(issuer.rotate).not.toHaveBeenCalled()
+    })
+
+    test('a reveal of a credential that is gone once the locks are held is a 404 and reads no secret', async () => {
+      const { id, actor } = await teamCredential(await teamDocument())
+      const vault = stubVault()
+
+      await expect(
+        lifecycle.revealCredential(
+          db,
+          lockerThatRemoves(id),
+          { id, actor, reason: 'Share' },
+          vault
+        )
+      ).rejects.toMatchObject({ output: { statusCode: 404 } })
+
+      expect(vault.get).not.toHaveBeenCalled()
     })
 
     describe.each([

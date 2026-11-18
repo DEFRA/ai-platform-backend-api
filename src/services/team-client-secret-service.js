@@ -78,6 +78,8 @@ async function auditRefusal(db, context, code) {
     action: ISSUE_ACTION,
     resource: 'team',
     resourceId: context.teamId,
+    teamId: context.teamId,
+    environment: context.environment,
     outcome: 'failure',
     code,
     reason: context.environment

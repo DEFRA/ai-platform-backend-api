@@ -265,19 +265,4 @@ describe('credential-block', () => {
       expect(block.credentialStatusOf({}, [active])).not.toHaveProperty('held')
     })
   })
-
-  describe('credentialsAccessChanged', () => {
-    test.each(['disabled', 'enabled', 'revoked'])(
-      'is a no-op for a %s change until the gateway work reads it',
-      async (change) => {
-        const doc = await deploymentDocument()
-        const before = await stored(doc)
-
-        await expect(
-          block.credentialsAccessChanged(db, { ...doc, change, actor })
-        ).resolves.toBeUndefined()
-        expect(await stored(doc)).toEqual(before)
-      }
-    )
-  })
 })
