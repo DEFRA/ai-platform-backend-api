@@ -157,6 +157,17 @@ export function findTeamOperations(
 }
 
 /**
+ * A change to a team's file by its id, whichever team it belongs to (for a
+ * Platform Admin); null for an id that is not one, such as a pin operation.
+ * @param {import('mongodb').Db} db
+ * @param {string} id
+ * @returns {Promise<object|null>}
+ */
+export function findTeamFileOperation(db, id) {
+  return operationsOf(db).findOne({ _id: id, type: { $in: TEAM_FILE_TYPES } })
+}
+
+/**
  * One of a team's changes to its files, or null when the team has no such
  * operation (another team's id finds nothing).
  * @param {import('mongodb').Db} db

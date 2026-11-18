@@ -11,6 +11,7 @@ import { teamFederations } from '#/routes/team-federations.js'
 import { teamClientSecrets } from '#/routes/team-client-secrets.js'
 import { teamStatusChanges } from '#/routes/team-status-changes.js'
 import { adminTeamDeployments } from '#/routes/admin-team-deployments.js'
+import { adminOperations } from '#/routes/admin-operations.js'
 import { adminTeams } from '#/routes/admin-teams.js'
 import { adminAudit } from '#/routes/admin-audit.js'
 import { maintenance } from '#/routes/maintenance.js'
@@ -33,6 +34,7 @@ export const router = {
           teamClientSecrets,
           teamStatusChanges,
           adminTeamDeployments,
+          adminOperations,
           adminTeams,
           adminAudit
         )

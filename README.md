@@ -511,10 +511,19 @@ block, so Revoke is offered only for `active` and Revoked can be shown beside Di
 (see Disable team below), `clientSecrets` (`{allowed, used, limit, items}`: the team's secrets in that environment that are
 active or expired, each `{id, keyHint, expiresAt, status, name}` with the last four characters of the key and never a value;
 a revoked secret is not listed) and `federations` (the applications not removed, each `{id, name, host, service or
-principalId, status, operationId, failureReason, changingTo?}`), each model with `retryable` (the built
-retry rule, `isRetryable` in `operations-retry.js`) and the credential in each of the team's environments; 404
+principalId, status, operationId, failureReason, changingTo?, retryable}`), each model with `retryable` (the built
+retry rule, `isRetryable` in `operations-retry.js`), `limitsOperation` (`{id, state, failureReason, updatedAt, retryable}`, the team's
+latest limits-only change while it has failed, timed out, been refused by its checks or is held; absent otherwise) and the credential in each of the team's environments; 404
 `deployment-not-found` for an unknown team or an environment the team or the instance does not have. The built
 `/{id}/retry` and `/{id}/reconcile` keep their paths.
+
+`POST /v1/admin/operations/{operationId}/retry` and `/reconcile` (`platform-admin` only; 403 `platform-admin-required`, 401
+`invalid-token`) recover a change that holds no model, such as a federation or limits change, by the operation's id over the
+built operations service. `retry` is the built retry, accepted where `isRetryable` says yes and otherwise 409
+`operation-not-retryable`; `reconcile` asks the worker what GitHub holds, in any state. 202 `{operation: {id, state}}`; 404
+`operation-not-found` (also for an operation that is not a change to a team file); 502 `upstream-unavailable` when the
+command cannot be dispatched. Audited as `admin.operation.retry` and `admin.operation.reconcile` with the team, the
+environment and, as `reason`, the state change (`deploy-failed -> deploying`); a failed dispatch is a `failure` event.
 
 `POST /v1/admin/team-deployments/{teamId}/{environment}/credentials/disable` and `/enable` act on the team's
 non-federated credentials in **one** environment (the `credentials` records with `tier: 'team'` and `credentialType:

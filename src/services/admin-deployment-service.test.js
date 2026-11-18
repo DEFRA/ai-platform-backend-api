@@ -726,7 +726,8 @@ describe('#admin-deployment-service', () => {
             service: 'beta-api',
             status: 'ready',
             operationId: null,
-            failureReason: null
+            failureReason: null,
+            retryable: false
           }
         ],
         deployments: [

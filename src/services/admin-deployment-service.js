@@ -2,7 +2,11 @@ import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { requirePlatformAdmin } from '#/common/helpers/auth/access.js'
-import { findOperation } from '#/operations/operation-repository.js'
+import {
+  findOperation,
+  findTeamOperations
+} from '#/operations/operation-repository.js'
+import { isLimitsItem } from '#/operations/operation-items.js'
 import {
   ACTIVE,
   CHECKS_FAILED,
@@ -24,6 +28,7 @@ import { findModelBySlug } from '#/services/models-service.js'
 import { REMOVING } from '#/services/team-deployment-entries.js'
 import { teamEnvironments } from '#/services/team-deployment-service.js'
 import {
+  FEDERATION_STATUS,
   federationViewOf,
   liveFederationsOf
 } from '#/services/team-federation-entries.js'
@@ -34,6 +39,7 @@ import {
 } from '#/services/team-client-secrets.js'
 import { isEnvironmentDisabled } from '#/services/team-lock.js'
 import { normaliseName } from '#/services/team-service.js'
+import { MAX_OPERATIONS_LIMIT } from '#/services/team-operations-service.js'
 import { statusOf } from '#/services/team-status.js'
 
 /** Deployments on a page of the Platform Admin Deployments list (design F). */
@@ -382,6 +388,50 @@ async function retryableOf(db, entry) {
   return operation ? isRetryable(operation) : false
 }
 
+// Whether a retry is accepted for a federated application: decided by its
+// operation, which is only read for one that is not ready.
+async function federationRow(db, entry) {
+  const operation =
+    entry.operationId && entry.status !== FEDERATION_STATUS.READY
+      ? await findOperation(db, entry.operationId)
+      : null
+
+  return {
+    ...federationViewOf(entry),
+    retryable: operation ? isRetryable(operation) : false
+  }
+}
+
+const ATTENTION_STATES = new Set([CHECKS_FAILED, DEPLOY_FAILED, TIMED_OUT])
+
+// The team's latest change that holds only limits, while it has failed, timed
+// out or is held: a limits change has no model row, so this is where a
+// Platform Admin sees it. Absent once it is settled or a newer one has.
+async function limitsAttentionOf(db, { teamId, environment }) {
+  const operations = await findTeamOperations(db, {
+    teamId,
+    environment,
+    limit: MAX_OPERATIONS_LIMIT
+  })
+  const latest = operations.find(
+    ({ items }) => items?.length > 0 && items.every(isLimitsItem)
+  )
+
+  if (!latest || !(ATTENTION_STATES.has(latest.state) || latest.held)) {
+    return {}
+  }
+
+  return {
+    limitsOperation: {
+      id: latest._id,
+      state: latest.state,
+      failureReason: latest.error?.code ?? null,
+      updatedAt: latest.updatedAt,
+      retryable: isRetryable(latest)
+    }
+  }
+}
+
 async function modelRow(db, entry, names) {
   return {
     id: entry.id,
@@ -482,7 +532,10 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
       ...clientSecretsSummaryOf(environment, secrets),
       items: secrets.map((secret) => clientSecretViewOf(secret))
     },
-    federations: liveFederationsOf(doc).map(federationViewOf),
+    federations: await Promise.all(
+      liveFederationsOf(doc).map((entry) => federationRow(db, entry))
+    ),
+    ...(await limitsAttentionOf(db, { teamId, environment })),
     deployments: await Promise.all(
       entries.map((entry) => modelRow(db, entry, names))
     ),
