@@ -3,7 +3,7 @@ import { createArmClient } from '#/adapters/azure/arm-client.js'
 import { keyHintFor } from '#/adapters/key-hint.js'
 import { resolveAipEnvironment } from '#/common/helpers/aip-environment.js'
 
-const API_VERSION = '2024-05-01'
+export const API_VERSION = '2024-05-01'
 const ARM_ORIGIN = 'https://management.azure.com'
 
 // Created by API Management itself and not ours to judge.
@@ -15,7 +15,7 @@ const RESEARCH_SUBSCRIPTION_PREFIX = 'research-'
 // An ARM resource ID path (no https:// host) - used both to build request
 // URLs under ARM_BASE_URL and, unprefixed, as the `scope` value ARM
 // expects on the subscription resource itself.
-function serviceBasePath({ subscriptionId, resourceGroup, apimName }) {
+export function serviceBasePath({ subscriptionId, resourceGroup, apimName }) {
   return `/subscriptions/${subscriptionId}/resourceGroups/${resourceGroup}/providers/Microsoft.ApiManagement/service/${apimName}`
 }
 

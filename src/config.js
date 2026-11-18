@@ -370,6 +370,12 @@ export const config = convict({
       env: 'APIM_RESEARCH_API_ID'
     }
   },
+  accessWindowStore: {
+    doc: "Where a team's access window is written: mock keeps it in memory; apim writes the team's aip-{slug}-access named value, which the gateway reads on every request. apim needs the backend identity to hold the named value write role (T20). mock is refused in prod",
+    format: ['mock', 'apim'],
+    default: 'mock',
+    env: 'ACCESS_WINDOW_STORE'
+  },
   catalogue: {
     source: {
       doc: 'Model catalogue source: file reads the local seed fixture, github reads ai-platform-infra at a pinned release',
