@@ -11,12 +11,19 @@ import {
 
 const AUDIT_ISSUE = 'credential.issue'
 
-function auditIssue(db, { actor, role }, insertedId, outcome) {
+function auditIssue(
+  db,
+  { actor, role, teamId, environment },
+  insertedId,
+  outcome
+) {
   return recordAuditEvent(db, {
     ...issuanceAuditActor(actor, role),
     action: AUDIT_ISSUE,
     resource: 'credential',
     resourceId: insertedId.toString(),
+    teamId,
+    environment,
     outcome,
     ...(outcome === 'failure' && { code: 'upstream-unavailable' })
   })
@@ -95,7 +102,12 @@ export async function issueAndActivate(
   }
 ) {
   const insertedId = await savePending(db, { reusable, insertId, pending })
-  const audit = { actor, role }
+  const audit = {
+    actor,
+    role,
+    teamId: pending.teamId,
+    environment: pending.environment
+  }
   const issued = await requestSecret(db, {
     issuer,
     issueParams,

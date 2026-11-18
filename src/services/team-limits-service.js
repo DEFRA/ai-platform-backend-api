@@ -140,6 +140,8 @@ function audit(db, { actor, role, teamId, environment, limits }, extra) {
     action: CHANGE_ACTION,
     resource: 'team',
     resourceId: teamId,
+    teamId,
+    environment,
     reason: `${environment}: ${limits.tokensPerMinute} tokens, ${limits.requestsPerMinute} requests a minute`,
     ...extra
   })

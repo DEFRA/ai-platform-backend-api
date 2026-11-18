@@ -107,6 +107,7 @@ function auditFederation(db, context, event) {
     role: context.role,
     resource: 'team',
     resourceId: context.teamId,
+    teamId: context.teamId,
     ...event
   })
 }
@@ -124,7 +125,7 @@ export async function auditRefusal(db, context, action, refusal) {
         action,
         outcome: 'failure',
         code,
-        ...(environment ? { reason: environment } : {})
+        ...(environment ? { environment, reason: environment } : {})
       })
     )
   )
@@ -150,6 +151,8 @@ export function auditSuccess(db, context, action, entry, environment) {
     action,
     resource: 'teamFederation',
     resourceId: entry.id,
+    teamId: context.teamId,
+    environment,
     outcome: 'success',
     reason: environment
   })
