@@ -314,4 +314,92 @@ describe('#admin POST …/federations/{federationId}/remove', () => {
     expect(await statusOf(team.teamId, id)).toBe('ready')
     expect(await auditOf(team.teamId, { outcome: 'failure' })).toHaveLength(1)
   })
+
+  describe('when the audit event cannot be written after the removal is projected', () => {
+    // Makes the success event of the removal fail to be written, once.
+    function failSuccessAuditOnce() {
+      const original = server.db.collection.bind(server.db)
+      let failed = false
+
+      vi.spyOn(server.db, 'collection').mockImplementation((name, ...rest) => {
+        const collection = original(name, ...rest)
+
+        if (name !== 'auditEvents') {
+          return collection
+        }
+
+        return new Proxy(collection, {
+          get(target, property) {
+            if (property === 'insertOne') {
+              return (event, ...args) => {
+                if (!failed && event.action === ACTION) {
+                  failed = true
+
+                  return Promise.reject(new Error('the audit is down'))
+                }
+
+                return target.insertOne(event, ...args)
+              }
+            }
+
+            const value = target[property]
+
+            return typeof value === 'function' ? value.bind(target) : value
+          }
+        })
+      })
+    }
+
+    const pending = () =>
+      server.db.collection('pendingAudits').countDocuments({
+        _id: /^federation-remove:/
+      })
+
+    test('a retry with the same key records the event once with its reason, the same key with another reason is 409, and the marker never shows', async () => {
+      const { team, id } = await readyApplication('fed-remove-12')
+      const headers = withKey()
+
+      failSuccessAuditOnce()
+
+      const failed = await remove(team.teamId, id, { headers })
+
+      expect(failed.statusCode).toBe(500)
+      expect(await auditOf(team.teamId)).toEqual([])
+      expect(await pending()).toBe(1)
+
+      const reused = await remove(team.teamId, id, {
+        headers,
+        payload: { reason: 'Another reason' }
+      })
+
+      expect(reused.statusCode).toBe(409)
+      expect(reused.result.code).toBe('idempotency-key-reused')
+
+      const retried = await remove(team.teamId, id, { headers })
+
+      expect(retried.statusCode).toBe(200)
+      expect(JSON.stringify(retried.result)).not.toContain('pendingAuditId')
+
+      await settleEvents()
+
+      const events = await auditOf(team.teamId)
+
+      expect(events).toHaveLength(1)
+      expect(events[0]).toMatchObject({
+        outcome: 'success',
+        reason: REASON,
+        resourceId: id
+      })
+      expect(await pending()).toBe(0)
+      expect(await statusOf(team.teamId, id)).toBe('removed')
+
+      const read = await server.inject({
+        method: 'GET',
+        url: `/v1/admin/team-deployments/${team.teamId}/sandbox`,
+        headers: asAdmin()
+      })
+
+      expect(JSON.stringify(read.result)).not.toContain('pendingAuditId')
+    })
+  })
 })

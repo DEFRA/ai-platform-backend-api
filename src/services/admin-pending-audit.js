@@ -93,6 +93,24 @@ async function recordOnce(db, { actor, event, at }) {
   }
 }
 
+/**
+ * Records the event staged under `id` and drops it, for a change whose marker
+ * sits where `settlePendingAudits` cannot reach it (an entry inside an array).
+ * The caller clears its own marker first or afterwards and holds the lock.
+ * @param {import('mongodb').Db} db
+ * @param {string} id - the id given to `stageAudit`
+ * @returns {Promise<void>}
+ */
+export async function recordStagedAudit(db, id) {
+  const staged = await db.collection(STAGED).findOne({ _id: id })
+
+  if (staged) {
+    await recordOnce(db, staged)
+  }
+
+  await discardStagedAudit(db, id)
+}
+
 async function settleOne(db, holder, { _id, [MARKER]: id }, notify) {
   const staged = await db.collection(STAGED).findOne({ _id: id })
 

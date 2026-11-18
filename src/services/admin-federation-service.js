@@ -6,6 +6,10 @@ import {
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { eventIdOf, isReplay } from '#/services/admin-idempotency.js'
 import { findTeamDeployment } from '#/services/admin-deployment-service.js'
+import {
+  recordStagedAudit,
+  stageAudit
+} from '#/services/admin-pending-audit.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import { resolveTeamTarget } from '#/services/team-desired-state.js'
 import { refusalOf } from '#/services/team-deployment-submission.js'
@@ -14,6 +18,46 @@ import { underLock, viewOfEntry } from '#/services/team-federation-support.js'
 
 const REMOVE_ACTION = 'admin.federation.remove'
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
+
+// The staged event is marked on the application's entry, not the deployment
+// document: the credentials' marker lives there, and the entry is only ever
+// shown through named fields, so the marker never reaches a read.
+async function markRemoval(db, scope, federationId, staged) {
+  const id = `federation-remove:${scope.teamId}:${scope.environment}:${federationId}`
+
+  await stageAudit(db, id, staged)
+  await db
+    .collection('teamDeployments')
+    .updateOne(
+      scope,
+      { $set: { 'federations.$[f].pendingAuditId': id } },
+      { arrayFilters: [{ 'f.id': federationId }] }
+    )
+}
+
+// Records the event of a removal an earlier request projected and did not get
+// to record, then clears the marker. Runs under the deployment's lock.
+async function settleRemoval(db, scope, federationId) {
+  const doc = await db
+    .collection('teamDeployments')
+    .findOne(scope, { projection: { federations: 1 } })
+  const id = doc?.federations?.find(
+    (entry) => entry.id === federationId
+  )?.pendingAuditId
+
+  if (!id) {
+    return
+  }
+
+  await recordStagedAudit(db, id)
+  await db
+    .collection('teamDeployments')
+    .updateOne(
+      scope,
+      { $unset: { 'federations.$[f].pendingAuditId': '' } },
+      { arrayFilters: [{ 'f.id': federationId, 'f.pendingAuditId': id }] }
+    )
+}
 
 /**
  * Removes a team's federated application as a Platform Admin, whatever the
@@ -90,6 +134,8 @@ export async function removeFederationAsPlatformAdmin(
   }
 
   return underLock(locker, teamId, environment, async () => {
+    await settleRemoval(db, { teamId, environment }, federationId)
+
     if (await isReplay(db, eventId, reason)) {
       const federation = await viewOfEntry(
         db,
@@ -110,7 +156,7 @@ export async function removeFederationAsPlatformAdmin(
       context,
       federationId,
       (entry) =>
-        recordAuditEvent(db, {
+        markRemoval(db, { teamId, environment }, entry.id, {
           ...auditOf(entry.id),
           outcome: 'success',
           reason,
@@ -127,6 +173,8 @@ export async function removeFederationAsPlatformAdmin(
 
       throw refusal
     })
+
+    await settleRemoval(db, { teamId, environment }, federationId)
 
     return {
       federation,

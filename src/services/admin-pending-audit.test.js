@@ -171,4 +171,16 @@ describe('#admin-pending-audit', () => {
     ).toEqual([])
     expect(await db.collection('auditEvents').countDocuments()).toBe(0)
   })
+
+  test('recordStagedAudit records the event once and drops the stage, and a missing stage records nothing', async () => {
+    const id = `stage-${randomUUID()}`
+
+    await pending.stageAudit(db, id, record({ eventId: 'event-staged' }))
+    await pending.recordStagedAudit(db, id)
+    await pending.recordStagedAudit(db, id)
+    await pending.recordStagedAudit(db, 'never-staged')
+
+    expect(await db.collection('auditEvents').countDocuments()).toBe(1)
+    expect(await db.collection('pendingAudits').countDocuments()).toBe(0)
+  })
 })
