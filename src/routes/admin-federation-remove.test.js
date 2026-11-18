@@ -315,6 +315,108 @@ describe('#admin POST …/federations/{federationId}/remove', () => {
     expect(await auditOf(team.teamId, { outcome: 'failure' })).toHaveLength(1)
   })
 
+  describe('when a write that stages or marks the removal fails', () => {
+    // Fails the first matching write to a collection, then lets writes through.
+    function failOnce(collectionName, method, matches) {
+      const original = server.db.collection.bind(server.db)
+      let failed = false
+
+      vi.spyOn(server.db, 'collection').mockImplementation((name, ...rest) => {
+        const collection = original(name, ...rest)
+
+        if (name !== collectionName) {
+          return collection
+        }
+
+        return new Proxy(collection, {
+          get(target, property) {
+            if (property === method) {
+              return (...args) => {
+                if (!failed && matches(...args)) {
+                  failed = true
+
+                  return Promise.reject(new Error('the database is down'))
+                }
+
+                return target[method](...args)
+              }
+            }
+
+            const value = target[property]
+
+            return typeof value === 'function' ? value.bind(target) : value
+          }
+        })
+      })
+    }
+
+    const stagedCount = () =>
+      server.db
+        .collection('pendingAudits')
+        .countDocuments({ _id: /^federation-remove:/ })
+    const removalOperations = (teamId) =>
+      server.db
+        .collection('operations')
+        .countDocuments({ teamId, 'items.change': 'remove' })
+
+    test.each([
+      ['the staging of the event', 'pendingAudits', 'replaceOne', () => true],
+      [
+        'the update that takes the generation and sets the marker',
+        'teamDeployments',
+        'updateOne',
+        (_filter, update) =>
+          update.$set?.['federations.$[f].pendingAuditId'] !== undefined
+      ]
+    ])(
+      'a failure of %s removes nothing and records no success; a retry with the same key removes it and records the event once',
+      async (_name, collection, method, matches) => {
+        const { team, id } = await readyApplication('fed-remove-13')
+        const headers = withKey()
+
+        failOnce(collection, method, matches)
+
+        const failed = await remove(team.teamId, id, { headers })
+
+        expect(failed.statusCode).toBe(502)
+        expect(failed.result.code).toBe('upstream-unavailable')
+        expect(await statusOf(team.teamId, id)).toBe('ready')
+        expect(await removalOperations(team.teamId)).toBe(0)
+        expect(await auditOf(team.teamId, { outcome: 'success' })).toEqual([])
+        expect(await stagedCount()).toBe(0)
+
+        const retried = await remove(team.teamId, id, { headers })
+
+        expect(retried.statusCode).toBe(202)
+
+        await settleEvents()
+
+        expect(await statusOf(team.teamId, id)).toBe('removed')
+        expect(await auditOf(team.teamId, { outcome: 'success' })).toEqual([
+          expect.objectContaining({ resourceId: id, reason: REASON })
+        ])
+        expect(await stagedCount()).toBe(0)
+      }
+    )
+
+    test('an operation that cannot be queued leaves no marker on the application and no staged event', async () => {
+      const { team, id } = await readyApplication('fed-remove-14')
+
+      vi.spyOn(server.app.operations.operations, 'request').mockRejectedValue(
+        new Error('the database is down')
+      )
+
+      await remove(team.teamId, id)
+
+      const deployment = await server.db
+        .collection('teamDeployments')
+        .findOne({ teamId: team.teamId, environment: 'sandbox' })
+
+      expect(deployment.federations[0].pendingAuditId).toBeUndefined()
+      expect(await stagedCount()).toBe(0)
+    })
+  })
+
   describe('when the audit event cannot be written after the removal is projected', () => {
     // Makes the success event of the removal fail to be written, once.
     function failSuccessAuditOnce() {

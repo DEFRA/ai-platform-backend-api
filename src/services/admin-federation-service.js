@@ -21,18 +21,15 @@ const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
 
 // The staged event is marked on the application's entry, not the deployment
 // document: the credentials' marker lives there, and the entry is only ever
-// shown through named fields, so the marker never reaches a read.
-async function markRemoval(db, scope, federationId, staged) {
+// shown through named fields, so the marker never reaches a read. The removal
+// stages it first and sets the marker in its own update, so a failed write
+// either way leaves no event to be recorded for a removal that was not made.
+async function stageRemoval(db, scope, federationId, staged) {
   const id = `federation-remove:${scope.teamId}:${scope.environment}:${federationId}`
 
   await stageAudit(db, id, staged)
-  await db
-    .collection('teamDeployments')
-    .updateOne(
-      scope,
-      { $set: { 'federations.$[f].pendingAuditId': id } },
-      { arrayFilters: [{ 'f.id': federationId }] }
-    )
+
+  return id
 }
 
 // Records the event of a removal an earlier request projected and did not get
@@ -155,13 +152,15 @@ export async function removeFederationAsPlatformAdmin(
       db,
       context,
       federationId,
-      (entry) =>
-        markRemoval(db, { teamId, environment }, entry.id, {
-          ...auditOf(entry.id),
-          outcome: 'success',
-          reason,
-          eventId
-        })
+      {
+        stage: (entry) =>
+          stageRemoval(db, { teamId, environment }, entry.id, {
+            ...auditOf(entry.id),
+            outcome: 'success',
+            reason,
+            eventId
+          })
+      }
     ).catch(async (error) => {
       const refusal = refusalOf(error, 'Failed to remove the application')
 
