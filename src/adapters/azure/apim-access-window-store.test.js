@@ -165,6 +165,60 @@ describe('createApimAccessWindowStore', () => {
     ])
   })
 
+  describe('when API Management accepts the write as a long-running operation', () => {
+    const OPERATION = '/operations/aip-1'
+    const asyncStore = () =>
+      createApimAccessWindowStore({
+        armClient: createArmClient({
+          getCredential: () => ({
+            getToken: async () => ({ token: 'fake-token' })
+          }),
+          operationTimeoutMs: 100,
+          defaultPollMs: 0
+        }),
+        resolveEnvironment
+      })
+    const write = () =>
+      asyncStore().write({
+        environment: 'infradev',
+        teamSlug: 'cool-team',
+        entries: [entry]
+      })
+
+    function accept() {
+      nock.cleanAll()
+      nock(ARM_BASE_URL)
+        .patch(NAMED_VALUE)
+        .reply(202, '', {
+          'azure-asyncoperation': `${ARM_BASE_URL}${OPERATION}`
+        })
+    }
+
+    test('resolves once the operation Succeeded', async () => {
+      accept()
+      nock(ARM_BASE_URL).get(OPERATION).reply(200, { status: 'Succeeded' })
+
+      await expect(write()).resolves.toBeUndefined()
+    })
+
+    test('throws when the operation Failed, so the caller keeps the block', async () => {
+      accept()
+      nock(ARM_BASE_URL).get(OPERATION).reply(200, { status: 'Failed' })
+
+      await expect(write()).rejects.toThrow('operation failed')
+    })
+
+    test('throws when the operation does not end in time', async () => {
+      accept()
+      nock(ARM_BASE_URL)
+        .get(OPERATION)
+        .times(1000)
+        .reply(200, { status: 'InProgress' })
+
+      await expect(write()).rejects.toThrow('operation timed out')
+    })
+  })
+
   test('acts on the instance of the environment it names', async () => {
     await createStore().write({
       environment: 'sandbox',

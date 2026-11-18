@@ -94,4 +94,116 @@ describe('#createArmClient', () => {
       'ARM request failed: GET /path -> 403'
     )
   })
+
+  describe('a 202 Accepted', () => {
+    const OPERATION = '/operations/1'
+    const client = (options = {}) =>
+      createArmClientWith({
+        operationTimeoutMs: 1000,
+        defaultPollMs: 0,
+        ...options
+      })
+
+    async function createArmClientWith(options) {
+      const { createArmClient } = await import('#/adapters/azure/arm-client.js')
+
+      return createArmClient({ getCredential: stubCredential(), ...options })
+    }
+
+    test('is polled at Azure-AsyncOperation until Succeeded, then resolves', async () => {
+      nock(ARM_BASE_URL)
+        .patch('/path')
+        .reply(202, '', {
+          'azure-asyncoperation': `${ARM_BASE_URL}${OPERATION}`,
+          'retry-after': '0'
+        })
+      nock(ARM_BASE_URL)
+        .get(OPERATION)
+        .reply(200, { status: 'InProgress' })
+        .get(OPERATION)
+        .reply(200, { status: 'Succeeded' })
+
+      await expect(
+        (await client()).request('PATCH', '/path', { body: { a: 1 } })
+      ).resolves.toBeNull()
+      expect(nock.isDone()).toBe(true)
+    })
+
+    test.each(['Failed', 'Canceled'])(
+      'throws when the operation is %s, without its body',
+      async (status) => {
+        nock(ARM_BASE_URL)
+          .patch('/path')
+          .reply(202, '', {
+            'azure-asyncoperation': `${ARM_BASE_URL}${OPERATION}`
+          })
+        nock(ARM_BASE_URL)
+          .get(OPERATION)
+          .reply(200, { status, error: { message: 'do-not-leak-this' } })
+
+        await expect(
+          (await client()).request('PATCH', '/path')
+        ).rejects.toThrow(
+          `ARM request failed: PATCH /path -> operation ${status.toLowerCase()}`
+        )
+      }
+    )
+
+    test('throws when the operation does not end within the timeout', async () => {
+      nock(ARM_BASE_URL)
+        .patch('/path')
+        .reply(202, '', {
+          'azure-asyncoperation': `${ARM_BASE_URL}${OPERATION}`
+        })
+      nock(ARM_BASE_URL)
+        .get(OPERATION)
+        .times(1000)
+        .reply(200, { status: 'InProgress' })
+
+      await expect(
+        (await client({ operationTimeoutMs: 50 })).request('PATCH', '/path')
+      ).rejects.toThrow(
+        'ARM request failed: PATCH /path -> operation timed out'
+      )
+    })
+
+    test('follows Location until it answers 200 and returns that body', async () => {
+      nock(ARM_BASE_URL)
+        .put('/path')
+        .reply(202, '', { location: `${ARM_BASE_URL}${OPERATION}` })
+      nock(ARM_BASE_URL)
+        .get(OPERATION)
+        .reply(202, '')
+        .get(OPERATION)
+        .reply(200, { id: 'done' })
+
+      await expect((await client()).request('PUT', '/path')).resolves.toEqual({
+        id: 'done'
+      })
+    })
+
+    test('throws when polling is refused', async () => {
+      nock(ARM_BASE_URL)
+        .patch('/path')
+        .reply(202, '', {
+          'azure-asyncoperation': `${ARM_BASE_URL}${OPERATION}`
+        })
+      nock(ARM_BASE_URL).get(OPERATION).reply(500, 'do-not-leak-this')
+
+      await expect((await client()).request('PATCH', '/path')).rejects.toThrow(
+        'ARM request failed: PATCH /path -> 500 while polling'
+      )
+    })
+
+    test.each([
+      ['no status URL', {}],
+      ['a status URL outside ARM', { location: 'https://evil.example/x' }]
+    ])('throws, without polling, with %s', async (_name, headers) => {
+      nock(ARM_BASE_URL).patch('/path').reply(202, '', headers)
+
+      await expect((await client()).request('PATCH', '/path')).rejects.toThrow(
+        'accepted with no status URL'
+      )
+    })
+  })
 })
