@@ -476,6 +476,8 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
     environmentDisabled: isEnvironmentDisabled(team, environment),
     status: worstStatusOf(entries),
     credential: credentialIn(environment),
+    // Absent until the first disable, so it reads null with no backfill.
+    servicePrincipalDisabledAt: doc.servicePrincipalDisabledAt ?? null,
     clientSecrets: {
       ...clientSecretsSummaryOf(environment, secrets),
       items: secrets.map((secret) => clientSecretViewOf(secret))

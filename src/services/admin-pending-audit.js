@@ -39,8 +39,12 @@ export function withoutPendingMarker(doc) {
   return rest
 }
 
-// Only the named claims the audit event keeps: never the email, name or token.
-function claimsOf({ userId, oid, tid, azp, uti }) {
+/**
+ * Only the named claims an audit event keeps: never the email, name or token.
+ * @param {{userId: string, oid?: string, tid?: string, azp?: string, uti?: string}} actor
+ * @returns {{userId: string, oid?: string, tid?: string, azp?: string, uti?: string}}
+ */
+export function claimsOf({ userId, oid, tid, azp, uti }) {
   return { userId, oid, tid, azp, uti }
 }
 
@@ -103,6 +107,27 @@ async function settleOne(db, holder, { _id, [MARKER]: id }, notify) {
   await discardStagedAudit(db, id)
 
   return staged?.event.eventId
+}
+
+/**
+ * The staged events of the changes in `holder` that match `filter` and still
+ * carry a marker, without recording or clearing any.
+ * @param {import('mongodb').Db} db
+ * @param {string} holder - the collection the changes were made in
+ * @param {object} filter - the documents to look at
+ * @returns {Promise<Array<{actor: object, change?: string, event: object}>>}
+ */
+export async function stagedAuditsOf(db, holder, filter) {
+  const held = await db
+    .collection(holder)
+    .find({ ...filter, [MARKER]: { $exists: true } })
+    .project({ [MARKER]: 1 })
+    .toArray()
+  const staged = await mapSequentially(held, ({ [MARKER]: id }) =>
+    db.collection(STAGED).findOne({ _id: id })
+  )
+
+  return staged.filter(Boolean)
 }
 
 /**

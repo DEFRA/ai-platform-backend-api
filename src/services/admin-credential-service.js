@@ -14,17 +14,20 @@ import {
 } from '#/services/admin-deployment-service.js'
 import { recordAuditEvent } from '#/services/audit-service.js'
 import {
+  claimsOf,
   discardStagedAudit,
   settlePendingAudits,
-  stageAudit
+  stageAudit,
+  stagedAuditsOf
 } from '#/services/admin-pending-audit.js'
 import { eventIdOf, isReplay } from '#/services/admin-idempotency.js'
 import {
   blockCredentials,
-  credentialsAccessChanged,
+  isEnvironmentBlocked,
   unblockCredentials,
   withCredentialsBlockLock
 } from '#/services/credential-block.js'
+import { credentialsAccessChanged } from '#/services/credential-access-effects.js'
 import {
   TEAM_CREDENTIAL_FILTER,
   credentialLockName,
@@ -35,8 +38,11 @@ import { revokeCredentialRecord } from '#/services/credential-lifecycle.js'
 // A Platform Admin's Disable, Enable and Revoke (one secret) of a team's
 // non-federated credentials in one environment (B31). One environment per call:
 // a person who ticks several makes one call for each, so each is idempotent and
-// a failure names the one environment. Federations, the gateway and Entra are
-// not touched; `credentialsAccessChanged` is the hook where they will be.
+// a failure names the one environment. Disable and Enable also change the
+// team's access window and service principal through `credentialsAccessChanged`
+// (R-D3): Disable sets the flag, then the effects; Enable does the effects, then
+// clears the flag. A failed effect keeps or sets the block, audits a `failure`
+// and answers 502, and a retry repeats the idempotent effects.
 
 const ADMIN_REVOKED = 'admin-revoked'
 const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
@@ -84,22 +90,83 @@ function revokeAuditId(credentialId) {
   return `credential-revoke:${credentialId}`
 }
 
-// Records every event an earlier change under this lock staged and did not get
-// to record (the audit insert failed), calling the hook for each, before this
-// request looks at its own. Returns the ids it recorded.
-async function settleCredentialAudits(
+function accessNotAvailable(change) {
+  return boomWithCode(
+    Boom.badGateway,
+    `Credentials could not be ${change}, try again`,
+    UPSTREAM_UNAVAILABLE
+  )
+}
+
+// Makes the gateway and Entra changes of a Disable or an Enable. A failure is
+// logged by code only, audited as `failedEvent` and answered 502; the issuer's
+// message and the reason never leave this function.
+async function applyAccessEffects(
   db,
-  { teamId, environment },
-  accessChanged
+  { teamId, environment, change, actor, failedEvent },
+  { accessChanged, logger }
 ) {
-  const notify = (staged) =>
-    accessChanged(db, {
-      teamId,
-      environment,
-      change: staged.change,
-      actor: staged.actor
+  try {
+    await accessChanged(db, { teamId, environment, change, actor })
+  } catch {
+    logger?.warn(
+      { code: UPSTREAM_UNAVAILABLE, teamId, environment, change },
+      'Changing the team’s access failed'
+    )
+
+    await recordAuditEvent(db, {
+      ...failedEvent,
+      outcome: 'failure',
+      code: UPSTREAM_UNAVAILABLE
     })
-  const target = { teamId, environment }
+
+    throw accessNotAvailable(change)
+  }
+}
+
+// A Disable whose block is set but whose event is not yet recorded still owes
+// the gateway and Entra their change: make it before the event is recorded, so
+// a failure is never audited as a success and a retry finds it again.
+async function applyOwedDisables(db, target, deps) {
+  for (const staged of await stagedAuditsOf(db, 'teamDeployments', target)) {
+    if (staged.change === 'disabled') {
+      const { eventId: _eventId, ...event } = staged.event
+
+      await applyAccessEffects(
+        db,
+        {
+          ...target,
+          change: 'disabled',
+          actor: staged.actor,
+          failedEvent: { ...event, actor: staged.actor }
+        },
+        deps
+      )
+    }
+  }
+}
+
+// Records every event an earlier change under this lock staged and did not get
+// to record (the audit insert failed), after the access effects a Disable owes,
+// before this request looks at its own. Returns the ids it recorded. A Disable
+// and an Enable have made their effects by then; the hook is told only of a
+// revoke here.
+async function settleCredentialAudits(db, target, deps) {
+  const { teamId, environment } = target
+  const { accessChanged } = deps
+  const notify = async (staged) => {
+    if (staged.change === 'revoked') {
+      await accessChanged(db, {
+        teamId,
+        environment,
+        change: staged.change,
+        actor: staged.actor
+      })
+    }
+  }
+
+  await applyOwedDisables(db, target, deps)
+
   const settled = await settlePendingAudits(
     db,
     'teamDeployments',
@@ -121,18 +188,13 @@ async function settleCredentialAudits(
 // Stages the event, makes the change (which marks its document with the
 // staged id) and records the event; a change that changed nothing drops the
 // event it staged.
-async function changeAndAudit(
-  db,
-  target,
-  { id, staged, change },
-  accessChanged
-) {
+async function changeAndAudit(db, target, { id, staged, change }, deps) {
   await stageAudit(db, id, staged)
 
   const { changed } = await change(id)
 
   if (changed) {
-    await settleCredentialAudits(db, target, accessChanged)
+    await settleCredentialAudits(db, target, deps)
   } else {
     await discardStagedAudit(db, id)
   }
@@ -155,16 +217,17 @@ export async function disableCredentials(
   db,
   locker,
   { actor, teamId, environment, reason, idempotencyKey },
-  { accessChanged = credentialsAccessChanged } = {}
+  { accessChanged = credentialsAccessChanged, logger } = {}
 ) {
   await authorise(db, { actor, teamId, environment })
 
   const action = 'admin.credentials.disable'
   const eventId = eventIdOf(action, { teamId, environment, idempotencyKey })
   const target = { teamId, environment }
+  const deps = { accessChanged, logger }
 
   await withCredentialsBlockLock(locker, target, async () => {
-    await settleCredentialAudits(db, target, accessChanged)
+    await settleCredentialAudits(db, target, deps)
 
     if (await isReplay(db, eventId, reason)) {
       return
@@ -192,7 +255,7 @@ export async function disableCredentials(
         change: (pendingAuditId) =>
           blockCredentials(db, { ...target, actor, pendingAuditId })
       },
-      accessChanged
+      deps
     )
   })
 
@@ -203,9 +266,11 @@ export async function disableCredentials(
 }
 
 /**
- * Clears the block on the team's credentials in one environment. A revoked
- * credential stays revoked. An environment that is not disabled is left as it
- * is, with no event.
+ * Clears the block on the team's credentials in one environment, after the
+ * service principal is switched on and the ordinary window restored; a failure
+ * of either keeps the block, audits a `failure` and answers `502
+ * upstream-unavailable`. A revoked credential stays revoked. An environment
+ * that is not disabled is left as it is, with no event.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
  * @param {{actor: object, teamId: string, environment: string}} params - `actor` is the token's credentials
@@ -216,14 +281,33 @@ export async function enableCredentials(
   db,
   locker,
   { actor, teamId, environment },
-  { accessChanged = credentialsAccessChanged } = {}
+  { accessChanged = credentialsAccessChanged, logger } = {}
 ) {
   await authorise(db, { actor, teamId, environment })
 
   const target = { teamId, environment }
+  const deps = { accessChanged, logger }
 
   await withCredentialsBlockLock(locker, target, async () => {
-    await settleCredentialAudits(db, target, accessChanged)
+    await settleCredentialAudits(db, target, deps)
+
+    if (await isEnvironmentBlocked(db, target)) {
+      await applyAccessEffects(
+        db,
+        {
+          ...target,
+          change: 'enabled',
+          actor: claimsOf(actor),
+          failedEvent: auditRecord({
+            action: 'admin.credentials.enable',
+            actor,
+            teamId,
+            environment
+          })
+        },
+        deps
+      )
+    }
 
     await changeAndAudit(
       db,
@@ -243,7 +327,7 @@ export async function enableCredentials(
         change: (pendingAuditId) =>
           unblockCredentials(db, { ...target, pendingAuditId })
       },
-      accessChanged
+      deps
     )
   })
 
@@ -403,9 +487,10 @@ export async function revokeCredential(
   })
 
   const target = { teamId, environment }
+  const effects = { accessChanged, logger }
 
   return withCredentialsBlockLock(locker, target, async () => {
-    const recorded = await settleCredentialAudits(db, target, accessChanged)
+    const recorded = await settleCredentialAudits(db, target, effects)
 
     if (await isReplay(db, eventId, reason)) {
       // A retry that recorded the event the first attempt left unrecorded did
@@ -448,7 +533,7 @@ export async function revokeCredential(
     }
 
     if (revoked) {
-      await settleCredentialAudits(db, target, accessChanged)
+      await settleCredentialAudits(db, target, effects)
     }
 
     return { environment, credentialId, revoked }

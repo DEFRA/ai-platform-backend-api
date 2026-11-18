@@ -712,7 +712,7 @@ describe('#admin-credential-service', () => {
 
       expect(await blocked(teamId)).toBe(true)
       expect(await events(teamId)).toEqual([])
-      expect(withDeps.accessChanged).not.toHaveBeenCalled()
+      expect(withDeps.accessChanged).toHaveBeenCalledTimes(1)
       expect(JSON.stringify(await deploymentOf(teamId))).not.toContain(REASON)
 
       const retried = await disable(teamId, { idempotencyKey }, withDeps)
@@ -728,8 +728,9 @@ describe('#admin-credential-service', () => {
           reason: REASON
         })
       ])
-      expect(withDeps.accessChanged).toHaveBeenCalledTimes(1)
-      expect(withDeps.accessChanged).toHaveBeenCalledWith(db, {
+      // The effects are idempotent, so the retry repeats them before it records.
+      expect(withDeps.accessChanged).toHaveBeenCalledTimes(2)
+      expect(withDeps.accessChanged).toHaveBeenLastCalledWith(db, {
         teamId,
         environment: DEV,
         change: 'disabled',
@@ -741,7 +742,7 @@ describe('#admin-credential-service', () => {
       await disable(teamId, { idempotencyKey }, withDeps)
 
       expect(await events(teamId)).toHaveLength(1)
-      expect(withDeps.accessChanged).toHaveBeenCalledTimes(1)
+      expect(withDeps.accessChanged).toHaveBeenCalledTimes(2)
     })
 
     test('Disable: a retry with another key records the first request’s event, with its reason, and no second', async () => {
@@ -881,7 +882,7 @@ describe('#admin-credential-service', () => {
       ])
     })
 
-    test('the hook failing after the event is recorded: a retry calls the hook again and records nothing twice', async () => {
+    test('the hook failing before the event is recorded: the failure is audited, the answer is 502, and a retry calls the hook again and records the success once', async () => {
       const teamId = await team()
       const accessChanged = vi
         .fn()
@@ -892,13 +893,20 @@ describe('#admin-credential-service', () => {
 
       await expect(
         disable(teamId, { idempotencyKey }, withDeps)
-      ).rejects.toThrow('the hook is down')
+      ).rejects.toMatchObject({
+        output: { statusCode: 502 },
+        data: { code: 'upstream-unavailable' }
+      })
 
-      expect(await events(teamId)).toHaveLength(1)
+      expect(await events(teamId)).toEqual([
+        expect.objectContaining({ outcome: 'failure', reason: REASON })
+      ])
 
       await disable(teamId, { idempotencyKey }, withDeps)
 
-      expect(await events(teamId)).toHaveLength(1)
+      expect(
+        (await events(teamId)).map(({ outcome }) => outcome).sort()
+      ).toEqual(['failure', 'success'])
       expect(accessChanged).toHaveBeenCalledTimes(2)
       expect(await pending()).toBe(0)
     })

@@ -703,6 +703,7 @@ describe('#admin-deployment-service', () => {
         environmentDisabled: false,
         status: 'needs-attention',
         credential: { status: 'active' },
+        servicePrincipalDisabledAt: null,
         clientSecrets: {
           allowed: expect.any(Boolean),
           used: 1,
@@ -780,6 +781,25 @@ describe('#admin-deployment-service', () => {
         expect.objectContaining({ keyHint: 'WXYZ', status: 'expired' })
       ])
       expect(JSON.stringify(result)).not.toContain('secret-external-id')
+    })
+
+    test('gives the time Graph confirmed the service principal disabled, and null where it never was', async () => {
+      const id = await team('Disabled Principal Team')
+      const confirmed = '2026-11-18T09:30:00.000Z'
+
+      await deployment(id, DEV, [entry()], {
+        servicePrincipalDisabledAt: confirmed
+      })
+      await deployment(id, TEST, [entry()])
+
+      expect(
+        (await detail({ teamId: id, environment: DEV }))
+          .servicePrincipalDisabledAt
+      ).toBe(confirmed)
+      expect(
+        (await detail({ teamId: id, environment: TEST }))
+          .servicePrincipalDisabledAt
+      ).toBeNull()
     })
 
     test('environmentDisabled is true only for an environment the team is disabled in, whatever its status, and there is no teamDisabled', async () => {

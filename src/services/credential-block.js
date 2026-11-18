@@ -156,16 +156,3 @@ function heldStatusOf(credentials) {
     ? 'revoked'
     : 'none'
 }
-
-/**
- * Called once after each successful Disable, Enable or Revoke by a Platform
- * Admin. A no-op today: the registration-wide gateway and Entra effects it
- * will carry (the access window's block, the service principal) belong to the
- * federated credential work, which adds them here without touching a route.
- * @param {import('mongodb').Db} _db
- * @param {{teamId: string, environment: string, change: 'disabled'|'enabled'|'revoked', actor: object}} _change
- * @returns {Promise<void>}
- */
-export async function credentialsAccessChanged(_db, _change) {
-  // intentionally empty, see above
-}
