@@ -376,6 +376,12 @@ export const config = convict({
     default: 'mock',
     env: 'ACCESS_WINDOW_STORE'
   },
+  servicePrincipalSwitch: {
+    doc: "How a team registration's service principal is turned off and on in Entra for Disable and Enable credentials: mock keeps the state in memory. The Graph adapter waits for Entra admin consent (R-D2). mock is refused in prod",
+    format: ['mock'],
+    default: 'mock',
+    env: 'SERVICE_PRINCIPAL_SWITCH'
+  },
   catalogue: {
     source: {
       doc: 'Model catalogue source: file reads the local seed fixture, github reads ai-platform-infra at a pinned release',
