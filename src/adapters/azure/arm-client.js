@@ -32,12 +32,28 @@ function statusOf(response) {
     : null
 }
 
+// Number('') is 0, so an empty header must be ruled out before converting.
 function pollDelayOf(response, defaultPollMs) {
-  const seconds = Number(response.headers.get('retry-after'))
+  const header = response.headers.get('retry-after')?.trim()
+  const seconds = header ? Number(header) : Number.NaN
 
   return Number.isFinite(seconds) && seconds >= 0
     ? seconds * 1000
     : defaultPollMs
+}
+
+// A credential may ignore the abort signal, so race it rather than trust it.
+function abortable(promise, signal) {
+  signal.throwIfAborted()
+
+  return Promise.race([
+    promise,
+    new Promise((_resolve, reject) => {
+      signal.addEventListener('abort', () => reject(signal.reason), {
+        once: true
+      })
+    })
+  ])
 }
 
 /**
@@ -58,9 +74,12 @@ export function createArmClient({
   operationTimeoutMs = OPERATION_TIMEOUT_MS,
   defaultPollMs = DEFAULT_POLL_MS
 } = {}) {
-  async function send(method, url, { body, ifMatch, signal } = {}) {
+  async function send(method, url, { body, ifMatch, signal }) {
     const credential = getCredential()
-    const token = await credential.getToken(ARM_SCOPE)
+    const token = await abortable(
+      credential.getToken(ARM_SCOPE, { abortSignal: signal }),
+      signal
+    )
 
     const headers = {
       authorization: `Bearer ${token.token}`,
@@ -98,7 +117,7 @@ export function createArmClient({
     await response.body?.cancel()
   }
 
-  async function awaitOperation(method, path, accepted, maxWaitMs) {
+  async function awaitOperation(method, path, accepted, signal) {
     const status = statusOf(accepted)
 
     await discard(accepted)
@@ -107,63 +126,71 @@ export function createArmClient({
       throw failure(method, path, 'accepted with no status URL')
     }
 
-    const signal = AbortSignal.timeout(maxWaitMs)
     let delay = pollDelayOf(accepted, defaultPollMs)
 
-    try {
-      for (;;) {
-        await sleep(delay, signal)
+    for (;;) {
+      await sleep(delay, signal)
 
-        const response = await send('GET', status.url, { signal })
+      const response = await send('GET', status.url, { signal })
 
-        if (!response.ok) {
-          await discard(response)
-          throw failure(method, path, `${response.status} while polling`)
-        }
-
-        if (response.status === ACCEPTED) {
-          await discard(response)
-        } else {
-          const result = await parsed(response)
-          const state = String(result?.status ?? '').toLowerCase()
-
-          if (!status.isAsyncOperation) {
-            return result
-          }
-
-          if (state === 'succeeded') {
-            return null
-          }
-
-          if (FAILED_STATES.has(state)) {
-            throw failure(method, path, `operation ${state}`)
-          }
-        }
-
-        delay = pollDelayOf(response, defaultPollMs)
+      if (!response.ok) {
+        await discard(response)
+        throw failure(method, path, `${response.status} while polling`)
       }
+
+      if (response.status === ACCEPTED) {
+        await discard(response)
+      } else {
+        const result = await parsed(response)
+        const state = String(result?.status ?? '').toLowerCase()
+
+        if (!status.isAsyncOperation) {
+          return result
+        }
+
+        if (state === 'succeeded') {
+          return null
+        }
+
+        if (FAILED_STATES.has(state)) {
+          throw failure(method, path, `operation ${state}`)
+        }
+      }
+
+      delay = pollDelayOf(response, defaultPollMs)
+    }
+  }
+
+  // One deadline from here covers the token, the request, the body read and
+  // every poll; a caller's own signal can still cancel earlier.
+  async function request(method, path, options = {}) {
+    const { maxWaitMs = operationTimeoutMs, signal: caller, ...rest } = options
+    const deadline = AbortSignal.timeout(maxWaitMs)
+    const signal = caller ? AbortSignal.any([deadline, caller]) : deadline
+
+    try {
+      const response = await send(method, `${ARM_BASE_URL}${path}`, {
+        ...rest,
+        signal
+      })
+
+      if (!response.ok) {
+        await discard(response)
+        throw failure(method, path, response.status)
+      }
+
+      if (response.status === ACCEPTED) {
+        return await awaitOperation(method, path, response, signal)
+      }
+
+      return await abortable(parsed(response), signal)
     } catch (error) {
-      if (signal.aborted) {
+      if (deadline.aborted) {
         throw failure(method, path, 'operation timed out')
       }
 
       throw error
     }
-  }
-
-  async function request(method, path, options = {}) {
-    const { maxWaitMs = operationTimeoutMs, ...sendOptions } = options
-    const response = await send(method, `${ARM_BASE_URL}${path}`, sendOptions)
-
-    if (!response.ok) {
-      throw failure(method, path, response.status)
-    }
-
-    if (response.status === ACCEPTED) {
-      return awaitOperation(method, path, response, maxWaitMs)
-    }
-
-    return parsed(response)
   }
 
   return { request }

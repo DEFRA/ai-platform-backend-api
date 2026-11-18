@@ -192,6 +192,76 @@ describe('#createArmClient', () => {
       expect(Date.now() - started).toBeLessThan(5000)
     })
 
+    test('a delayed first response is cut off at maxWaitMs', async () => {
+      nock(ARM_BASE_URL).patch('/path').delay(2000).reply(200, {})
+
+      const started = Date.now()
+
+      await expect(
+        (await client()).request('PATCH', '/path', { maxWaitMs: 50 })
+      ).rejects.toThrow(
+        'ARM request failed: PATCH /path -> operation timed out'
+      )
+      expect(Date.now() - started).toBeLessThan(1500)
+    })
+
+    test('a token that never arrives is cut off at maxWaitMs', async () => {
+      const { createArmClient } = await import('#/adapters/azure/arm-client.js')
+      const armClient = createArmClient({
+        getCredential: () => ({ getToken: () => new Promise(() => {}) })
+      })
+
+      await expect(
+        armClient.request('GET', '/path', { maxWaitMs: 50 })
+      ).rejects.toThrow('ARM request failed: GET /path -> operation timed out')
+    })
+
+    test('a caller’s own abort stops the request before the deadline', async () => {
+      nock(ARM_BASE_URL).get('/path').delay(2000).reply(200, {})
+
+      const controller = new AbortController()
+      const pending = (await client()).request('GET', '/path', {
+        signal: controller.signal
+      })
+
+      controller.abort(new Error('caller gave up'))
+
+      await expect(pending).rejects.toThrow('caller gave up')
+    })
+
+    test.each([
+      ['absent', undefined],
+      ['empty', ''],
+      ['not a number', 'soon'],
+      ['negative', '-3']
+    ])('waits defaultPollMs when Retry-After is %s', async (_name, value) => {
+      const accepted = new Response(null, {
+        status: 202,
+        headers: {
+          location: `${ARM_BASE_URL}${OPERATION}`,
+          ...(value === undefined ? {} : { 'retry-after': value })
+        }
+      })
+      const replies = [accepted, new Response('{"id":"done"}', { status: 200 })]
+
+      vi.stubGlobal(
+        'fetch',
+        vi.fn(async () => replies.shift())
+      )
+
+      const timers = vi.spyOn(globalThis, 'setTimeout')
+
+      try {
+        await expect(
+          (await client({ defaultPollMs: 37 })).request('PUT', '/path')
+        ).resolves.toEqual({ id: 'done' })
+        expect(timers.mock.calls.map(([, ms]) => ms)).toContain(37)
+      } finally {
+        timers.mockRestore()
+        vi.stubGlobal('fetch', realFetch)
+      }
+    })
+
     test('releases the body of the 202 and of each polled 202', async () => {
       const cancelled = vi.fn()
       const reply = (status, headers, body) =>
