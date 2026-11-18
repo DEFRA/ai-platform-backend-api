@@ -60,11 +60,11 @@ export function describeServicePrincipalSwitchContract(
     test.each([
       ['an object ID that is not a GUID', { objectId: 'sp-1' }],
       ['an empty object ID', { objectId: '' }],
-      ['no object ID', { objectId: undefined }],
+      ['no object ID', { objectId: null }],
       ['an object ID with a path in it', { objectId: `${OBJECT_ID}/../x` }],
       ['a state that is not a boolean', { enabled: 'false' }],
-      ['no state', { enabled: undefined }],
-      ['no environment', { environment: undefined }]
+      ['no state', { enabled: null }],
+      ['no environment', { environment: null }]
     ])('refuses %s', async (_, change) => {
       await expect(
         createSwitch().setAccountEnabled({

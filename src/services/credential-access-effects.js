@@ -1,5 +1,6 @@
 import { ObjectId } from 'mongodb'
 
+import { forEachSequentially } from '#/common/helpers/sequential.js'
 import { UNTIL_REVOKED } from '#/adapters/access-window-format.js'
 import { accessWindowStore } from '#/adapters/access-window-store-registry.js'
 import { servicePrincipalSwitch } from '#/adapters/service-principal-switch-registry.js'
@@ -97,7 +98,7 @@ async function writeWindow(
   }
 
   const entries = await store.read({ environment, teamSlug })
-  const current = entries.find((entry) => sameClient(entry.clientId, clientId))
+  const current = entries.find((each) => sameClient(each.clientId, clientId))
   const entry = entryFor({ blocked, clientId, ordinary, current, at })
   const others = entries.filter((each) => each !== current)
 
@@ -190,7 +191,8 @@ export async function credentialsAccessChanged(
       servicePrincipal
     )
 
-  for (const step of blocked ? [window, principal] : [principal, window]) {
-    await step()
-  }
+  await forEachSequentially(
+    blocked ? [window, principal] : [principal, window],
+    (step) => step()
+  )
 }

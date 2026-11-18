@@ -67,6 +67,77 @@ async function settleRemoval(db, scope, federationId) {
     )
 }
 
+function removalAuditOf({ actor, teamId, environment }, resourceId) {
+  return {
+    actor,
+    role: PLATFORM_ADMIN_ROLE,
+    action: REMOVE_ACTION,
+    resource: 'teamFederation',
+    resourceId,
+    teamId,
+    environment
+  }
+}
+
+// A refused or failed removal is audited as a failure, then the refusal is thrown.
+async function removeAndAudit(db, context, federationId, { reason, eventId }) {
+  const { teamId, environment } = context
+
+  try {
+    return await removeUnderLock(db, context, federationId, {
+      stage: (entry) =>
+        stageRemoval(db, { teamId, environment }, entry.id, {
+          ...removalAuditOf(context, entry.id),
+          outcome: 'success',
+          reason,
+          eventId
+        })
+    })
+  } catch (error) {
+    const refusal = refusalOf(error, 'Failed to remove the application')
+
+    await recordAuditEvent(db, {
+      ...removalAuditOf(context, federationId),
+      outcome: 'failure',
+      code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
+    })
+
+    throw refusal
+  }
+}
+
+// The removal itself, under the deployment's lock.
+async function removeOnce(db, context, { federationId, reason, eventId }) {
+  const scope = { teamId: context.teamId, environment: context.environment }
+
+  await settleRemoval(db, scope, federationId)
+
+  if (await isReplay(db, eventId, reason)) {
+    const existing = await viewOfEntry(db, scope, federationId)
+
+    return {
+      federation: existing,
+      operationId: existing.operationId,
+      done: false,
+      replay: true
+    }
+  }
+
+  const { federation, done } = await removeAndAudit(db, context, federationId, {
+    reason,
+    eventId
+  })
+
+  await settleRemoval(db, scope, federationId)
+
+  return {
+    federation,
+    operationId: federation.operationId,
+    done,
+    replay: false
+  }
+}
+
 /**
  * Removes a team's federated application as a Platform Admin, whatever the
  * team's status (B31): the built removal, past the team lock, with the Platform
@@ -119,15 +190,6 @@ export async function removeFederationAsPlatformAdmin(
     resourceId: federationId,
     idempotencyKey
   })
-  const auditOf = (resourceId) => ({
-    actor,
-    role: PLATFORM_ADMIN_ROLE,
-    action: REMOVE_ACTION,
-    resource: 'teamFederation',
-    resourceId,
-    teamId,
-    environment
-  })
   const context = {
     db,
     actor,
@@ -141,56 +203,7 @@ export async function removeFederationAsPlatformAdmin(
     target: await resolveTeamTarget(db, { teamId, environment })
   }
 
-  return underLock(locker, teamId, environment, async () => {
-    await settleRemoval(db, { teamId, environment }, federationId)
-
-    if (await isReplay(db, eventId, reason)) {
-      const federation = await viewOfEntry(
-        db,
-        { teamId, environment },
-        federationId
-      )
-
-      return {
-        federation,
-        operationId: federation.operationId,
-        done: false,
-        replay: true
-      }
-    }
-
-    const { federation, done } = await removeUnderLock(
-      db,
-      context,
-      federationId,
-      {
-        stage: (entry) =>
-          stageRemoval(db, { teamId, environment }, entry.id, {
-            ...auditOf(entry.id),
-            outcome: 'success',
-            reason,
-            eventId
-          })
-      }
-    ).catch(async (error) => {
-      const refusal = refusalOf(error, 'Failed to remove the application')
-
-      await recordAuditEvent(db, {
-        ...auditOf(federationId),
-        outcome: 'failure',
-        code: refusal.data?.code ?? UPSTREAM_UNAVAILABLE
-      })
-
-      throw refusal
-    })
-
-    await settleRemoval(db, { teamId, environment }, federationId)
-
-    return {
-      federation,
-      operationId: federation.operationId,
-      done,
-      replay: false
-    }
-  })
+  return underLock(locker, teamId, environment, () =>
+    removeOnce(db, context, { federationId, reason, eventId })
+  )
 }

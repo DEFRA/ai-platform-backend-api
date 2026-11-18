@@ -56,6 +56,73 @@ function abortable(promise, signal) {
   ])
 }
 
+async function sendRequest(
+  getCredential,
+  method,
+  url,
+  { body, ifMatch, signal }
+) {
+  const credential = getCredential()
+  const token = await abortable(
+    credential.getToken(ARM_SCOPE, { abortSignal: signal }),
+    signal
+  )
+
+  const headers = {
+    authorization: `Bearer ${token.token}`,
+    'content-type': 'application/json'
+  }
+
+  if (ifMatch) {
+    headers['if-match'] = ifMatch
+  }
+
+  return fetch(url, {
+    method,
+    headers,
+    body: body ? JSON.stringify(body) : undefined,
+    signal
+  })
+}
+
+// ARM doesn't reliably use 204 for an empty body - a subscription DELETE
+// can come back 200 with nothing to parse, so check the body itself
+// rather than trusting the status code.
+async function parsed(response) {
+  const text = await response.text()
+  return text ? JSON.parse(text) : null
+}
+
+// Never include the response body - on `listSecrets` it can carry the
+// subscription key, and this message may end up in logs or an error path.
+function failure(method, path, what) {
+  return new Error(`ARM request failed: ${method} ${path} -> ${what}`)
+}
+
+// A body nobody reads keeps its socket until garbage collection.
+async function discard(response) {
+  await response.body?.cancel()
+}
+
+// `done: false` means the operation is still running.
+function outcomeOf(result, isAsyncOperation, method, path) {
+  if (!isAsyncOperation) {
+    return { done: true, value: result }
+  }
+
+  const state = String(result?.status ?? '').toLowerCase()
+
+  if (state === 'succeeded') {
+    return { done: true, value: null }
+  }
+
+  if (FAILED_STATES.has(state)) {
+    throw failure(method, path, `operation ${state}`)
+  }
+
+  return { done: false }
+}
+
 /**
  * Creates a single-purpose Azure Resource Manager request client. Knows
  * nothing about credentials, subscriptions or models - callers supply the
@@ -74,47 +141,8 @@ export function createArmClient({
   operationTimeoutMs = OPERATION_TIMEOUT_MS,
   defaultPollMs = DEFAULT_POLL_MS
 } = {}) {
-  async function send(method, url, { body, ifMatch, signal }) {
-    const credential = getCredential()
-    const token = await abortable(
-      credential.getToken(ARM_SCOPE, { abortSignal: signal }),
-      signal
-    )
-
-    const headers = {
-      authorization: `Bearer ${token.token}`,
-      'content-type': 'application/json'
-    }
-
-    if (ifMatch) {
-      headers['if-match'] = ifMatch
-    }
-
-    return fetch(url, {
-      method,
-      headers,
-      body: body ? JSON.stringify(body) : undefined,
-      signal
-    })
-  }
-
-  // ARM doesn't reliably use 204 for an empty body - a subscription DELETE
-  // can come back 200 with nothing to parse, so check the body itself
-  // rather than trusting the status code.
-  async function parsed(response) {
-    const text = await response.text()
-    return text ? JSON.parse(text) : null
-  }
-
-  // Never include the response body - on `listSecrets` it can carry the
-  // subscription key, and this message may end up in logs or an error path.
-  function failure(method, path, what) {
-    return new Error(`ARM request failed: ${method} ${path} -> ${what}`)
-  }
-
-  // A body nobody reads keeps its socket until garbage collection.
-  async function discard(response) {
-    await response.body?.cancel()
+  function send(method, url, options) {
+    return sendRequest(getCredential, method, url, options)
   }
 
   async function awaitOperation(method, path, accepted, signal) {
@@ -141,19 +169,15 @@ export function createArmClient({
       if (response.status === ACCEPTED) {
         await discard(response)
       } else {
-        const result = await parsed(response)
-        const state = String(result?.status ?? '').toLowerCase()
+        const outcome = outcomeOf(
+          await parsed(response),
+          status.isAsyncOperation,
+          method,
+          path
+        )
 
-        if (!status.isAsyncOperation) {
-          return result
-        }
-
-        if (state === 'succeeded') {
-          return null
-        }
-
-        if (FAILED_STATES.has(state)) {
-          throw failure(method, path, `operation ${state}`)
+        if (outcome.done) {
+          return outcome.value
         }
       }
 

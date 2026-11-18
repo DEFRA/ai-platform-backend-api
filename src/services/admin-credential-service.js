@@ -6,6 +6,7 @@ import {
   requirePlatformAdmin
 } from '#/common/helpers/auth/access.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
+import { forEachSequentially } from '#/common/helpers/sequential.js'
 import { credentialIssuerRegistry } from '#/adapters/credential-issuer-registry.js'
 import { credentialVault } from '#/adapters/credential-vault-registry.js'
 import {
@@ -128,22 +129,21 @@ async function applyAccessEffects(
 // the gateway and Entra their change: make it before the event is recorded, so
 // a failure is never audited as a success and a retry finds it again.
 async function applyOwedDisables(db, target, deps) {
-  for (const staged of await stagedAuditsOf(db, 'teamDeployments', target)) {
-    if (staged.change === 'disabled') {
-      const { eventId: _eventId, ...event } = staged.event
+  const owed = (await stagedAuditsOf(db, 'teamDeployments', target)).filter(
+    ({ change }) => change === 'disabled'
+  )
 
-      await applyAccessEffects(
-        db,
-        {
-          ...target,
-          change: 'disabled',
-          actor: staged.actor,
-          failedEvent: { ...event, actor: staged.actor }
-        },
-        deps
-      )
-    }
-  }
+  await forEachSequentially(owed, (staged) => {
+    const failedEvent = { ...staged.event, actor: staged.actor }
+
+    delete failedEvent.eventId
+
+    return applyAccessEffects(
+      db,
+      { ...target, change: 'disabled', actor: staged.actor, failedEvent },
+      deps
+    )
+  })
 }
 
 // Records every event an earlier change under this lock staged and did not get

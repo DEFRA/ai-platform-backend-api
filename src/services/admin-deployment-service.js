@@ -280,6 +280,36 @@ function listRow({ doc, team, credentials, names }) {
   }
 }
 
+// A row for every team with a model in the environment, by team name, and the
+// names of the models they hold.
+async function deploymentRows(db, environment) {
+  const docs = (
+    await deploymentDocumentsCursor(db, environment).toArray()
+  ).filter((doc) => liveEntries(doc).length > 0)
+  const teamIds = docs.map(({ teamId }) => teamId)
+  const [teams, credentials, names] = await Promise.all([
+    teamRecords(db, teamIds),
+    teamCredentialsCursor(db, { teamIds, environment }).toArray(),
+    modelNames(
+      db,
+      new Set(docs.flatMap((doc) => liveEntries(doc).map((e) => e.modelSlug)))
+    )
+  ])
+  const credentialsByTeam = groupBy(credentials, ({ teamId }) => teamId)
+  const rows = docs
+    .map((doc) =>
+      listRow({
+        doc,
+        team: teams.get(doc.teamId),
+        credentials: credentialsByTeam.get(doc.teamId) ?? [],
+        names
+      })
+    )
+    .sort((a, b) => a.normalisedName.localeCompare(b.normalisedName))
+
+  return { rows, names }
+}
+
 /**
  * One page of the deployments in one environment for a Platform Admin: a row
  * per team that still has a model there, by team name, with its models, the
@@ -299,32 +329,7 @@ export async function listTeamDeployments(
   await requirePlatformAdmin(db, actor)
 
   const chosen = validated({ environment, status, credential, page })
-  const docs = (
-    await deploymentDocumentsCursor(db, chosen.environment).toArray()
-  ).filter((doc) => liveEntries(doc).length > 0)
-  const teamIds = docs.map(({ teamId }) => teamId)
-  const [teams, credentials, names] = await Promise.all([
-    teamRecords(db, teamIds),
-    teamCredentialsCursor(db, {
-      teamIds,
-      environment: chosen.environment
-    }).toArray(),
-    modelNames(
-      db,
-      new Set(docs.flatMap((doc) => liveEntries(doc).map((e) => e.modelSlug)))
-    )
-  ])
-  const credentialsByTeam = groupBy(credentials, ({ teamId }) => teamId)
-  const rows = docs
-    .map((doc) =>
-      listRow({
-        doc,
-        team: teams.get(doc.teamId),
-        credentials: credentialsByTeam.get(doc.teamId) ?? [],
-        names
-      })
-    )
-    .sort((a, b) => a.normalisedName.localeCompare(b.normalisedName))
+  const { rows, names } = await deploymentRows(db, chosen.environment)
   const wanted = rows.filter((row) =>
     matches(row, {
       search: search?.trim() ? normaliseName(search) : undefined,
