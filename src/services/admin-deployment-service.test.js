@@ -751,14 +751,19 @@ describe('#admin-deployment-service', () => {
           }
         ],
         environments: [
-          { environment: DEV, credential: { status: 'active' } },
+          {
+            environment: DEV,
+            credential: { status: 'active' },
+            servicePrincipalDisabledAt: null
+          },
           {
             environment: TEST,
             credential: {
               status: 'disabled',
               blockedAt: '2026-11-02T10:00:00.000Z',
               held: 'none'
-            }
+            },
+            servicePrincipalDisabledAt: null
           }
         ]
       })
@@ -801,6 +806,29 @@ describe('#admin-deployment-service', () => {
         (await detail({ teamId: id, environment: TEST }))
           .servicePrincipalDisabledAt
       ).toBeNull()
+    })
+
+    test('each environment of the read gives its own service principal confirmation time, null where it never was', async () => {
+      const id = await team('Per Environment Team')
+      const confirmed = '2026-11-18T09:30:00.000Z'
+
+      await deployment(id, DEV, [entry()])
+      await deployment(id, TEST, [entry()], {
+        servicePrincipalDisabledAt: confirmed
+      })
+
+      const { environments } = await detail({ teamId: id, environment: DEV })
+
+      expect(environments).toEqual([
+        expect.objectContaining({
+          environment: DEV,
+          servicePrincipalDisabledAt: null
+        }),
+        expect.objectContaining({
+          environment: TEST,
+          servicePrincipalDisabledAt: confirmed
+        })
+      ])
     })
 
     test('environmentDisabled is true only for an environment the team is disabled in, whatever its status, and there is no teamDisabled', async () => {

@@ -79,13 +79,11 @@ describe('#audit: credential, federation and limits events carry the team and en
     expect(secret.statusCode).toBe(201)
     secretId = secret.result.credential.id
     credentialId = (
-      await server.db
-        .collection('credentials')
-        .findOne({
-          teamId: team.teamId,
-          environment: ENVIRONMENT,
-          tier: 'team'
-        })
+      await server.db.collection('credentials').findOne({
+        teamId: team.teamId,
+        environment: ENVIRONMENT,
+        tier: 'team'
+      })
     )._id.toString()
   }
 

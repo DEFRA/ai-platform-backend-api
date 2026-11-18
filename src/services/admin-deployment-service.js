@@ -494,7 +494,14 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
         .collection('teamDeployments')
         .find(
           { teamId },
-          { projection: { environment: 1, adminBlocked: 1, adminBlockedAt: 1 } }
+          {
+            projection: {
+              environment: 1,
+              adminBlocked: 1,
+              adminBlockedAt: 1,
+              servicePrincipalDisabledAt: 1
+            }
+          }
         )
         .toArray(),
       teamCredentialsCursor(db, { teamIds: [teamId] }).toArray(),
@@ -544,6 +551,12 @@ export async function getTeamDeployment(db, { actor, teamId, environment }) {
       .sort(
         (a, b) => environmentRank(a) - environmentRank(b) || a.localeCompare(b)
       )
-      .map((where) => ({ environment: where, credential: credentialIn(where) }))
+      .map((where) => ({
+        environment: where,
+        credential: credentialIn(where),
+        servicePrincipalDisabledAt:
+          docs.find((d) => d.environment === where)
+            ?.servicePrincipalDisabledAt ?? null
+      }))
   }
 }

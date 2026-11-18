@@ -600,12 +600,20 @@ Disable and Enable write `admin.credentials.disable` and `admin.credentials.enab
 writes `admin.credential.revoke` (resource `credential`, `resourceId` the secret, with the reason). Each is written only
 when it changed something, then calls `credentialsAccessChanged(db, {teamId, environment, change, actor})` once, where
 `actor` is the claims the event keeps (`userId`, `oid`, `tid`, `azp`, `uti`), never the email, name or token. That
-hook (`services/credential-block.js`) is empty today, so Disable credentials has no gateway or Entra effect yet. The
-registration-wide effects of a disable (the access window's `adminBlocked`, the service principal), the removal of a
-federated application are the next ship (S2, B31 in `docs/plans/remaining.md` of the frontend), which adds them in that hook
-without touching a route. While credentials are disabled a federation request is `409 federation-refused` with
-`credentials-disabled` for the environment (the dry run reports it) and a change is `409 credentials-disabled`; removing an
-application stays allowed. Indexes `teamDeployments {environment: 1, teamId: 1}`
+hook (`services/credential-access-effects.js`) does the registration-wide effects, all under the block lock and each
+idempotent, so a retry repeats them. Disable sets `adminBlocked`, then writes the client's entry in the team's access
+window `suspended`, then switches the registration's service principal off and keeps the time Entra confirmed on the
+`teamDeployments` record as `servicePrincipalDisabledAt`. Enable switches the principal on (only where the ordinary
+window allows the client), then restores the ordinary window, and clears `adminBlocked` last. If a step fails, the
+block is kept (a Disable stays disabled, an Enable stays disabled), a `failure` event with code `upstream-unavailable`
+is audited and the request is `502 upstream-unavailable`; repeating it retries. The window store and the service
+principal switch are mock adapters until the gateway and Entra consent are in place (`ACCESS_WINDOW_STORE`,
+`SERVICE_PRINCIPAL_SWITCH`; the mock is refused in `prod`). `GET /v1/admin/team-deployments/{teamId}/{environment}`
+gives `servicePrincipalDisabledAt` for the environment and on each entry of `environments[]` (an ISO time, or `null`
+for one never disabled), so the Enable page can say when the old tokens have expired. While credentials are disabled
+a federation request is `409 federation-refused` with `credentials-disabled` for the environment (the dry run reports
+it) and a change is `409 credentials-disabled`, both checked under the same block lock as a grant, so a Disable
+landing meanwhile cannot let one through; removing an application stays allowed. Indexes `teamDeployments {environment: 1, teamId: 1}`
 and `credentials {teamId: 1, environment: 1, tier: 1}` serve the reads.
 
 **A change and its audit event stay consistent.** The change and its event are two writes with no transaction between

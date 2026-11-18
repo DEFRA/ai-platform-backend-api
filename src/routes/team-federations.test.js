@@ -1661,6 +1661,57 @@ describe('#team-federations routes', () => {
       expect(await entriesOf(team)).toEqual(before)
     })
 
+    // A Disable that holds the block lock when the request has passed its
+    // first look at the block, and lands before the request queues.
+    async function withDisableInFlight(team, request) {
+      const held = await server.locker.lock(
+        `credentials-block:${team.teamId}:sandbox`
+      )
+      const settled = request()
+
+      await new Promise((resolve) => setTimeout(resolve, 250))
+      await disableCredentials(team)
+      await held.free()
+
+      return settled
+    }
+
+    test('a Disable landing between the check and the queue refuses the request and queues nothing', async () => {
+      const team = await deployedTeam('fed-cd-5')
+      const operationsBefore = (await operationsOf(team)).length
+
+      const { statusCode, result } = await withDisableInFlight(team, () =>
+        post(team, 'fed-cd-5', CDP)
+      )
+
+      expect(statusCode).toBe(409)
+      expect(result).toMatchObject({
+        code: 'federation-refused',
+        environments: [{ environment: 'sandbox', code: 'credentials-disabled' }]
+      })
+      expect(await operationsOf(team)).toHaveLength(operationsBefore)
+      expect(await entriesOf(team)).toEqual([])
+    })
+
+    test('a Disable landing between the check and the queue refuses the change and leaves the application as it was', async () => {
+      const label = 'fed-cd-6'
+      const team = await deployedTeam(label)
+      const { result: asked } = await post(team, label, CDP)
+
+      await settleEvents()
+
+      const before = await entriesOf(team)
+      const operationsBefore = (await operationsOf(team)).length
+      const { statusCode, result } = await withDisableInFlight(team, () =>
+        patch(team, label, asked.federations[0].id, { service: 'delta-api' })
+      )
+
+      expect(statusCode).toBe(409)
+      expect(result.code).toBe('credentials-disabled')
+      expect(await entriesOf(team)).toEqual(before)
+      expect(await operationsOf(team)).toHaveLength(operationsBefore)
+    })
+
     test('still lets an Admin remove an application', async () => {
       const label = 'fed-cd-4'
       const team = await deployedTeam(label)

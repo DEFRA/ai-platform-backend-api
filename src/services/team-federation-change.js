@@ -1,6 +1,7 @@
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { tenantOrchestratorRegistry } from '#/adapters/tenant-orchestrator-registry.js'
 import { findByIdempotencyKey } from '#/operations/operation-repository.js'
+import { withCredentialsBlockLock } from '#/services/credential-block.js'
 import { projectOperation } from '#/operations/operation-projection.js'
 import {
   FEDERATION_HOSTS,
@@ -287,12 +288,19 @@ export async function changeFederation(
     'Failed to change the application',
     () =>
       underTeamLock(locker, context.teamId, () =>
-        underLock(locker, context.teamId, environment, async () =>
-          changeUnderLock(db, context, {
-            entry: await requireLiveEntry(db, context, federationId),
-            request,
-            federationId
-          })
+        // The block's lock is the outermost, as for a grant, so a Disable
+        // cannot land between the check of the block and the queue.
+        withCredentialsBlockLock(
+          locker,
+          { teamId: context.teamId, environment },
+          () =>
+            underLock(locker, context.teamId, environment, async () =>
+              changeUnderLock(db, context, {
+                entry: await requireLiveEntry(db, context, federationId),
+                request,
+                federationId
+              })
+            )
         )
       )
   )
