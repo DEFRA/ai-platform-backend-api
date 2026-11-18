@@ -26,6 +26,7 @@ import {
 } from '#/services/team-operations-service.js'
 import { readTeamFiles, requireTeamId } from '#/services/team-service.js'
 import { isEnvironmentDisabled } from '#/services/team-lock.js'
+import { isCredentialsBlocked } from '#/services/credential-block.js'
 
 // What a team's members see of their team in each environment: the models
 // they hold and how each change is going, the limits their team file holds,
@@ -174,6 +175,7 @@ function summaryOf({
     setUp: Boolean(file),
     paused,
     disabled,
+    credentialsDisabled: isCredentialsBlocked(doc),
     models: modelsOf(doc).summary,
     limits: limitsOf(file),
     // The places the team's registration holds: applications asked for and

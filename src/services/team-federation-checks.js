@@ -1,6 +1,7 @@
 import { ObjectId } from 'mongodb'
 
 import { teamEnvironments } from '#/services/team-deployment-service.js'
+import { isCredentialsBlocked } from '#/services/credential-block.js'
 import { TEAM_DISABLED, isEnvironmentDisabled } from '#/services/team-lock.js'
 import {
   FEDERATION_STATUS,
@@ -22,6 +23,7 @@ import { readTeamFiles } from '#/services/team-service.js'
 export const FEDERATION_REFUSALS = Object.freeze({
   NOT_AVAILABLE: 'environment-not-available',
   TEAM_DISABLED,
+  CREDENTIALS_DISABLED: 'credentials-disabled',
   NOT_SET_UP: 'environment-not-set-up',
   EXISTS: 'federation-exists',
   TRUSTED_ELSEWHERE: 'federation-trusted-elsewhere',
@@ -115,8 +117,9 @@ async function isTrustedElsewhere(db, { teamId, environment, trustKey }) {
 /**
  * Why an application cannot be federated in an environment, or null. An
  * environment this instance does not offer, one a Platform Admin has
- * disabled for the team (`team-disabled`), or one the team has not set up, is
- * refused first; then an application the team's registration holds already
+ * disabled for the team (`team-disabled`), one whose credentials a Platform
+ * Admin has disabled (`credentials-disabled`), or one the team has not set
+ * up, is refused first; then an application the team's registration holds already
  * (by workload or by name, including what a change in progress is changing an
  * application to); then a workload another team trusts; then a registration
  * that is full. A change names the application it is about in `except`,
@@ -136,6 +139,10 @@ export async function refusalFor(
 
   if (registration.disabled) {
     return FEDERATION_REFUSALS.TEAM_DISABLED
+  }
+
+  if (isCredentialsBlocked(registration.doc)) {
+    return FEDERATION_REFUSALS.CREDENTIALS_DISABLED
   }
 
   const { file, doc } = registration

@@ -273,6 +273,42 @@ describe('#team-environments routes', () => {
       expect(JSON.stringify([result, one.result])).not.toMatch(/reason/i)
     })
 
+    test('marks each environment where a Platform Admin disabled the team’s credentials, and no other, with no word of who or why', async () => {
+      const team = await fixtures.newTeam('env-list-credentials')
+
+      filesOf(team, { infradev: teamFile(team.slug, 'infradev') })
+      await server.db.collection('teamDeployments').updateOne(
+        { teamId: team.teamId, environment: 'qa' },
+        {
+          $set: {
+            adminBlocked: true,
+            adminBlockedAt: '2026-11-18T10:00:00.000Z',
+            adminBlockedBy: 'an-admin-id'
+          }
+        },
+        { upsert: true }
+      )
+
+      const { result } = await getAll(team, 'env-list-credentials')
+      const blocked = await getOne(team, 'qa', 'env-list-credentials')
+      const open = await getOne(team, 'infradev', 'env-list-credentials')
+
+      expect(
+        result.environments.map(({ environment, credentialsDisabled }) => [
+          environment,
+          credentialsDisabled
+        ])
+      ).toEqual([
+        ['infradev', false],
+        ['qa', true]
+      ])
+      expect(blocked.result.credentialsDisabled).toBe(true)
+      expect(open.result.credentialsDisabled).toBe(false)
+      expect(JSON.stringify([result, blocked.result])).not.toMatch(
+        /adminBlocked|an-admin-id|reason/i
+      )
+    })
+
     test('shows the same to a Member as to an Admin', async () => {
       const team = await fixtures.newTeam('env-list-3')
 

@@ -593,8 +593,10 @@ when it changed something, then calls `credentialsAccessChanged(db, {teamId, env
 `actor` is the claims the event keeps (`userId`, `oid`, `tid`, `azp`, `uti`), never the email, name or token. That
 hook (`services/credential-block.js`) is empty today, so Disable credentials has no gateway or Entra effect yet. The
 registration-wide effects of a disable (the access window's `adminBlocked`, the service principal), the removal of a
-federated application and the refusal to request or change one while credentials are disabled are the next ship (S2,
-B31 in `docs/plans/remaining.md` of the frontend), which adds them in that hook without touching a route. Indexes `teamDeployments {environment: 1, teamId: 1}`
+federated application are the next ship (S2, B31 in `docs/plans/remaining.md` of the frontend), which adds them in that hook
+without touching a route. While credentials are disabled a federation request is `409 federation-refused` with
+`credentials-disabled` for the environment (the dry run reports it) and a change is `409 credentials-disabled`; removing an
+application stays allowed. Indexes `teamDeployments {environment: 1, teamId: 1}`
 and `credentials {teamId: 1, environment: 1, tier: 1}` serve the reads.
 
 **A change and its audit event stay consistent.** The change and its event are two writes with no transaction between
@@ -651,7 +653,7 @@ Every one is for a team member (a non-member is `404`, audited, and nothing is r
 slug, and carries the team in every query.
 `GET /v1/teams/{teamId}/environments` lists each environment in `TEAM_ENVIRONMENTS` order and `.../environments/{environment}`
 shows one (`404 environment-not-available` for one this instance does not offer): whether the team has a file there
-(`setUp`), whether the environment is paused, its models (`models.count` counts the ready ones, `items` every one not removed), the
+(`setUp`), whether the environment is paused, `credentialsDisabled` (a boolean, true while a Platform Admin has disabled the team's credentials there, with no reason), its models (`models.count` counts the ready ones, `items` every one not removed), the
 limits its file holds (the same read as `GET /v1/teams/{id}`, so `502 upstream-unavailable` when GitHub cannot be read), `applications`
 (`used` is 0 until federation, B18), the latest change and whether one is in progress. The one environment also returns `models` as
 `GET /deployments` gives them, `limitBounds` and `pendingLimits`.
