@@ -15,6 +15,7 @@ import {
   revokeCredential
 } from '#/services/admin-credential-service.js'
 import { redispatchApply } from '#/services/team-deployment-service.js'
+import { removeFederationAsPlatformAdmin } from '#/services/admin-federation-service.js'
 import { idempotentHeaders } from '#/routes/member-schemas.js'
 import { reasonFailAction, reasonPayload } from '#/routes/admin-reason.js'
 
@@ -41,6 +42,12 @@ const secretParams = Joi.object({
   teamId: Joi.string().max(MAX_ID_LENGTH).required(),
   environment: Joi.string().max(MAX_ENVIRONMENT_LENGTH).required(),
   credentialId: Joi.string().max(MAX_ID_LENGTH).required()
+}).unknown(false)
+
+const federationParams = Joi.object({
+  teamId: Joi.string().max(MAX_ID_LENGTH).required(),
+  environment: Joi.string().max(MAX_ENVIRONMENT_LENGTH).required(),
+  federationId: Joi.string().max(MAX_ID_LENGTH).required()
 }).unknown(false)
 
 const listQuery = Joi.object({
@@ -188,6 +195,41 @@ export const adminTeamDeployments = [
           { logger: request.logger }
         )
       )
+  },
+  {
+    method: 'POST',
+    path: `${BASE}/{teamId}/{environment}/federations/{federationId}/remove`,
+    options: {
+      app: { access: ACCESS.platformAdmin },
+      description:
+        "Removes one of a team's federated applications in an environment (Platform Admin), whatever the team's status: the environment's team file is submitted without it. Takes an Idempotency-Key and a `reason` of 1 to 500 characters, kept in the audit log only. 202 `{federation, operationId}` while it is being removed; 200 for an application already removed, or a repeat of the key and reason; the same key with another reason is 409 `idempotency-key-reused`; 400 `reason-required`, `reason-too-long`; 404 `deployment-not-found`, `federation-not-found`; 409 `federation-in-progress` while it is being set up.",
+      validate: {
+        headers: idempotentHeaders,
+        params: federationParams,
+        payload: reasonPayload,
+        failAction: reasonFailAction
+      }
+    },
+    handler: async (request, h) => {
+      const { federation, operationId, done, replay } =
+        await removeFederationAsPlatformAdmin(
+          request.db,
+          request.locker,
+          {
+            actor: request.auth.credentials,
+            ...request.params,
+            reason: request.payload.reason,
+            idempotencyKey: request.headers['idempotency-key'],
+            traceParent: request.headers.traceparent,
+            cdpRequestId: request.headers['x-cdp-request-id']
+          },
+          { operations: request.operations }
+        )
+
+      return h
+        .response({ federation, operationId })
+        .code(done || replay ? statusCodes.ok : statusCodes.accepted)
+    }
   },
   redispatchRoute('retry'),
   redispatchRoute('reconcile')

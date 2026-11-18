@@ -544,6 +544,14 @@ client secret at a time (below).
   event is about the secret. A secret already revoked, or a repeat of the key and reason, is a no-op (`revoked: false`,
   no event), except a retry that records the event the failed first attempt left (`revoked: true`); 404 `credential-not-found` for an id that is not the team's secret in that environment. An issuer failure
   leaves the secret active, audits a `failure` (code `upstream-unavailable`) and answers 502 `upstream-unavailable`.
+- **Remove a federated application** (`POST /v1/admin/team-deployments/{teamId}/{environment}/federations/{federationId}/remove`,
+  same `Idempotency-Key` and `{ reason }`) runs the built removal (`removeUnderLock` in `team-federation-remove.js`, the
+  environment's team file submitted without the entry) with the Platform Admin as actor and past the team lock, so it works on a
+  disabled team and for a Platform Admin who is not a member. Answers `{federation, operationId}`: 202 while it is being removed,
+  200 for an application already removed or a repeat of the key and reason; 404 `deployment-not-found`,
+  `federation-not-found`; 409 `federation-in-progress` while it is being set up, `idempotency-key-reused` for the key with another
+  reason. One `admin.federation.remove` event (team, environment, reason) is about the application; a refusal after the lookup is
+  audited as a `failure`.
 
 **Disable team and Enable team** (B31, design F) make a team view-only in the portal; nothing at the gateway, in Entra
 or in GitOps changes, so the team's credentials and models keep working. `POST /v1/admin/teams/{id}/disable` takes

@@ -111,7 +111,17 @@ async function requestRemoval(db, context, entry) {
   }
 }
 
-async function removeUnderLock(db, context, federationId) {
+/**
+ * The removal itself, for a caller that holds the deployment's lock and has
+ * checked its own right to act. `onRemoved` records the removal when one was
+ * made (not for an application already removed or being removed).
+ * @param {import('mongodb').Db} db
+ * @param {object} context - the team, environment, target, actor, operations and registry
+ * @param {string} federationId
+ * @param {(entry: object) => Promise<unknown>} onRemoved
+ * @returns {Promise<{federation: object, done: boolean}>}
+ */
+export async function removeUnderLock(db, context, federationId, onRemoved) {
   const { teamId, environment } = context
   const scope = { teamId, environment }
   const entry = await requireEntry(db, context, federationId)
@@ -133,7 +143,7 @@ async function removeUnderLock(db, context, federationId) {
 
   if (await hasBeenReplaced(db, scope, entry)) {
     await clearReplaced(db, scope, entry)
-    await auditSuccess(db, context, ACTIONS.REMOVE, entry, environment)
+    await onRemoved(entry)
 
     return { federation: await viewOfEntry(db, scope, entry.id), done: true }
   }
@@ -141,7 +151,7 @@ async function removeUnderLock(db, context, federationId) {
   const operation = await requestRemoval(db, context, entry)
 
   await projectOperation(db, operation)
-  await auditSuccess(db, context, ACTIONS.REMOVE, entry, environment)
+  await onRemoved(entry)
 
   return { federation: await viewOfEntry(db, scope, entry.id), done: false }
 }
@@ -177,7 +187,9 @@ export async function removeFederation(
     'Failed to remove the application',
     () =>
       underLock(locker, context.teamId, params.environment, () =>
-        removeUnderLock(db, context, params.federationId)
+        removeUnderLock(db, context, params.federationId, (entry) =>
+          auditSuccess(db, context, ACTIONS.REMOVE, entry, params.environment)
+        )
       )
   )
 }
