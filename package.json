@@ -57,7 +57,7 @@
     "hapi-pulse": "4.0.0",
     "joi": "18.3.2",
     "mongo-locks": "3.2.0",
-    "mongodb": "7.7.0",
+    "mongodb": "7.9.0",
     "octokit": "5.0.5",
     "pino": "10.4.0",
     "sqs-consumer": "15.0.4"
