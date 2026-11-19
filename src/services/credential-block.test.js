@@ -143,6 +143,58 @@ describe('credential-block', () => {
     })
   })
 
+  describe('the environment lock on the team', () => {
+    async function teamWith(fields = {}) {
+      const { insertedId } = await db.collection('teams').insertOne({
+        name: 'lock',
+        normalisedName: `lock-${randomUUID()}`,
+        slug: `lock-${randomUUID()}`,
+        status: 'active',
+        ...fields
+      })
+
+      return insertedId
+    }
+
+    const disabledOf = async (id) =>
+      (await db.collection('teams').findOne({ _id: id })).disabledEnvironments
+
+    test('blocking lists the environment on the team once, and unblocking removes only that one', async () => {
+      const id = await teamWith({ disabledEnvironments: ['infradev'] })
+      const doc = await deploymentDocument({ teamId: id.toString() })
+
+      await block.blockCredentials(db, { ...doc, actor })
+      await block.blockCredentials(db, { ...doc, actor })
+
+      expect((await disabledOf(id)).toSorted()).toEqual(['infradev', 'sandbox'])
+
+      await block.unblockCredentials(db, doc)
+
+      expect(await disabledOf(id)).toEqual(['infradev'])
+    })
+
+    test('repairs the list on a repeat that changed nothing', async () => {
+      const id = await teamWith()
+      const doc = await deploymentDocument({
+        teamId: id.toString(),
+        adminBlocked: true
+      })
+
+      expect(await block.blockCredentials(db, { ...doc, actor })).toEqual({
+        changed: false
+      })
+      expect(await disabledOf(id)).toEqual(['sandbox'])
+    })
+
+    test('leaves a team id that is not an object id alone', async () => {
+      const doc = await deploymentDocument()
+
+      await expect(
+        block.blockCredentials(db, { ...doc, actor })
+      ).resolves.toEqual({ changed: true })
+    })
+  })
+
   describe('isEnvironmentBlocked', () => {
     test('reads the block now held for the team and environment', async () => {
       const doc = await deploymentDocument()

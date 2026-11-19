@@ -1,3 +1,5 @@
+import { randomUUID } from 'node:crypto'
+
 import { backfillRegistry } from '#/common/backfills/registry.js'
 
 describe('#backfillRegistry', () => {
@@ -1178,6 +1180,55 @@ describe('#backfillRegistry', () => {
       expect(await findBackfill(backfillId).run(db)).toEqual({
         modifiedCount: 0
       })
+    })
+  })
+
+  describe('2026-11-19-teams-disabled-environments-from-credential-blocks', () => {
+    const id = '2026-11-19-teams-disabled-environments-from-credential-blocks'
+
+    test('lists the environments whose credentials are blocked and clears the ones a team-level disable added', async () => {
+      const [withBlock, withoutBlock] = await Promise.all(
+        ['blocked', 'unblocked'].map(async (label) => {
+          const { insertedId } = await db.collection('teams').insertOne({
+            name: `Backfill ${label}`,
+            normalisedName: `backfill-${label}-${randomUUID()}`,
+            slug: `backfill-${label}-${randomUUID()}`,
+            status: 'disabled',
+            disabledEnvironments: ['qa', 'infradev']
+          })
+
+          return insertedId
+        })
+      )
+
+      await db.collection('teamDeployments').insertMany([
+        {
+          teamId: withBlock.toString(),
+          environment: 'sandbox',
+          adminBlocked: true
+        },
+        {
+          teamId: withBlock.toString(),
+          environment: 'infradev',
+          adminBlocked: true
+        },
+        {
+          teamId: withoutBlock.toString(),
+          environment: 'infradev',
+          adminBlocked: false
+        }
+      ])
+
+      await findBackfill(id).run(db)
+
+      const read = (teamId) => db.collection('teams').findOne({ _id: teamId })
+
+      expect((await read(withBlock)).disabledEnvironments).toEqual([
+        'infradev',
+        'sandbox'
+      ])
+      expect((await read(withoutBlock)).disabledEnvironments).toEqual([])
+      expect((await read(withBlock)).status).toBe('disabled')
     })
   })
 })

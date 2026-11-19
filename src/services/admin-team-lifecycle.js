@@ -2,45 +2,25 @@ import { Boom, boomWithCode } from '#/common/helpers/boom-with-code.js'
 import { PLATFORM_ADMIN_ROLE } from '#/common/helpers/auth/access.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import { eventIdOf, isReplay } from '#/services/admin-idempotency.js'
-import {
-  environmentRank,
-  requireTeamForPlatformAdmin
-} from '#/services/admin-team-service.js'
+import { requireTeamForPlatformAdmin } from '#/services/admin-team-service.js'
 import {
   pendingMarker,
   settlePendingAudits,
   stageAudit
 } from '#/services/admin-pending-audit.js'
-import { teamEnvironments } from '#/services/team-deployment-service.js'
 import { disabledEnvironmentsOf, isTeamDisabled } from '#/services/team-lock.js'
 import { TEAM_STATUS, statusOf } from '#/services/team-status.js'
 
-// A Platform Admin's Disable team and Enable team (B31, design F). Disabling
-// makes the team view-only in the portal, and may also disable chosen
-// environments; nothing at the gateway, in Entra or in GitOps changes. The
-// team's `status` is its own flag, never `adminBlocked`. Each call is one
-// update of the team and at most one audit event, under one lock per team.
+// A Platform Admin's Disable team and Enable team (B31, design F). A team is
+// environment-agnostic, so these change the team alone: Disable makes its
+// details and members view-only, and nothing at the gateway, in Entra, in
+// GitOps or in any environment changes. An environment is disabled only by
+// Disable credentials (`credential-block.js`). The team's `status` is its own
+// flag, never `adminBlocked`. Each call is one update of the team and at most
+// one audit event, under one lock per team.
 
 const DISABLE_ACTION = 'admin.team.disable'
 const ENABLE_ACTION = 'admin.team.enable'
-
-function environmentNotFound() {
-  return boomWithCode(
-    Boom.notFound,
-    'This environment is not available',
-    'environment-not-found'
-  )
-}
-
-// Only environments this instance offers can be chosen; a stray code is
-// refused, not stored.
-function requireOfferedEnvironments(environments) {
-  const offered = teamEnvironments()
-
-  if (environments.some((environment) => !offered.includes(environment))) {
-    throw environmentNotFound()
-  }
-}
 
 // A team waiting to be removed keeps that status: Disable would replace it with
 // `disabled`, and a later Enable would make the team `active` while its removal
@@ -53,13 +33,6 @@ function requireNotPendingRemoval(team) {
       'team-pending-removal'
     )
   }
-}
-
-// Without repeats, in the order this instance lists them.
-function inListedOrder(environments) {
-  return [...new Set(environments)].sort(
-    (a, b) => environmentRank(a) - environmentRank(b) || a.localeCompare(b)
-  )
 }
 
 function viewOf(team) {
@@ -129,65 +102,46 @@ async function updateAndAudit(db, found, { changes, event }) {
 }
 
 /**
- * Disables a team: its status becomes `disabled` and the environments chosen
- * (none is allowed) join its disabled environments. Members can still view
- * it; every change in the lock map is refused until it is enabled. One
- * `admin.team.disable` event holds the reason and the environments this call
- * added. A team that is already disabled and has nothing to add, a repeat of
- * the same Idempotency-Key, reason and environments included, changes and
- * records nothing; the same key with another reason or other environments is
- * `409 idempotency-key-reused`. A team waiting to be removed is
- * `409 team-pending-removal`.
+ * Disables a team: its status becomes `disabled`. Members can still view it;
+ * every team-scope change in the lock map (details, members) is refused until
+ * it is enabled. No environment changes: its models, credentials and
+ * deployments keep working and can still be changed. One `admin.team.disable`
+ * event holds the reason. A team that is already disabled, or a repeat of the
+ * same Idempotency-Key and reason, changes and records nothing; the same key
+ * with another reason is `409 idempotency-key-reused`. A team waiting to be
+ * removed is `409 team-pending-removal`.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{actor: object, id: string, reason: string, idempotencyKey: string, environments?: string[]}} params - `id` is the team's id or slug; `actor` is the token's credentials; `reason` is kept in the audit event only
+ * @param {{actor: object, id: string, reason: string, idempotencyKey: string}} params - `id` is the team's id or slug; `actor` is the token's credentials; `reason` is kept in the audit event only
  * @returns {Promise<{team: {id: string, status: string, disabledEnvironments: string[]}}>}
  */
 export async function disableTeam(
   db,
   locker,
-  { actor, id, reason, idempotencyKey, environments = [] }
+  { actor, id, reason, idempotencyKey }
 ) {
   const found = await requireTeamForPlatformAdmin(db, actor, id)
-
-  requireOfferedEnvironments(environments)
-
   const teamId = found._id.toString()
   const eventId = eventIdOf(DISABLE_ACTION, { teamId, idempotencyKey })
-  const requested = inListedOrder(environments)
 
   return withStatusLock(locker, teamId, async () => {
     await settleTeamAudits(db, found)
 
     const team = await readTeam(db, found)
 
-    if (await isReplay(db, eventId, reason, requested)) {
+    if (await isReplay(db, eventId, reason)) {
       return viewOf(team)
     }
 
     requireNotPendingRemoval(team)
 
-    const held = disabledEnvironmentsOf(team)
-    const added = requested.filter((environment) => !held.includes(environment))
-
-    if (isTeamDisabled(team) && added.length === 0) {
+    if (isTeamDisabled(team)) {
       return viewOf(team)
     }
 
     const updated = await updateAndAudit(db, found, {
-      changes: {
-        status: TEAM_STATUS.disabled,
-        disabledEnvironments: inListedOrder([...held, ...added])
-      },
-      event: {
-        action: DISABLE_ACTION,
-        actor,
-        teamId,
-        environments: added,
-        requestedEnvironments: requested,
-        reason,
-        eventId
-      }
+      changes: { status: TEAM_STATUS.disabled },
+      event: { action: DISABLE_ACTION, actor, teamId, reason, eventId }
     })
 
     return viewOf(updated)
@@ -195,49 +149,31 @@ export async function disableTeam(
 }
 
 /**
- * Enables a team: it lifts the team lock, and unlocks the environments
- * chosen (every disabled environment when none is named); an environment not
- * chosen stays disabled. It takes no reason and never touches the block of
- * the team's credentials. A team that is not disabled and has no environment
- * to unlock is left as it is, with no event.
+ * Enables a team: it lifts the team lock. It takes no reason and never
+ * touches an environment or the block of the team's credentials, which Enable
+ * credentials lifts. A team that is not disabled is left as it is, with no
+ * event.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker
- * @param {{actor: object, id: string, environments?: string[]}} params - `id` is the team's id or slug; `actor` is the token's credentials
+ * @param {{actor: object, id: string}} params - `id` is the team's id or slug; `actor` is the token's credentials
  * @returns {Promise<{team: {id: string, status: string, disabledEnvironments: string[]}}>}
  */
-export async function enableTeam(db, locker, { actor, id, environments }) {
+export async function enableTeam(db, locker, { actor, id }) {
   const found = await requireTeamForPlatformAdmin(db, actor, id)
-
-  requireOfferedEnvironments(environments ?? [])
-
   const teamId = found._id.toString()
 
   return withStatusLock(locker, teamId, async () => {
     await settleTeamAudits(db, found)
 
     const team = await readTeam(db, found)
-    const held = disabledEnvironmentsOf(team)
-    const chosen = environments ?? held
-    const unlocked = held.filter((environment) => chosen.includes(environment))
-    const lifted = isTeamDisabled(team)
 
-    if (!lifted && unlocked.length === 0) {
+    if (!isTeamDisabled(team)) {
       return viewOf(team)
     }
 
     const updated = await updateAndAudit(db, found, {
-      changes: {
-        ...(lifted && { status: TEAM_STATUS.active }),
-        disabledEnvironments: held.filter(
-          (environment) => !chosen.includes(environment)
-        )
-      },
-      event: {
-        action: ENABLE_ACTION,
-        actor,
-        teamId,
-        environments: unlocked
-      }
+      changes: { status: TEAM_STATUS.active },
+      event: { action: ENABLE_ACTION, actor, teamId }
     })
 
     return viewOf(updated)
