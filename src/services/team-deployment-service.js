@@ -57,28 +57,10 @@ function requireTeamEnvironment(environment) {
   }
 }
 
-// Setting up an environment the team has no record in is a change of the team,
-// refused while it is disabled; a change of an environment it has is refused
-// only while that environment is disabled.
-async function requireDeploymentAllowed(
-  db,
-  { actor, role, teamId, environment }
-) {
-  const record = await db
-    .collection('teamDeployments')
-    .findOne({ teamId, environment }, { projection: { _id: 1 } })
-
-  if (!record) {
-    await requireTeamChangeAllowed(db, {
-      actor,
-      role,
-      teamId,
-      environment,
-      scope: LOCK_SCOPE.team
-    })
-  }
-
-  await requireTeamChangeAllowed(db, {
+// A change to an environment is refused only while that environment is
+// disabled (its credentials are). A disabled team can still deploy models.
+function requireDeploymentAllowed(db, { actor, role, teamId, environment }) {
+  return requireTeamChangeAllowed(db, {
     actor,
     role,
     teamId,
@@ -119,8 +101,9 @@ export async function viewOf(db, doc, entry) {
  * the team already has, refuses the whole request before anything is
  * created - and idempotent by key: replaying a key (a merged request's too)
  * returns its entries. A request that cannot be accepted queues nothing. While
- * a Platform Admin has disabled the team (for an environment the team has not
- * set up yet) or the environment, the request is `409 team-disabled`. The
+ * a Platform Admin has disabled the environment (by disabling the team's
+ * credentials there) the request is `409 team-disabled`; a disabled team can
+ * still deploy. The
  * change is submitted as the requester's `entra:{oid}`, from the token.
  * @param {import('mongodb').Db} db
  * @param {import('mongo-locks').LockManager} locker

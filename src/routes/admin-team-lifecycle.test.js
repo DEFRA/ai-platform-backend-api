@@ -82,23 +82,33 @@ describe('#admin team lifecycle routes', () => {
       .find({ teamId: team.id, action })
       .toArray()
 
+  async function seedDeployment(team, environment, fields = {}) {
+    await server.db.collection('teamDeployments').insertOne({
+      teamId: team.id,
+      environment,
+      deployments: [],
+      ...fields
+    })
+  }
+
+  const deploymentOf = (team, environment) =>
+    server.db
+      .collection('teamDeployments')
+      .findOne({ teamId: team.id, environment })
+
   describe('POST /v1/admin/teams/{id}/disable', () => {
-    test('disables the team and the environments chosen, and records one event with the reason', async () => {
+    test('disables the team alone and records one event with the reason', async () => {
       const team = await seedTeam()
 
       const { statusCode, result } = await disable(team, {
-        reason: `  ${REASON}  `,
-        environments: [DEV]
+        reason: `  ${REASON}  `
       })
 
       expect(statusCode).toBe(200)
       expect(result).toEqual({
-        team: { id: team.id, status: 'disabled', disabledEnvironments: [DEV] }
+        team: { id: team.id, status: 'disabled', disabledEnvironments: [] }
       })
-      expect(await stored(team)).toMatchObject({
-        status: 'disabled',
-        disabledEnvironments: [DEV]
-      })
+      expect(await stored(team)).toMatchObject({ status: 'disabled' })
 
       const rows = await auditRows(team, 'admin.team.disable')
 
@@ -109,51 +119,22 @@ describe('#admin team lifecycle routes', () => {
         role: 'platform-admin',
         outcome: 'success',
         reason: REASON,
-        environments: [DEV],
         actorUserId: ADMIN
       })
     })
 
-    test('allows no environment at all: the team alone is disabled', async () => {
-      const team = await seedTeam()
+    test('changes no environment: the ones already disabled stay so, and none is added', async () => {
+      const team = await seedTeam({ disabledEnvironments: [TEST] })
 
-      const { statusCode, result } = await disable(team, { reason: REASON })
+      const { result } = await disable(team, { reason: REASON })
 
-      expect(statusCode).toBe(200)
       expect(result.team).toEqual({
         id: team.id,
         status: 'disabled',
-        disabledEnvironments: []
-      })
-      expect((await auditRows(team, 'admin.team.disable'))[0]).toMatchObject({
-        environments: []
+        disabledEnvironments: [TEST]
       })
     })
 
-    test('lists the environments in the configured order, once each', async () => {
-      const team = await seedTeam()
-
-      const { result } = await disable(team, {
-        reason: REASON,
-        environments: [TEST, DEV, TEST]
-      })
-
-      expect(result.team.disabledEnvironments).toEqual([DEV, TEST])
-    })
-
-    test('keeps an environment the instance no longer lists after the listed ones, by name', async () => {
-      const team = await seedTeam({
-        status: 'disabled',
-        disabledEnvironments: ['zzold', 'aaold']
-      })
-
-      const { result } = await disable(team, {
-        reason: REASON,
-        environments: [DEV]
-      })
-
-      expect(result.team.disabledEnvironments).toEqual([DEV, 'aaold', 'zzold'])
-    })
     test('takes a team by its slug', async () => {
       const team = await seedTeam()
 
@@ -165,40 +146,24 @@ describe('#admin team lifecycle routes', () => {
       expect(result.team.id).toBe(team.id)
     })
 
-    test('leaves the block of the team’s credentials and the file status alone', async () => {
+    test('leaves the block of the team’s credentials and every environment alone', async () => {
       const team = await seedTeam()
 
-      await server.db.collection('teamDeployments').insertOne({
-        teamId: team.id,
-        environment: DEV,
-        adminBlocked: false,
-        deployments: []
-      })
-      await disable(team, { reason: REASON, environments: [DEV] })
+      await seedDeployment(team, DEV, { adminBlocked: false })
+      await disable(team, { reason: REASON })
 
-      expect(
-        await server.db
-          .collection('teamDeployments')
-          .findOne({ teamId: team.id, environment: DEV })
-      ).toMatchObject({ adminBlocked: false })
+      expect(await deploymentOf(team, DEV)).toMatchObject({
+        adminBlocked: false
+      })
+      expect((await stored(team)).disabledEnvironments ?? []).toEqual([])
     })
 
     test('a repeat of the same key and reason changes nothing and writes no second event', async () => {
       const team = await seedTeam()
       const key = randomUUID()
 
-      const first = await disable(
-        team,
-        { reason: REASON, environments: [DEV] },
-        asAdmin(),
-        key
-      )
-      const again = await disable(
-        team,
-        { reason: REASON, environments: [DEV] },
-        asAdmin(),
-        key
-      )
+      const first = await disable(team, { reason: REASON }, asAdmin(), key)
+      const again = await disable(team, { reason: REASON }, asAdmin(), key)
 
       expect(again.statusCode).toBe(200)
       expect(again.result).toEqual(first.result)
@@ -213,179 +178,30 @@ describe('#admin team lifecycle routes', () => {
 
       const { statusCode, result } = await disable(
         team,
-        { reason: 'Another reason', environments: [DEV] },
+        { reason: 'Another reason' },
         asAdmin(),
         key
       )
 
       expect(statusCode).toBe(409)
       expect(result.code).toBe('idempotency-key-reused')
-      expect((await stored(team)).disabledEnvironments).toEqual([])
       expect(await auditRows(team, 'admin.team.disable')).toHaveLength(1)
     })
 
-    test('the same key and reason with other environments is 409 idempotency-key-reused, and the new environments are not applied', async () => {
-      const team = await seedTeam()
-      const key = randomUUID()
+    test('a team already disabled changes nothing and writes no event', async () => {
+      const team = await seedTeam({ status: 'disabled' })
 
-      await disable(
-        team,
-        { reason: REASON, environments: [DEV] },
-        asAdmin(),
-        key
-      )
-
-      const { statusCode, result } = await disable(
-        team,
-        { reason: REASON, environments: [DEV, TEST] },
-        asAdmin(),
-        key
-      )
-
-      expect(statusCode).toBe(409)
-      expect(result.code).toBe('idempotency-key-reused')
-      expect((await stored(team)).disabledEnvironments).toEqual([DEV])
-      expect(await auditRows(team, 'admin.team.disable')).toHaveLength(1)
-    })
-
-    test('the same key and reason with environments where there were none, or none where there were some, is 409 too', async () => {
-      const none = await seedTeam()
-      const some = await seedTeam()
-      const noneKey = randomUUID()
-      const someKey = randomUUID()
-
-      await disable(none, { reason: REASON }, asAdmin(), noneKey)
-      await disable(
-        some,
-        { reason: REASON, environments: [DEV] },
-        asAdmin(),
-        someKey
-      )
-
-      expect(
-        (
-          await disable(
-            none,
-            { reason: REASON, environments: [DEV] },
-            asAdmin(),
-            noneKey
-          )
-        ).statusCode
-      ).toBe(409)
-      expect(
-        (await disable(some, { reason: REASON }, asAdmin(), someKey)).statusCode
-      ).toBe(409)
-    })
-
-    test('a repeat that lists the same environments in another order, or twice, is a replay', async () => {
-      const team = await seedTeam()
-      const key = randomUUID()
-
-      await disable(
-        team,
-        { reason: REASON, environments: [DEV, TEST] },
-        asAdmin(),
-        key
-      )
-
-      const { statusCode, result } = await disable(
-        team,
-        { reason: REASON, environments: [TEST, DEV, TEST] },
-        asAdmin(),
-        key
-      )
+      const { statusCode, result } = await disable(team, { reason: REASON })
 
       expect(statusCode).toBe(200)
-      expect(result.team.disabledEnvironments).toEqual([DEV, TEST])
-      expect(await auditRows(team, 'admin.team.disable')).toHaveLength(1)
-    })
-
-    test('the requested environments are kept on the event for the repeat check, and not shown in the audit log', async () => {
-      const team = await seedTeam({
-        status: 'disabled',
-        disabledEnvironments: [TEST]
-      })
-
-      await disable(team, { reason: REASON, environments: [DEV, TEST] })
-
-      const [row] = await auditRows(team, 'admin.team.disable')
-
-      expect(row.environments).toEqual([DEV])
-      expect(row.requestedEnvironments).toEqual([DEV, TEST])
-
-      const { statusCode, result } = await server.inject({
-        method: 'GET',
-        url: `/v1/admin/audit?team=${team.id}`,
-        headers: asAdmin()
-      })
-      const shown = result.events.find(
-        ({ action }) => action === 'admin.team.disable'
-      )
-
-      expect(statusCode).toBe(200)
-      expect(shown).toBeDefined()
-      expect(shown).not.toHaveProperty('requestedEnvironments')
-      expect(JSON.stringify(shown)).not.toContain(TEST)
-    })
-
-    test('a team already disabled with nothing to add changes nothing and writes no event', async () => {
-      const team = await seedTeam({
-        status: 'disabled',
-        disabledEnvironments: [DEV]
-      })
-
-      const { statusCode, result } = await disable(team, {
-        reason: REASON,
-        environments: [DEV]
-      })
-
-      expect(statusCode).toBe(200)
-      expect(result.team.disabledEnvironments).toEqual([DEV])
+      expect(result.team.status).toBe('disabled')
       expect(await auditRows(team, 'admin.team.disable')).toEqual([])
-    })
-
-    test('a team already disabled takes environments it has not got, and records only those', async () => {
-      const team = await seedTeam({
-        status: 'disabled',
-        disabledEnvironments: [TEST]
-      })
-
-      const { result } = await disable(team, {
-        reason: REASON,
-        environments: [DEV, TEST]
-      })
-
-      expect(result.team.disabledEnvironments).toEqual([DEV, TEST])
-
-      const rows = await auditRows(team, 'admin.team.disable')
-
-      expect(rows).toHaveLength(1)
-      expect(rows[0].environments).toEqual([DEV])
-    })
-
-    test('disables a team made active again by a partial enable, keeping its disabled environments', async () => {
-      const team = await seedTeam({
-        status: 'active',
-        disabledEnvironments: [TEST]
-      })
-
-      const { result } = await disable(team, { reason: REASON })
-
-      expect(result.team).toEqual({
-        id: team.id,
-        status: 'disabled',
-        disabledEnvironments: [TEST]
-      })
-      expect(await auditRows(team, 'admin.team.disable')).toHaveLength(1)
     })
 
     test('refuses a team pending removal with 409 team-pending-removal, and changes and records nothing', async () => {
       const team = await seedTeam({ status: 'pending-removal' })
 
-      const { statusCode, result } = await disable(team, {
-        reason: REASON,
-        environments: [DEV]
-      })
+      const { statusCode, result } = await disable(team, { reason: REASON })
 
       expect(statusCode).toBe(409)
       expect(result.code).toBe('team-pending-removal')
@@ -418,13 +234,8 @@ describe('#admin team lifecycle routes', () => {
         'invalid-request'
       ],
       [
-        'environments that are not a list',
-        { reason: REASON, environments: DEV },
-        'invalid-request'
-      ],
-      [
-        'an environment that is not a name',
-        { reason: REASON, environments: ['Not A Name'] },
+        'environments, which a team no longer takes',
+        { reason: REASON, environments: [DEV] },
         'invalid-request'
       ]
     ])(
@@ -493,20 +304,6 @@ describe('#admin team lifecycle routes', () => {
       expect(result.code).toBe('team-not-found')
     })
 
-    test('is 404 environment-not-found for an environment this instance does not offer, and changes nothing', async () => {
-      const team = await seedTeam()
-
-      const { statusCode, result } = await disable(team, {
-        reason: REASON,
-        environments: [DEV, 'unlisted']
-      })
-
-      expect(statusCode).toBe(404)
-      expect(result.code).toBe('environment-not-found')
-      expect((await stored(team)).status).toBe('active')
-      expect(await auditRows(team, 'admin.team.disable')).toEqual([])
-    })
-
     test('requires a token', async () => {
       const { statusCode } = await server.inject({
         method: 'POST',
@@ -518,11 +315,8 @@ describe('#admin team lifecycle routes', () => {
   })
 
   describe('POST /v1/admin/teams/{id}/enable', () => {
-    test('with no environments named, lifts the lock and unlocks every disabled environment', async () => {
-      const team = await seedTeam({
-        status: 'disabled',
-        disabledEnvironments: [DEV, TEST]
-      })
+    test('lifts the team lock and records one event', async () => {
+      const team = await seedTeam({ status: 'disabled' })
 
       const { statusCode, result } = await enable(team)
 
@@ -538,37 +332,27 @@ describe('#admin team lifecycle routes', () => {
         resource: 'team',
         role: 'platform-admin',
         outcome: 'success',
-        environments: [DEV, TEST],
         actorUserId: ADMIN,
         reason: null
       })
     })
 
-    test('lifts the team lock at once and leaves the environments not chosen disabled', async () => {
-      const team = await seedTeam({
-        status: 'disabled',
-        disabledEnvironments: [DEV, TEST]
-      })
+    test('takes an empty body as well as none', async () => {
+      const team = await seedTeam({ status: 'disabled' })
 
-      const { result } = await enable(team, { environments: [DEV] })
+      const { statusCode, result } = await enable(team, {})
 
-      expect(result.team).toEqual({
-        id: team.id,
-        status: 'active',
-        disabledEnvironments: [TEST]
-      })
-      expect((await auditRows(team, 'admin.team.enable'))[0]).toMatchObject({
-        environments: [DEV]
-      })
+      expect(statusCode).toBe(200)
+      expect(result.team.status).toBe('active')
     })
 
-    test('with an empty list lifts the team lock only', async () => {
+    test('never unlocks an environment: one disabled by its credentials stays disabled', async () => {
       const team = await seedTeam({
         status: 'disabled',
         disabledEnvironments: [DEV]
       })
 
-      const { result } = await enable(team, { environments: [] })
+      const { result } = await enable(team)
 
       expect(result.team).toEqual({
         id: team.id,
@@ -577,29 +361,11 @@ describe('#admin team lifecycle routes', () => {
       })
     })
 
-    test('can unlock an environment later, with the team already active', async () => {
-      const team = await seedTeam({
-        status: 'active',
-        disabledEnvironments: [DEV]
-      })
-
-      const { result } = await enable(team, { environments: [DEV] })
-
-      expect(result.team).toEqual({
-        id: team.id,
-        status: 'active',
-        disabledEnvironments: []
-      })
-      expect(await auditRows(team, 'admin.team.enable')).toHaveLength(1)
-    })
-
-    test('a team that is not disabled and has nothing to unlock changes nothing and writes no event', async () => {
+    test('a team that is not disabled changes nothing and writes no event', async () => {
       const team = await seedTeam()
       const before = await stored(team)
 
-      const { statusCode, result } = await enable(team, {
-        environments: [DEV]
-      })
+      const { statusCode, result } = await enable(team)
 
       expect(statusCode).toBe(200)
       expect(result.team).toEqual({
@@ -621,15 +387,11 @@ describe('#admin team lifecycle routes', () => {
     })
 
     test('leaves a team pending removal pending', async () => {
-      const team = await seedTeam({
-        status: 'pending-removal',
-        disabledEnvironments: [DEV]
-      })
+      const team = await seedTeam({ status: 'pending-removal' })
 
       const { result } = await enable(team)
 
       expect(result.team.status).toBe('pending-removal')
-      expect(result.team.disabledEnvironments).toEqual([])
     })
 
     test('never touches the block of the team’s credentials', async () => {
@@ -638,33 +400,21 @@ describe('#admin team lifecycle routes', () => {
         disabledEnvironments: [DEV]
       })
 
-      await server.db.collection('teamDeployments').insertOne({
-        teamId: team.id,
-        environment: DEV,
-        adminBlocked: true,
-        deployments: []
-      })
+      await seedDeployment(team, DEV, { adminBlocked: true })
       await enable(team)
 
-      expect(
-        await server.db
-          .collection('teamDeployments')
-          .findOne({ teamId: team.id, environment: DEV })
-      ).toMatchObject({ adminBlocked: true })
+      expect(await deploymentOf(team, DEV)).toMatchObject({
+        adminBlocked: true
+      })
     })
 
-    test('and enabling the credentials never enables the team', async () => {
+    test('and enabling the credentials never enables the team, but does unlock that environment', async () => {
       const team = await seedTeam({
         status: 'disabled',
         disabledEnvironments: [DEV]
       })
 
-      await server.db.collection('teamDeployments').insertOne({
-        teamId: team.id,
-        environment: DEV,
-        adminBlocked: true,
-        deployments: []
-      })
+      await seedDeployment(team, DEV, { adminBlocked: true })
 
       const { statusCode } = await server.inject({
         method: 'POST',
@@ -675,13 +425,13 @@ describe('#admin team lifecycle routes', () => {
       expect(statusCode).toBe(200)
       expect(await stored(team)).toMatchObject({
         status: 'disabled',
-        disabledEnvironments: [DEV]
+        disabledEnvironments: []
       })
     })
 
     test.each([
       ['a key nobody asked for', { other: 1 }],
-      ['environments that are not a list', { environments: DEV }]
+      ['environments, which a team no longer takes', { environments: [DEV] }]
     ])('refuses %s with 400 invalid-request', async (_name, payload) => {
       const team = await seedTeam({ status: 'disabled' })
 
@@ -702,16 +452,67 @@ describe('#admin team lifecycle routes', () => {
       expect((await stored(team)).status).toBe('disabled')
     })
 
-    test('is 404 team-not-found for a team nobody holds, and 404 environment-not-found for an environment not offered', async () => {
-      const team = await seedTeam({ status: 'disabled' })
+    test('is 404 team-not-found for a team nobody holds', async () => {
       const missing = await enable(new ObjectId().toString())
-      const unlisted = await enable(team, { environments: ['unlisted'] })
 
       expect(missing.statusCode).toBe(404)
       expect(missing.result.code).toBe('team-not-found')
-      expect(unlisted.statusCode).toBe(404)
-      expect(unlisted.result.code).toBe('environment-not-found')
-      expect((await stored(team)).status).toBe('disabled')
+    })
+  })
+
+  describe('Disable credentials is what disables an environment', () => {
+    const credentials = (team, environment, action, payload) =>
+      server.inject({
+        method: 'POST',
+        url: `/v1/admin/team-deployments/${team.id}/${environment}/credentials/${action}`,
+        headers: { ...asAdmin(), 'idempotency-key': randomUUID() },
+        payload
+      })
+
+    test('lists the environment on the team and changes the team status not at all', async () => {
+      const team = await seedTeam()
+
+      await seedDeployment(team, DEV)
+
+      const disabled = await credentials(team, DEV, 'disable', {
+        reason: REASON
+      })
+
+      expect(disabled.statusCode).toBe(200)
+      expect(await stored(team)).toMatchObject({
+        status: 'active',
+        disabledEnvironments: [DEV]
+      })
+    })
+
+    test('lists each environment once and keeps the others when one is enabled again', async () => {
+      const team = await seedTeam()
+
+      await seedDeployment(team, DEV)
+      await seedDeployment(team, TEST)
+      await credentials(team, DEV, 'disable', { reason: REASON })
+      await credentials(team, DEV, 'disable', { reason: REASON })
+      await credentials(team, TEST, 'disable', { reason: REASON })
+
+      expect((await stored(team)).disabledEnvironments.toSorted()).toEqual([
+        DEV,
+        TEST
+      ])
+
+      await credentials(team, DEV, 'enable')
+
+      expect(await stored(team)).toMatchObject({
+        disabledEnvironments: [TEST]
+      })
+    })
+
+    test('repairs a team that lists an environment whose credentials are not blocked, when they are enabled', async () => {
+      const team = await seedTeam({ disabledEnvironments: [DEV] })
+
+      await seedDeployment(team, DEV)
+      await credentials(team, DEV, 'enable')
+
+      expect((await stored(team)).disabledEnvironments).toEqual([])
     })
   })
 
@@ -762,17 +563,14 @@ describe('#admin team lifecycle routes', () => {
     test('Disable: the team stays disabled and the reason is off the team’s document; a retry with the same key records the event once with its reason', async () => {
       const team = await seedTeam()
       const key = randomUUID()
-      const payload = { reason: REASON, environments: [DEV] }
+      const payload = { reason: REASON }
 
       failAuditOnce('admin.team.disable')
 
       const failed = await disable(team, payload, asAdmin(), key)
 
       expect(failed.statusCode).toBe(500)
-      expect(await stored(team)).toMatchObject({
-        status: 'disabled',
-        disabledEnvironments: [DEV]
-      })
+      expect(await stored(team)).toMatchObject({ status: 'disabled' })
       expect(JSON.stringify(await stored(team))).not.toContain(REASON)
       expect(await auditRows(team, 'admin.team.disable')).toEqual([])
 
@@ -782,7 +580,7 @@ describe('#admin team lifecycle routes', () => {
       expect(retried.result.team).toEqual({
         id: team.id,
         status: 'disabled',
-        disabledEnvironments: [DEV]
+        disabledEnvironments: []
       })
 
       const rows = await auditRows(team, 'admin.team.disable')
@@ -792,8 +590,6 @@ describe('#admin team lifecycle routes', () => {
         _id: `admin.team.disable:${team.id}:${key}`,
         outcome: 'success',
         reason: REASON,
-        environments: [DEV],
-        requestedEnvironments: [DEV],
         actorUserId: ADMIN
       })
       expect(await stored(team)).not.toHaveProperty('pendingAuditId')
@@ -821,24 +617,18 @@ describe('#admin team lifecycle routes', () => {
       ])
     })
 
-    test('Enable: the team stays enabled; a retry records the event once with the environments it unlocked', async () => {
-      const team = await seedTeam({
-        status: 'disabled',
-        disabledEnvironments: [DEV, TEST]
-      })
+    test('Enable: the team stays enabled; a retry records the event once', async () => {
+      const team = await seedTeam({ status: 'disabled' })
 
       failAuditOnce('admin.team.enable')
 
-      const failed = await enable(team, { environments: [DEV] })
+      const failed = await enable(team)
 
       expect(failed.statusCode).toBe(500)
-      expect(await stored(team)).toMatchObject({
-        status: 'active',
-        disabledEnvironments: [TEST]
-      })
+      expect(await stored(team)).toMatchObject({ status: 'active' })
       expect(await auditRows(team, 'admin.team.enable')).toEqual([])
 
-      const retried = await enable(team, { environments: [DEV] })
+      const retried = await enable(team)
 
       expect(retried.statusCode).toBe(200)
 
@@ -847,12 +637,11 @@ describe('#admin team lifecycle routes', () => {
       expect(rows).toHaveLength(1)
       expect(rows[0]).toMatchObject({
         outcome: 'success',
-        environments: [DEV],
         actorUserId: ADMIN
       })
       expect(await pending()).toBe(0)
 
-      await enable(team, { environments: [DEV] })
+      await enable(team)
 
       expect(await auditRows(team, 'admin.team.enable')).toHaveLength(1)
     })

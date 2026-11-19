@@ -416,7 +416,7 @@ describe('#team-client-secrets routes', () => {
       ).toHaveLength(1)
     })
 
-    test('while a Platform Admin has disabled the environment: 409 credentials-disabled, nothing made, audited without the reason', async () => {
+    test('while a Platform Admin has disabled the environment (its credentials): 409 team-disabled, nothing made, audited without the reason', async () => {
       const team = await deployedTeam('cs-block-1')
       const before = (await secretsOf(team)).length
       const { blockCredentials } =
@@ -431,20 +431,20 @@ describe('#team-client-secrets routes', () => {
       const { statusCode, result } = await add(team, 'cs-block-1')
 
       expect(statusCode).toBe(409)
-      expect(result.code).toBe('credentials-disabled')
+      expect(result.code).toBe('team-disabled')
       expect(await secretsOf(team)).toHaveLength(before)
 
       const events = await auditOf({
-        action: 'credential.issue',
+        action: 'access.denied',
         resourceId: team.teamId,
-        code: 'credentials-disabled'
+        code: 'team-disabled'
       })
 
       expect(events).toHaveLength(1)
       expect(events[0]).toMatchObject({
         outcome: 'failure',
         role: 'admin',
-        reason: 'sandbox'
+        environment: 'sandbox'
       })
     })
 
@@ -464,7 +464,7 @@ describe('#team-client-secrets routes', () => {
       const replay = await add(team, 'cs-block-2', { key })
 
       expect(replay.statusCode).toBe(409)
-      expect(replay.result.code).toBe('credentials-disabled')
+      expect(replay.result.code).toBe('team-disabled')
 
       await block.unblockCredentials(server.db, target)
 

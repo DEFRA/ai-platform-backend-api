@@ -1,3 +1,5 @@
+import { ObjectId } from 'mongodb'
+
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import { pendingMarker } from '#/services/admin-pending-audit.js'
 
@@ -7,8 +9,31 @@ import { pendingMarker } from '#/services/admin-pending-audit.js'
 // credential recovery and the admin pages. The block outlives a revoke and a
 // new credential, which a flag on a credential row would not. Absent means
 // not blocked, so there is nothing to backfill and only `true` is queried.
+//
+// The block is also the only way an environment is disabled: it adds the
+// environment to the team's `disabledEnvironments` (and Enable removes it), so
+// the portal's environment lock (deploying, secrets, limits, applications)
+// and the credentials always change together. Disable team never does.
 
 const COLLECTION = 'teamDeployments'
+
+// Keeps the team's list of disabled environments in step with the block. It
+// runs whether or not the block changed, so a repeat repairs a list a failed
+// first call left behind. A team id that is not an object id names no team.
+async function syncEnvironmentLock(db, { teamId, environment }, disabled) {
+  if (!ObjectId.isValid(teamId)) {
+    return
+  }
+
+  await db
+    .collection('teams')
+    .updateOne(
+      { _id: new ObjectId(teamId) },
+      disabled
+        ? { $addToSet: { disabledEnvironments: environment } }
+        : { $pull: { disabledEnvironments: environment } }
+    )
+}
 
 /**
  * Whether a team's document for an environment holds a Platform Admin block.
@@ -99,6 +124,8 @@ export async function blockCredentials(
     }
   )
 
+  await syncEnvironmentLock(db, { teamId, environment }, true)
+
   return { changed: modifiedCount === 1 }
 }
 
@@ -121,6 +148,8 @@ export async function unblockCredentials(
       ...(pendingAuditId && { $set: pendingMarker(pendingAuditId) })
     }
   )
+
+  await syncEnvironmentLock(db, { teamId, environment }, false)
 
   return { changed: modifiedCount === 1 }
 }

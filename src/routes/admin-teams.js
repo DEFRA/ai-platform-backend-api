@@ -11,7 +11,6 @@ import {
   searchPeopleAsPlatformAdmin
 } from '#/services/admin-team-members.js'
 import { TEAM_STATUS } from '#/services/team-status.js'
-import { environmentName } from '#/common/helpers/environment-name.js'
 import {
   addMemberPayload,
   idempotentHeaders,
@@ -24,9 +23,6 @@ import { reasonField, reasonFailAction } from '#/routes/admin-reason.js'
 const MIN_SEARCH_LENGTH = 2
 const MAX_SEARCH_LENGTH = 100
 const MAX_ID_LENGTH = 100
-// More than this instance offers is never valid; configured ones are checked
-// by the service (`404 environment-not-found`).
-const MAX_ENVIRONMENTS = 20
 
 const invalidQuery = failActionWithCode(
   'invalid-query',
@@ -53,20 +49,10 @@ const listQuery = Joi.object({
   page: Joi.number().integer().min(1)
 }).unknown(false)
 
-// The environments to disable or enable, optional and allowed to be none.
-const environmentsField = Joi.array()
-  .items(environmentName)
-  .max(MAX_ENVIRONMENTS)
+const disablePayload = Joi.object({ reason: reasonField }).unknown(false)
 
-const disablePayload = Joi.object({
-  reason: reasonField,
-  environments: environmentsField
-}).unknown(false)
-
-// Enable takes no reason: nothing, or the environments to unlock.
-const enablePayload = Joi.object({ environments: environmentsField })
-  .unknown(false)
-  .allow(null)
+// Enable takes no reason and no environment: an empty body, or none.
+const enablePayload = Joi.object({}).unknown(false).allow(null)
 
 function lifecycleRoute(action, { description, validate, perform }) {
   return {
@@ -81,8 +67,7 @@ function lifecycleRoute(action, { description, validate, perform }) {
       h.response(
         await perform(request, {
           id: request.params.id,
-          actor: request.auth.credentials,
-          environments: request.payload?.environments
+          actor: request.auth.credentials
         })
       )
   }
@@ -189,7 +174,7 @@ export const adminTeams = [
   },
   lifecycleRoute('disable', {
     description:
-      'Disables a team (Platform Admin): its members can view it but not change it (409 `team-disabled` on every change in the lock map), and the optional `environments` are disabled too (none is allowed). Takes an Idempotency-Key and a `reason` of 1 to 500 characters, kept in the audit log only. Its credentials and models keep working. 200 `{team: {id, status, disabledEnvironments}}`; a team already disabled with nothing to add, or a repeat of the key, changes and records nothing; the same key with another reason or other environments is 409 `idempotency-key-reused`; a team waiting to be removed is 409 `team-pending-removal`; 400 `reason-required`, `reason-too-long`, `invalid-request`; 404 `team-not-found`, `environment-not-found`.',
+      'Disables a team (Platform Admin): its members can view it but not change its details or members (409 `team-disabled`). It is team-only: no environment changes, so its models, credentials and deployments keep working and can still be changed. Takes an Idempotency-Key and a `reason` of 1 to 500 characters, kept in the audit log only. 200 `{team: {id, status, disabledEnvironments}}`; a team already disabled, or a repeat of the key, changes and records nothing; the same key with another reason is 409 `idempotency-key-reused`; a team waiting to be removed is 409 `team-pending-removal`; 400 `reason-required`, `reason-too-long`, `invalid-request`; 404 `team-not-found`.',
     validate: {
       headers: idempotentHeaders,
       payload: disablePayload,
@@ -204,7 +189,7 @@ export const adminTeams = [
   }),
   lifecycleRoute('enable', {
     description:
-      "Enables a team (Platform Admin), with no reason: lifts the team lock and unlocks the `environments` named, or every disabled environment when none is named; an environment not named stays disabled. Never changes the block of the team's credentials. 200 `{team: {id, status, disabledEnvironments}}`; a team that is not disabled with nothing to unlock changes and records nothing; 400 `invalid-request`; 404 `team-not-found`, `environment-not-found`.",
+      "Enables a team (Platform Admin), with no reason and no body: lifts the team lock. Never changes an environment or the block of the team's credentials. 200 `{team: {id, status, disabledEnvironments}}`; a team that is not disabled changes and records nothing; 400 `invalid-request`; 404 `team-not-found`.",
     validate: { payload: enablePayload, failAction: invalidRequest },
     perform: (request, params) => enableTeam(request.db, request.locker, params)
   })
