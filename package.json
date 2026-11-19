@@ -40,7 +40,7 @@
     "@azure/keyvault-secrets": "4.12.0",
     "@defra/cdp-auditing": "0.6.3",
     "@defra/cdp-metrics": "0.6.1",
-    "@defra/hapi-auth-oidc": "0.6.0",
+    "@defra/hapi-auth-oidc": "0.6.1",
     "@defra/hapi-secure-context": "0.4.1",
     "@defra/hapi-tracing": "1.30.2",
     "@elastic/ecs-pino-format": "1.5.0",
