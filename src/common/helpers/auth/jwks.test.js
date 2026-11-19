@@ -100,7 +100,9 @@ describe('#fetchSigningKeys', () => {
   })
 
   test('rejects an endpoint that does not answer in time', async () => {
-    nock(HOST).get(PATH).delay(200).reply(200, publicJwks())
+    nock(HOST)
+      .get(PATH)
+      .reply(() => new Promise(() => {}))
 
     await expect(
       fetchSigningKeys(`${HOST}${PATH}`, { timeoutMs: 20 })

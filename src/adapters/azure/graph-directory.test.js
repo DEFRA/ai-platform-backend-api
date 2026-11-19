@@ -257,8 +257,7 @@ describe('#createGraphDirectory search pages', () => {
     nock(GRAPH)
       .get('/v1.0/users')
       .query((query) => query.$skiptoken === '1')
-      .delay(1000)
-      .reply(200, { value: [graphUser(peopleOnPages[1])] })
+      .reply(() => new Promise(() => {}))
     const started = Date.now()
 
     await expectUnavailable(
@@ -554,9 +553,7 @@ describe('#createGraphDirectory failures', () => {
   })
 
   test('a slow token exchange gives directory-unavailable at the timeout', async () => {
-    nockTokenEndpoint()
-      .delay(500)
-      .reply(200, { access_token: 'graph-token', expires_in: 3600 })
+    nockTokenEndpoint().reply(() => new Promise(() => {}))
 
     await expectUnavailable(
       createDirectory({ timeoutMs: 50 }).searchPeople({
@@ -571,8 +568,7 @@ describe('#createGraphDirectory failures', () => {
     nock(GRAPH)
       .get('/v1.0/users')
       .query(true)
-      .delay(500)
-      .reply(200, { value: [] })
+      .reply(() => new Promise(() => {}))
 
     await expectUnavailable(
       createDirectory({ timeoutMs: 50 }).searchPeople({

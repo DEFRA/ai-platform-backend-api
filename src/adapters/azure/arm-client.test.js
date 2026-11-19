@@ -193,7 +193,9 @@ describe('#createArmClient', () => {
     })
 
     test('a delayed first response is cut off at maxWaitMs', async () => {
-      nock(ARM_BASE_URL).patch('/path').delay(2000).reply(200, {})
+      nock(ARM_BASE_URL)
+        .patch('/path')
+        .reply(() => new Promise(() => {}))
 
       const started = Date.now()
 
@@ -217,7 +219,9 @@ describe('#createArmClient', () => {
     })
 
     test('a caller’s own abort stops the request before the deadline', async () => {
-      nock(ARM_BASE_URL).get('/path').delay(2000).reply(200, {})
+      nock(ARM_BASE_URL)
+        .get('/path')
+        .reply(() => new Promise(() => {}))
 
       const controller = new AbortController()
       const pending = (await client()).request('GET', '/path', {
