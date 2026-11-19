@@ -145,15 +145,13 @@ describe('credential-block', () => {
 
   describe('the environment lock on the team', () => {
     async function teamWith(fields = {}) {
-      const { insertedId } = await db
-        .collection('teams')
-        .insertOne({
-          name: 'lock',
-          normalisedName: `lock-${randomUUID()}`,
-          slug: `lock-${randomUUID()}`,
-          status: 'active',
-          ...fields
-        })
+      const { insertedId } = await db.collection('teams').insertOne({
+        name: 'lock',
+        normalisedName: `lock-${randomUUID()}`,
+        slug: `lock-${randomUUID()}`,
+        status: 'active',
+        ...fields
+      })
 
       return insertedId
     }
