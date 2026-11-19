@@ -7,6 +7,7 @@ import {
   snapshotCredentialProviderCloudAdapter
 } from '#/common/backfills/per-document-backfills.js'
 import { rewriteFailureTexts } from '#/common/backfills/failure-texts.js'
+import { rebuildDisabledEnvironments } from '#/common/backfills/disabled-environments.js'
 import { makeTeamMembersDirectoryOnly } from '#/common/backfills/team-members-directory-only.js'
 
 const CREDENTIALS = 'credentials'
@@ -366,5 +367,15 @@ export const backfillRegistry = [
 
       return { modifiedCount }
     }
+  },
+  // An environment is now disabled only by Disable credentials, so a team's
+  // `disabledEnvironments` is exactly the environments whose credentials are
+  // blocked. Disable team used to add environments of its own choosing; those
+  // are dropped and the list is rebuilt from the blocks.
+  {
+    id: '2026-11-19-teams-disabled-environments-from-credential-blocks',
+    description:
+      'Sets teams.disabledEnvironments to the environments whose credentials are blocked, clearing any a team-level disable added',
+    run: rebuildDisabledEnvironments
   }
 ]

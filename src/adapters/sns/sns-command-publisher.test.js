@@ -1,5 +1,6 @@
 import nock from 'nock'
 
+import { readRequest } from '#/common/test-helpers/nock-request.js'
 // The repo's global test setup (.vite/setup-files.js) replaces global.fetch
 // with vitest-fetch-mock for every file - undo that here so nock sees the
 // SDK's requests.
@@ -28,10 +29,6 @@ function createPublisher() {
 }
 
 // SNS speaks the AWS query protocol: a form-encoded body, an XML reply.
-function paramsOf(body) {
-  return Object.fromEntries(new URLSearchParams(body))
-}
-
 function accepted() {
   return `<PublishResponse xmlns="http://sns.amazonaws.com/doc/2010-03-31/">
   <PublishResult><MessageId>message-1</MessageId><SequenceNumber>1</SequenceNumber></PublishResult>
@@ -41,11 +38,12 @@ function accepted() {
 
 function replyAccepted(captured) {
   return nock(ENDPOINT)
-    .post('/', (body) => {
-      captured?.push(paramsOf(body))
-      return true
+    .post('/')
+    .reply(async (request) => {
+      captured?.push((await readRequest(request)).body)
+
+      return [200, accepted()]
     })
-    .reply(200, accepted)
 }
 
 function replyFailed() {
@@ -166,9 +164,9 @@ describe('#createSnsClient', () => {
 
     nock('https://sns.eu-west-2.amazonaws.com')
       .post('/')
-      .reply(200, function () {
-        headers.push(this.req.headers)
-        return accepted()
+      .reply(async (request) => {
+        headers.push((await readRequest(request)).headers)
+        return [200, accepted()]
       })
 
     await createSnsCommandPublisher({

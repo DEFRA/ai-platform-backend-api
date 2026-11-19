@@ -2,6 +2,7 @@ import { generateKeyPairSync } from 'node:crypto'
 
 import nock from 'nock'
 
+import { readRequest } from '#/common/test-helpers/nock-request.js'
 // The repo's global test setup (.vite/setup-files.js) replaces global.fetch
 // with vitest-fetch-mock for every file - undo that here so nock, which
 // intercepts at the undici level, actually sees Octokit's requests.
@@ -60,18 +61,22 @@ describe('#createGithubAppClient', () => {
       let sentAuthorization
 
       nock(GITHUB_API)
-        .post('/app/installations/123/access_tokens', (body) => {
-          tokenRequestBody = body
-          return true
-        })
-        .reply(201, {
-          token: 'ghs_scoped',
-          expires_at: new Date(Date.now() + 3600000).toISOString()
+        .post('/app/installations/123/access_tokens')
+        .reply(async (request) => {
+          tokenRequestBody = (await readRequest(request)).body
+
+          return [
+            201,
+            {
+              token: 'ghs_scoped',
+              expires_at: new Date(Date.now() + 3600000).toISOString()
+            }
+          ]
         })
       nock(GITHUB_API)
         .get('/repos/DEFRA/ai-platform-tenants')
-        .reply(function () {
-          sentAuthorization = this.req.headers.authorization
+        .reply(async (request) => {
+          sentAuthorization = (await readRequest(request)).headers.authorization
           return [200, {}]
         })
 
@@ -131,8 +136,8 @@ describe('#createGithubAppClient', () => {
 
     nock(GITHUB_API)
       .get('/repos/DEFRA/ai-platform-infra')
-      .reply(function () {
-        sentHeaders = this.req.headers
+      .reply(async (request) => {
+        sentHeaders = (await readRequest(request)).headers
         return [200, {}]
       })
 
@@ -241,7 +246,7 @@ describe('#createGithubAppClient', () => {
         const scope = nock(GITHUB_API).persist()
 
         scope.on('request', (request) =>
-          calls.push(`${request.method} ${request.path}`)
+          calls.push(`${request.method} ${new URL(request.url).pathname}`)
         )
         scope.intercept(/.*/, method).reply(200, {})
         scope.post(/.*/).reply(201, { token: 'ghs_never' })

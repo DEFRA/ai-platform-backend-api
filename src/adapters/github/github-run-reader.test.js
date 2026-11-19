@@ -321,8 +321,8 @@ describe('#createGithubRunReader', () => {
       nock(GITHUB_API)
         .persist()
         .intercept(/.*/, method)
-        .reply(function () {
-          writes.push(`${this.req.method} ${this.req.path}`)
+        .reply((request) => {
+          writes.push(`${request.method} ${new URL(request.url).pathname}`)
           return [500, { message: 'a reader must not write' }]
         })
     }

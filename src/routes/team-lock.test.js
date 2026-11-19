@@ -173,16 +173,6 @@ describe('#team lock: every change a disabled team or environment refuses', () =
       })
     },
     {
-      name: 'set up a new environment',
-      scope: 'team',
-      request: (c) => ({
-        method: 'POST',
-        url: `/v1/teams/${c.teamId}/deployments`,
-        headers: fixtures.asWithKey(c.label),
-        payload: { modelSlugs: ['gpt-4o'], environment: INFRADEV }
-      })
-    },
-    {
       name: 'deploy or change models',
       scope: 'environment',
       request: (c) => ({
@@ -316,6 +306,31 @@ describe('#team lock: every change a disabled team or environment refuses', () =
           role: 'admin',
           ...(scope === 'environment' && { environment: SANDBOX })
         })
+      }
+    )
+  })
+
+  // The same request in a state that does not lock it must get past the lock.
+  // These may change the team, so each action has a team of its own.
+  describe('a disabled team still sets up a new environment and deploys', () => {
+    test.each([
+      ['the team is disabled with no environment', TEAM_ONLY],
+      ['the team is disabled and the Sandbox is too', SANDBOX_DISABLED]
+    ])(
+      'in an environment that is not disabled when %s',
+      async (_state, fields) => {
+        const own = await seedContext(`lock-setup-${randomUUID().slice(0, 8)}`)
+
+        await setLock(own, fields)
+
+        const { result } = await server.inject({
+          method: 'POST',
+          url: `/v1/teams/${own.teamId}/deployments`,
+          headers: fixtures.asWithKey(own.label),
+          payload: { modelSlugs: ['gpt-4o'], environment: INFRADEV }
+        })
+
+        expect(result?.code).not.toBe('team-disabled')
       }
     )
   })

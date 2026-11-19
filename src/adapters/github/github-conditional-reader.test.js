@@ -1,6 +1,7 @@
 import nock from 'nock'
 import { Octokit } from 'octokit'
 
+import { readRequest } from '#/common/test-helpers/nock-request.js'
 import {
   createConditionalReader,
   isRateLimited
@@ -55,8 +56,8 @@ describe('#createConditionalReader', () => {
       .reply(200, { status: 'in_progress' }, { etag: '"etag-1"' })
     nock(GITHUB_API)
       .get(runPath())
-      .reply(function () {
-        revalidatedWith = this.req.headers['if-none-match']
+      .reply(async (request) => {
+        revalidatedWith = (await readRequest(request)).headers['if-none-match']
         return [304, '']
       })
 
@@ -207,8 +208,8 @@ describe('#createConditionalReader', () => {
     nock(GITHUB_API).get(runPath(2)).reply(200, {}, { etag: '"etag-2"' })
     nock(GITHUB_API)
       .get(runPath(1))
-      .reply(function () {
-        revalidatedWith = this.req.headers['if-none-match']
+      .reply(async (request) => {
+        revalidatedWith = (await readRequest(request)).headers['if-none-match']
         return [200, {}]
       })
 
