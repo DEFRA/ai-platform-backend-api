@@ -55,7 +55,7 @@
     "convict-format-with-validator": "6.2.0",
     "hapi-pino": "13.0.0",
     "hapi-pulse": "4.0.0",
-    "joi": "18.2.9",
+    "joi": "18.3.1",
     "mongo-locks": "3.2.0",
     "mongodb": "7.7.0",
     "octokit": "5.0.5",
@@ -75,5 +75,18 @@
     "vitest": "5.0.3",
     "vitest-fetch-mock": "0.4.5",
     "vitest-mongodb": "1.0.3"
+  },
+  "overrides": {
+    "@azure/msal-node": "7.1.0",
+    "minimatch": "11.0.1",
+    "hapi-pulse": {
+      "joi": "18.3.1"
+    },
+    "@defra/hapi-auth-oidc": {
+      "joi": "18.3.1",
+      "@hapi/jwt": {
+        "joi": "17.13.9"
+      }
+    }
   }
 }
