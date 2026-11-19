@@ -3,6 +3,7 @@ import { createHash } from 'node:crypto'
 import nock from 'nock'
 
 import { exampleEvent } from '#/common/test-helpers/gitops-messages.js'
+import { readRequest } from '#/common/test-helpers/nock-request.js'
 import { createSqsClient } from '#/adapters/sqs/sqs-client.js'
 import {
   createEventsConsumer,
@@ -117,6 +118,16 @@ describe('createEventsConsumer', () => {
     return typeof body === 'string' ? JSON.parse(body) : body
   }
 
+  // nock 15 may run a body matcher against requests meant for other
+  // interceptors, so each request is recorded where it is answered.
+  function answer(record, status, payload) {
+    return async (request) => {
+      record.push(bodyOf((await readRequest(request)).body))
+
+      return [status, payload]
+    }
+  }
+
   function message(event, id = 'm-1') {
     const Body = JSON.stringify(event)
 
@@ -136,24 +147,16 @@ describe('createEventsConsumer', () => {
     })
 
     for (const [status, payload] of replies) {
-      scope
-        .post('/', (body) => {
-          received.push(bodyOf(body))
-          return true
-        })
-        .reply(status, payload)
+      scope.post('/').reply(answer(received, status, payload))
     }
 
     nock(ENDPOINT, {
       reqheaders: { 'x-amz-target': 'AmazonSQS.ReceiveMessage' }
     })
       .persist()
-      .post('/', (body) => {
-        received.push(bodyOf(body))
-        return true
-      })
+      .post('/')
       .delay(50)
-      .reply(200, {})
+      .reply(answer(received, 200, {}))
   }
 
   function serveDeletes() {
@@ -161,11 +164,8 @@ describe('createEventsConsumer', () => {
       reqheaders: { 'x-amz-target': 'AmazonSQS.DeleteMessage' }
     })
       .persist()
-      .post('/', (body) => {
-        deleted.push(bodyOf(body))
-        return true
-      })
-      .reply(200, {})
+      .post('/')
+      .reply(answer(deleted, 200, {}))
   }
 
   function create(overrides = {}) {
