@@ -1,6 +1,7 @@
 import nock from 'nock'
 
 import { describeAccessWindowStoreContract } from '#/adapters/access-window-store-contract.js'
+import { readRequest } from '#/common/test-helpers/nock-request.js'
 
 const ARM_BASE_URL = 'https://management.azure.com'
 
@@ -67,7 +68,9 @@ function stubArm() {
   nock(ARM_BASE_URL)
     .persist()
     .get(NAMED_VALUE)
-    .reply(function (uri) {
+    .reply(async (request) => {
+      const { uri } = await readRequest(request)
+
       requests.push({ method: 'GET', uri })
 
       if (missing.has(uri)) {
@@ -79,12 +82,14 @@ function stubArm() {
   nock(ARM_BASE_URL)
     .persist()
     .patch(NAMED_VALUE)
-    .reply(function (uri, body) {
+    .reply(async (request) => {
+      const { uri, body, headers } = await readRequest(request)
+
       requests.push({
         method: 'PATCH',
         uri,
         body,
-        ifMatch: this.req.headers['if-match']
+        ifMatch: headers['if-match']
       })
 
       if (missing.has(uri)) {
@@ -98,7 +103,9 @@ function stubArm() {
   nock(ARM_BASE_URL)
     .persist()
     .put(/.*/)
-    .reply(function (uri) {
+    .reply(async (request) => {
+      const { uri } = await readRequest(request)
+
       requests.push({ method: 'PUT', uri })
       return [200, {}]
     })

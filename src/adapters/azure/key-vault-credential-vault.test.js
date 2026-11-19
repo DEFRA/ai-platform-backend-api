@@ -2,6 +2,7 @@ import { SecretClient } from '@azure/keyvault-secrets'
 import nock from 'nock'
 
 import { createKeyVaultCredentialVault as createVaultFor } from '#/adapters/azure/key-vault-credential-vault.js'
+import { readRequest } from '#/common/test-helpers/nock-request.js'
 
 // One vault, whatever the environment - the per-environment routing has its own tests below.
 function createKeyVaultCredentialVault({ client }) {
@@ -165,8 +166,10 @@ describe('#createKeyVaultCredentialVault', () => {
       }
 
       function respond(method) {
-        return function (uri, body) {
-          if (!this.req.headers.authorization) {
+        return async function (request) {
+          const { uri, headers, body } = await readRequest(request)
+
+          if (!headers.authorization) {
             return [401, '', { 'www-authenticate': challenge }]
           }
 

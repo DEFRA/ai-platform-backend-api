@@ -1,6 +1,7 @@
 import nock from 'nock'
 import { ReceiveMessageCommand } from '@aws-sdk/client-sqs'
 
+import { readRequest } from '#/common/test-helpers/nock-request.js'
 // The repo's global test setup (.vite/setup-files.js) replaces global.fetch
 // with vitest-fetch-mock for every file - undo that here so nock sees the
 // SDK's requests.
@@ -43,9 +44,9 @@ describe('#createSqsClient', () => {
 
     nock('https://sqs.eu-west-2.amazonaws.com')
       .post('/')
-      .reply(200, function () {
-        headers.push(this.req.headers)
-        return {}
+      .reply(async (request) => {
+        headers.push((await readRequest(request)).headers)
+        return [200, {}]
       })
 
     await createSqsClient().send(

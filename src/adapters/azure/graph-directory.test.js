@@ -2,6 +2,7 @@ import nock from 'nock'
 
 import { describeDirectoryContract } from '#/adapters/directory-contract.js'
 import { createGraphDirectory } from '#/adapters/azure/graph-directory.js'
+import { readRequest } from '#/common/test-helpers/nock-request.js'
 
 const TENANT_ID = '6f504113-6b64-43f2-ade9-242e05780007'
 const CLIENT_ID = '11111111-1111-4111-8111-111111111111'
@@ -42,15 +43,19 @@ function graphUser(person) {
 function replyToken({ expiresIn = 3600, onBody } = {}) {
   return nock(LOGIN)
     .persist()
-    .post(TOKEN_PATH, (body) => {
-      onBody?.(body)
-      return true
-    })
+    .post(TOKEN_PATH)
     .query(true)
-    .reply(200, {
-      access_token: 'graph-token',
-      token_type: 'Bearer',
-      expires_in: expiresIn
+    .reply(async (request) => {
+      onBody?.((await readRequest(request)).body)
+
+      return [
+        200,
+        {
+          access_token: 'graph-token',
+          token_type: 'Bearer',
+          expires_in: expiresIn
+        }
+      ]
     })
 }
 
@@ -130,10 +135,10 @@ describe('#createGraphDirectory on-behalf-of exchange', () => {
     })
       .get('/v1.0/users')
       .query(true)
-      .reply(200, function reply() {
-        received = this.req.headers.authorization
+      .reply(async (request) => {
+        received = (await readRequest(request)).headers.authorization
 
-        return { value: [graphUser(ada)] }
+        return [200, { value: [graphUser(ada)] }]
       })
 
     // Graph answers only a request that carries the exchanged token, so the
@@ -167,20 +172,24 @@ describe('#createGraphDirectory search pages', () => {
       .persist()
       .get('/v1.0/users')
       .query(true)
-      .reply(200, function reply(uri) {
+      .reply(async (request) => {
+        const { uri, headers } = await readRequest(request)
         const page = Number(
           new URL(uri, GRAPH).searchParams.get('$skiptoken') ?? 0
         )
 
         seen.pages.push(page)
-        seen.consistencyLevels.push(this.req.headers.consistencylevel)
+        seen.consistencyLevels.push(headers.consistencylevel)
 
-        return {
-          value: [graphUser(peopleOnPages[page])],
-          ...(page + 1 < pageCount && {
-            '@odata.nextLink': nextLinkTo(page + 1)
-          })
-        }
+        return [
+          200,
+          {
+            value: [graphUser(peopleOnPages[page])],
+            ...(page + 1 < pageCount && {
+              '@odata.nextLink': nextLinkTo(page + 1)
+            })
+          }
+        ]
       })
 
     return seen

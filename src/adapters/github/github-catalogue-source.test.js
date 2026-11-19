@@ -1,5 +1,6 @@
 import nock from 'nock'
 
+import { readRequest } from '#/common/test-helpers/nock-request.js'
 // The repo's global test setup (.vite/setup-files.js) replaces global.fetch
 // with vitest-fetch-mock for every file - undo that here so nock, which
 // intercepts at the undici level, actually sees Octokit's requests.
@@ -79,8 +80,10 @@ describe('#createGithubCatalogueSource', () => {
 
     nock(GITHUB_API)
       .get(`/repos/${REPO}/git/ref/tags%2Fv0.1.0`)
-      .reply(function () {
-        sentApiVersion = this.req.headers['x-github-api-version']
+      .reply(async (request) => {
+        sentApiVersion = (await readRequest(request)).headers[
+          'x-github-api-version'
+        ]
         return [404, { message: 'not found' }]
       })
 

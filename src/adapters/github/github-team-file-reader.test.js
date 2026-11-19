@@ -70,8 +70,8 @@ function trapWrites() {
     nock(GITHUB_API)
       .persist()
       .intercept(/.*/, method)
-      .reply(function () {
-        writes.push(`${this.req.method} ${this.req.path}`)
+      .reply((request) => {
+        writes.push(`${request.method} ${new URL(request.url).pathname}`)
         return [500, { message: 'a reader must not write' }]
       })
   }
@@ -256,8 +256,8 @@ describe('#createGithubTeamFileReader', () => {
     reads
       .get(/.*/)
       .query(true)
-      .reply((uri) =>
-        uri.includes('/commits/')
+      .reply((request) =>
+        request.url.includes('/commits/')
           ? [200, github.commit()]
           : [200, file({ revision: 1 })]
       )
