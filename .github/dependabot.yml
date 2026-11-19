@@ -25,6 +25,7 @@ updates:
         patterns:
           - 'husky'
           - 'vitest'
+          - '@vitest/*'
           - 'nodemon'
           - 'npm-run-all'
 
