@@ -60,7 +60,7 @@
     "mongodb": "7.9.0",
     "octokit": "5.0.5",
     "pino": "10.4.0",
-    "sqs-consumer": "15.0.4"
+    "sqs-consumer": "15.0.5"
   },
   "devDependencies": {
     "@vitest/coverage-v8": "5.1.0",
