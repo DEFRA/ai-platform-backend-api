@@ -8,6 +8,9 @@ const CLOCK_SKEW = '1h'
 const SLUG = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 const DAY_LENGTH = 10
+const SUBSCRIPTION_ID = /^[0-9a-fA-F-]{36}$/
+const RESOURCE_GROUP = /^[\w.()-]{1,90}$/
+const APIM_NAME = /^[A-Za-z0-9-]{1,50}$/
 
 function requireDate(value) {
   const parsed = ISO_DATE.test(value) ? new Date(`${value}T00:00:00Z`) : null
@@ -24,21 +27,47 @@ function requireDate(value) {
 }
 
 // Log Analytics takes no query parameters here, so everything that reaches the
-// text is checked first: a slug or a date, nothing else.
-function queryOf({ from, to, teamSlug }) {
+// text is checked first: a slug, a date or an API Management resource ID built
+// from checked parts, nothing else. Two instances may log to one workspace, so
+// both tables are limited to this environment's own API Management.
+function queryOf({ from, to, teamSlug, resourceId }) {
   const team = teamSlug === undefined ? '' : `| where ApiId == '${teamSlug}'`
 
   return `let calls = ApiManagementGatewayLogs
 | where TimeGenerated >= datetime(${from}) - ${CLOCK_SKEW} and TimeGenerated < datetime(${to}) + ${CLOCK_SKEW}
+| where _ResourceId =~ '${resourceId}'
 ${team}
 | where isnotempty(ApiId)
 | project CorrelationId = tostring(CorrelationId), ApiId;
 ApiManagementGatewayLlmLog
 | where TimeGenerated >= datetime(${from}) and TimeGenerated < datetime(${to})
+| where _ResourceId =~ '${resourceId}'
 | summarize PromptTokens = max(PromptTokens), CompletionTokens = max(CompletionTokens), DeploymentName = take_any(DeploymentName), Day = min(startofday(TimeGenerated)) by CorrelationId
 | join kind=inner calls on CorrelationId
 | summarize Requests = count(), PromptTokens = sum(PromptTokens), CompletionTokens = sum(CompletionTokens) by Day, ApiId, DeploymentName
 | order by Day asc, ApiId asc, DeploymentName asc`
+}
+
+// The resource ID the gateway logs carry for this environment's API Management,
+// in the lower case Azure Monitor writes it (compared without case anyway).
+function apimResourceIdOf(target) {
+  if (
+    !SUBSCRIPTION_ID.test(target.subscriptionId ?? '') ||
+    !RESOURCE_GROUP.test(target.resourceGroup ?? '') ||
+    !APIM_NAME.test(target.apimName ?? '')
+  ) {
+    throw usageNotAvailable('The environment has no valid API Management name')
+  }
+
+  return `/subscriptions/${target.subscriptionId}/resourcegroups/${target.resourceGroup}/providers/microsoft.apimanagement/service/${target.apimName}`.toLowerCase()
+}
+
+// Log Analytics may answer 200 with some tables missing and an `error` beside
+// them (`PartialError`); totals from that would understate usage and cost.
+function requireComplete(body) {
+  if (body?.error ?? body?.Error) {
+    throw new Error('Log Analytics returned a partial or failed result')
+  }
 }
 
 // ARM answers `Tables`/`Columns`/`Rows` on this API version; accept the
@@ -71,7 +100,7 @@ function usageRowOf(row) {
  * gateway log's API (the team's path). One query through the ARM endpoint, so
  * it uses the same identity and egress as every other Azure call. It selects
  * counts only and never a message, caller address or user.
- * @param {{armClient?: ReturnType<typeof createArmClient>, environments?: Record<string, {subscriptionId: string, resourceGroup: string, logAnalyticsWorkspace?: string}>}} [deps]
+ * @param {{armClient?: ReturnType<typeof createArmClient>, environments?: Record<string, {subscriptionId: string, resourceGroup: string, apimName: string, logAnalyticsWorkspace?: string}>}} [deps]
  * @returns {import('#/adapters/usage-reader.js').UsageReader}
  */
 export function createLogAnalyticsUsageReader({
@@ -103,11 +132,14 @@ export function createLogAnalyticsUsageReader({
         )
       }
 
+      const resourceId = apimResourceIdOf(target)
       const body = await armClient.request(
         'POST',
         `/subscriptions/${target.subscriptionId}/resourceGroups/${target.resourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${target.logAnalyticsWorkspace}/api/query?api-version=${QUERY_API_VERSION}`,
-        { body: { query: queryOf({ from, to, teamSlug }) }, signal }
+        { body: { query: queryOf({ from, to, teamSlug, resourceId }) }, signal }
       )
+
+      requireComplete(body)
 
       return rowsOf(body).map(usageRowOf)
     }

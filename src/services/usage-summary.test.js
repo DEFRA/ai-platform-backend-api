@@ -98,7 +98,7 @@ describe('#summariseUsage', () => {
     })
   })
 
-  test('gives a model with no price no cost, and says the total is incomplete', () => {
+  test('gives a model with no price no cost, and the total none either, never a partial sum', () => {
     const summary = summariseUsage(
       [
         row('2026-11-02', 'team-a-gpt-4o', 1, 1_000_000, 0),
@@ -110,7 +110,10 @@ describe('#summariseUsage', () => {
     expect(
       summary.byModel.find((m) => m.modelSlug === 'mystery').estimatedCost
     ).toBeNull()
-    expect(summary.totals.estimatedCost).toBe(2)
+    expect(summary.totals.estimatedCost).toBeNull()
+    expect(
+      summary.byModel.find((m) => m.modelSlug === 'gpt-4o').estimatedCost
+    ).toBe(2)
     expect(summary.unpricedModels).toEqual(['mystery'])
   })
 

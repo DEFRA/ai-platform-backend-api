@@ -1,5 +1,6 @@
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { requirePlatformAdmin } from '#/common/helpers/auth/access.js'
+import { isReservedApiSlug } from '#/common/helpers/reserved-api-slugs.js'
 import { USAGE_NOT_AVAILABLE } from '#/adapters/usage-reader.js'
 import { usageReaderRegistry } from '#/adapters/usage-reader-registry.js'
 import {
@@ -12,8 +13,6 @@ import {
   PRICE_VERSION
 } from '#/services/model-prices.js'
 import { summariseUsage, usagePeriod } from '#/services/usage-summary.js'
-
-const MAX_TEAMS = 1000
 
 // Every figure is an estimate until the tariff and period are agreed (B19), and
 // says which prices it used.
@@ -66,6 +65,17 @@ export async function getTeamUsage(
   requireAvailableEnvironment(environment)
 
   const { teamId: id, team } = await findMemberTeam(db, teamId, actor)
+
+  // A team that holds the id of a gateway API no team owns (the Research
+  // tier's) must not read that API's usage as its own.
+  if (isReservedApiSlug(team.slug)) {
+    throw boomWithCode(
+      Boom.notFound,
+      'Usage is not available for this team',
+      USAGE_NOT_AVAILABLE
+    )
+  }
+
   const period = usagePeriod(now(), days)
   const rows = await readUsage(reader, {
     environment,
@@ -110,18 +120,21 @@ export async function getAdminUsage(
     db
       .collection('teams')
       .find({}, { projection: { slug: 1, name: 1, serviceCode: 1 } })
-      .limit(MAX_TEAMS)
       .toArray(),
     readUsage(reader, { environment, from: period.from, to: period.to })
   ])
-  const slugs = new Set(teams.map((team) => team.slug))
+  const slugs = new Set(
+    teams.map((team) => team.slug).filter((slug) => !isReservedApiSlug(slug))
+  )
   const summarise = (slug, slugRows) =>
     summariseUsage(slugRows, { period, teamSlug: slug, prices })
   const rowsOf = (slug) => rows.filter((row) => row.teamSlug === slug)
 
   const teamsView = teams
     .map((team) => {
-      const { totals } = summarise(team.slug, rowsOf(team.slug))
+      // A team holding a reserved API id owns none of that API's usage.
+      const owned = slugs.has(team.slug) ? rowsOf(team.slug) : []
+      const { totals } = summarise(team.slug, owned)
 
       return {
         teamId: team._id.toString(),

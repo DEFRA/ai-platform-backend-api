@@ -58,8 +58,8 @@ export function modelSlugOf(deployment, teamSlug) {
 /**
  * Totals, a figure for every day of the period and one per model, with an
  * estimated cost where the model has a price. A model with no price has no
- * cost, and the total cost is `null` when there is usage and none of it is
- * priced.
+ * cost, and so the total cost is `null` whenever any model is unpriced, never
+ * a sum that leaves usage out.
  * @param {import('#/adapters/usage-reader.js').UsageRow[]} rows
  * @param {{period: {from: string, to: string}, teamSlug: string, prices?: typeof MODEL_PRICES}} options
  */
@@ -104,19 +104,18 @@ export function summariseUsage(
   }
 
   const priced = models.filter((model) => model.estimatedCost !== null)
+  const unpriced = models.filter((model) => model.estimatedCost === null)
 
   return {
     totals: {
       ...totals,
       estimatedCost:
-        models.length > 0 && priced.length === 0
+        unpriced.length > 0
           ? null
           : priced.reduce((sum, model) => sum + model.estimatedCost, 0)
     },
     byDay: [...byDay.entries()].map(([day, tokens]) => ({ day, ...tokens })),
     byModel: models,
-    unpricedModels: models
-      .filter((model) => model.estimatedCost === null)
-      .map((model) => model.modelSlug)
+    unpricedModels: unpriced.map((model) => model.modelSlug)
   }
 }

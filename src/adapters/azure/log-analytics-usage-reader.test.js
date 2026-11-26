@@ -236,6 +236,82 @@ describe('#createLogAnalyticsUsageReader', () => {
     expect(request.mock.calls[0][2].signal).toBe(signal)
   })
 
+  test("limits both tables to this environment's own API Management", async () => {
+    const request = answerFor(ROWS)
+
+    await readerOver(request).readUsage({ ...window, teamSlug: 'team-a' })
+
+    const { query } = request.mock.calls[0][2].body
+    const filter =
+      "_ResourceId =~ '/subscriptions/00000000-0000-0000-0000-000000000005/resourcegroups/rg-test/providers/microsoft.apimanagement/service/apim-test'"
+
+    expect(query.split(filter)).toHaveLength(3)
+    expect(
+      query.indexOf(filter) < query.indexOf('ApiManagementGatewayLlmLog')
+    ).toBe(true)
+  })
+
+  test('keeps two environments that log to one workspace apart', async () => {
+    const request = answerFor(ROWS)
+    const reader = createLogAnalyticsUsageReader({
+      armClient: { request },
+      environments: {
+        infradev: ENVIRONMENTS.infradev,
+        other: {
+          ...ENVIRONMENTS.infradev,
+          apimName: 'apim-other',
+          logAnalyticsWorkspace: 'law-test'
+        }
+      }
+    })
+
+    await reader.readUsage({ ...window, environment: 'infradev' })
+    await reader.readUsage({ ...window, environment: 'other' })
+
+    const [first, second] = request.mock.calls.map(
+      ([, , { body }]) => body.query
+    )
+
+    expect(first).toContain('service/apim-test')
+    expect(first).not.toContain('apim-other')
+    expect(second).toContain('service/apim-other')
+    expect(second).not.toContain('apim-test')
+  })
+
+  test.each([
+    ['an API Management name with a quote', { apimName: "apim' or 1==1" }],
+    ['no API Management name', { apimName: undefined }],
+    ['a resource group with a slash', { resourceGroup: 'rg/../x' }]
+  ])('refuses %s, before asking Azure', async (_name, override) => {
+    const request = answerFor(ROWS)
+    const reader = createLogAnalyticsUsageReader({
+      armClient: { request },
+      environments: { infradev: { ...ENVIRONMENTS.infradev, ...override } }
+    })
+
+    await expect(reader.readUsage(window)).rejects.toMatchObject({
+      code: 'usage-not-available'
+    })
+    expect(request).not.toHaveBeenCalled()
+  })
+
+  test.each([
+    ['an error', { error: { code: 'PartialError' } }],
+    ['an Error', { Error: { code: 'PartialError' } }]
+  ])(
+    'refuses an answer that carries %s beside rows, never showing partial totals',
+    async (_name, extra) => {
+      const request = vi.fn(async () => ({
+        ...tableOf(ROWS['team-a']),
+        ...extra
+      }))
+
+      await expect(
+        readerOver(request).readUsage({ ...window, teamSlug: 'team-a' })
+      ).rejects.toThrow('partial or failed')
+    }
+  )
+
   test('lets an ARM failure reach the caller', async () => {
     const request = vi.fn().mockRejectedValue(new Error('ARM request failed'))
 

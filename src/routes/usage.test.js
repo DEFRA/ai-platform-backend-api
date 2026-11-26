@@ -1,3 +1,5 @@
+import { ObjectId } from 'mongodb'
+
 import { authFor, withTestUsers } from '#/common/test-helpers/portal-token.js'
 import { createTeamFixtures } from '#/common/test-helpers/team-fixtures.js'
 
@@ -255,6 +257,74 @@ describe('#usage routes', () => {
       expect(result.unpricedModels).toEqual(['unheard-of'])
     })
 
+    test('never reads the Research tier as a team, even for a team that holds its slug', async () => {
+      const team = await fixtures.newTeam('usage-13-admin')
+
+      await server.db
+        .collection('teams')
+        .updateOne(
+          { _id: new ObjectId(team.teamId) },
+          { $set: { slug: 'research' } }
+        )
+
+      const { statusCode, result } = await server.inject({
+        method: 'GET',
+        url: `/v1/teams/${team.teamId}/environments/infradev/usage`,
+        headers: fixtures.as('usage-13-admin')
+      })
+
+      expect(statusCode).toBe(404)
+      expect(result.code).toBe('usage-not-available')
+      expect(readUsage).not.toHaveBeenCalled()
+    })
+
+    test('does not give a new team the slug of the Research tier', async () => {
+      await fixtures.signIn('usage-14-admin')
+
+      const { statusCode, result } = await server.inject({
+        method: 'POST',
+        url: '/v1/teams',
+        headers: fixtures.asWithKey('usage-14-admin'),
+        payload: { name: 'Research', serviceCode: 'ABC' }
+      })
+
+      expect(statusCode).toBe(201)
+      expect(result.team.slug).not.toBe('research')
+      expect(result.team.slug.startsWith('research')).toBe(true)
+    })
+
+    test('leaves a total with no cost when one of its models has no price', async () => {
+      const team = await fixtures.newTeam('usage-15-admin')
+      const day = new Date().toISOString().slice(0, 10)
+
+      readUsage.mockResolvedValue([
+        {
+          day,
+          teamSlug: team.slug,
+          deployment: `${team.slug}-gpt-4o`,
+          requests: 1,
+          promptTokens: 1000000,
+          completionTokens: 0
+        },
+        {
+          day,
+          teamSlug: team.slug,
+          deployment: `${team.slug}-unheard-of`,
+          requests: 1,
+          promptTokens: 10,
+          completionTokens: 0
+        }
+      ])
+
+      const { result } = await getTeamUsage(team, 'usage-15-admin')
+
+      expect(result.totals.estimatedCost).toBeNull()
+      expect(result.unpricedModels).toEqual(['unheard-of'])
+      expect(
+        result.byModel.find((m) => m.modelSlug === 'gpt-4o').estimatedCost
+      ).toBeCloseTo(2.5)
+    })
+
     test('needs a signed-in person', async () => {
       const team = await fixtures.newTeam('usage-12-admin')
 
@@ -367,6 +437,107 @@ describe('#usage routes', () => {
         'big-api',
         'small-api'
       ])
+    })
+
+    test('reads every team, however many there are', async () => {
+      const day = new Date().toISOString().slice(0, 10)
+      const bulk = Array.from({ length: 1005 }, (_, index) => ({
+        name: `Bulk ${index}`,
+        normalisedName: `bulk-${index}`,
+        slug: `bulk-${String(index).padStart(4, '0')}`,
+        serviceCode: 'ABC'
+      }))
+
+      await server.db.collection('teams').insertMany(bulk)
+      readUsage.mockResolvedValue([
+        {
+          day,
+          teamSlug: 'bulk-1004',
+          deployment: 'bulk-1004-gpt-4o',
+          requests: 3,
+          promptTokens: 30,
+          completionTokens: 3
+        }
+      ])
+
+      const { result } = await getAdminUsage(
+        authFor('usage-admin', { roles: ADMIN_ROLES })
+      )
+      const last = result.teams.find((team) => team.slug === 'bulk-1004')
+      const first = result.teams.find((team) => team.slug === 'bulk-0000')
+
+      expect(result.teams.length).toBeGreaterThanOrEqual(1005)
+      expect(last).toMatchObject({ requests: 3, totalTokens: 33 })
+      expect(first).toMatchObject({ requests: 0 })
+      expect(result.otherApis).toEqual([])
+    })
+
+    test('shows the Research tier as an API no team owns even when a team holds its slug', async () => {
+      const team = await fixtures.newTeam('usage-admin-clash')
+      const day = new Date().toISOString().slice(0, 10)
+
+      // The slug is unique: free it from the team an earlier test gave it to.
+      await server.db
+        .collection('teams')
+        .updateMany({ slug: 'research' }, { $set: { slug: 'research-freed' } })
+      await server.db
+        .collection('teams')
+        .updateOne(
+          { _id: new ObjectId(team.teamId) },
+          { $set: { slug: 'research' } }
+        )
+      readUsage.mockResolvedValue([
+        {
+          day,
+          teamSlug: 'research',
+          deployment: 'research-gpt-4o',
+          requests: 2,
+          promptTokens: 20,
+          completionTokens: 2
+        }
+      ])
+
+      const { result } = await getAdminUsage(
+        authFor('usage-admin', { roles: ADMIN_ROLES })
+      )
+
+      expect(result.otherApis).toEqual([
+        expect.objectContaining({ apiId: 'research', requests: 2 })
+      ])
+      expect(
+        result.teams.find((entry) => entry.teamId === team.teamId)
+      ).toMatchObject({ requests: 0, totalTokens: 0 })
+    })
+
+    test('leaves a cost out when a model has no price, for a team and for an API no team owns', async () => {
+      const team = await fixtures.newTeam('usage-admin-mixed')
+      const day = new Date().toISOString().slice(0, 10)
+      const row = (teamSlug, model, promptTokens) => ({
+        day,
+        teamSlug,
+        deployment: `${teamSlug}-${model}`,
+        requests: 1,
+        promptTokens,
+        completionTokens: 0
+      })
+
+      readUsage.mockResolvedValue([
+        row(team.slug, 'gpt-4o', 1000),
+        row(team.slug, 'unheard-of', 10),
+        row('mixed-api', 'gpt-4o', 1000),
+        row('mixed-api', 'unheard-of', 10)
+      ])
+
+      const { result } = await getAdminUsage(
+        authFor('usage-admin', { roles: ADMIN_ROLES })
+      )
+
+      expect(
+        result.teams.find((entry) => entry.teamId === team.teamId).estimatedCost
+      ).toBeNull()
+      expect(
+        result.otherApis.find((api) => api.apiId === 'mixed-api').estimatedCost
+      ).toBeNull()
     })
 
     test('refuses a bad number of days', async () => {

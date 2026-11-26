@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
+import { isReservedApiSlug } from '#/common/helpers/reserved-api-slugs.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import { existingTeamId } from '#/common/helpers/team-id.js'
 import {
@@ -110,6 +111,11 @@ async function insertTeamWithUniqueSlug(db, fields, replayKey) {
 
   for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
     const slug = attempt === 1 ? base : withSlugSuffix(base, attempt)
+
+    // A team never takes the id of a gateway API no team owns.
+    if (isReservedApiSlug(slug)) {
+      continue
+    }
 
     try {
       const { insertedId } = await db
