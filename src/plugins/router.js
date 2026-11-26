@@ -15,6 +15,7 @@ import { adminOperations } from '#/routes/admin-operations.js'
 import { adminTeams } from '#/routes/admin-teams.js'
 import { adminAudit } from '#/routes/admin-audit.js'
 import { maintenance } from '#/routes/maintenance.js'
+import { usage } from '#/routes/usage.js'
 
 export const router = {
   plugin: {
@@ -33,6 +34,7 @@ export const router = {
           teamFederations,
           teamClientSecrets,
           teamStatusChanges,
+          usage,
           adminTeamDeployments,
           adminOperations,
           adminTeams,

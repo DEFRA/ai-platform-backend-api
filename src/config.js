@@ -253,8 +253,16 @@ export const config = convict({
     }
   },
   gitops: gitopsConfigSchema,
+  usage: {
+    mode: {
+      doc: "Where team usage comes from: mock invents repeatable figures for a local run; log-analytics reads the gateway log in each environment's workspace (aipEnvironments.logAnalyticsWorkspace). mock is refused in prod",
+      format: ['mock', 'log-analytics'],
+      default: 'mock',
+      env: 'USAGE_MODE'
+    }
+  },
   aipEnvironments: {
-    doc: 'AI Platform environments as JSON keyed by name: {subscriptionId, resourceGroup, apimName, foundryAccounts, tenantsVault}',
+    doc: 'AI Platform environments as JSON keyed by name: {subscriptionId, resourceGroup, apimName, foundryAccounts, tenantsVault, logAnalyticsWorkspace?}',
     format: 'aip-environments',
     default: {},
     env: 'AIP_ENVIRONMENTS'

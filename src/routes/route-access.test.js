@@ -33,6 +33,10 @@ const ROUTES = [
   ['GET /v1/teams/{teamId}/operations/{operationId}', ACCESS.teamMember],
   ['GET /v1/teams/{teamId}/environments', ACCESS.teamMember],
   ['GET /v1/teams/{teamId}/environments/{environment}', ACCESS.teamMember],
+  [
+    'GET /v1/teams/{teamId}/environments/{environment}/usage',
+    ACCESS.teamMember
+  ],
   ['GET /v1/teams/{teamId}/status-changes', ACCESS.teamMember],
   [
     'PUT /v1/teams/{teamId}/environments/{environment}/limits',
@@ -78,6 +82,7 @@ const ROUTES = [
   ['POST /v1/admin/operations/{operationId}/retry', ACCESS.platformAdmin],
   ['POST /v1/admin/operations/{operationId}/reconcile', ACCESS.platformAdmin],
   ['GET /v1/admin/teams', ACCESS.platformAdmin],
+  ['GET /v1/admin/environments/{environment}/usage', ACCESS.platformAdmin],
   ['GET /v1/admin/audit', ACCESS.platformAdmin],
   ['GET /v1/admin/teams/{id}', ACCESS.platformAdmin],
   ['POST /v1/admin/teams/{id}/people/search', ACCESS.platformAdmin],

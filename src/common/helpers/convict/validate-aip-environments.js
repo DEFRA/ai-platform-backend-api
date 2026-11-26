@@ -7,7 +7,10 @@ const environmentSchema = Joi.object({
   resourceGroup: Joi.string().required(),
   apimName: Joi.string().required(),
   foundryAccounts: Joi.array().items(Joi.string()).min(1).required(),
-  tenantsVault: Joi.string().required()
+  tenantsVault: Joi.string().required(),
+  logAnalyticsWorkspace: Joi.string().pattern(
+    /^[A-Za-z0-9][A-Za-z0-9-]{2,61}[A-Za-z0-9]$/
+  )
 }).unknown(false)
 
 const environmentsSchema = Joi.object().pattern(
