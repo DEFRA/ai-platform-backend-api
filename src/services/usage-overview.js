@@ -154,12 +154,104 @@ function attentionOf(refusals, today) {
       kind: 'calls-refused',
       environment,
       count: days
-        .filter(({ day }) => day >= since && day <= today)
+        .filter(
+          ({ day }) =>
+            day.localeCompare(since) >= 0 && day.localeCompare(today) <= 0
+        )
         .reduce((sum, { refused }) => sum + refused, 0),
       days: ATTENTION_DAYS
     }))
     .filter(({ count }) => count > 0)
     .sort((a, b) => b.count - a.count)
+}
+
+function monthsViewOf(keys, inWindow, teamSlug, rules) {
+  return keys.map((key) => {
+    const rows = inWindow.flatMap(([, list]) =>
+      list.filter((row) => row.day.startsWith(key))
+    )
+    const total = tokensOf()
+
+    rows.forEach((row) => add(total, row))
+
+    const { cost, carbonKg } = figuresOf(modelMapOf(rows, teamSlug), rules)
+
+    return {
+      key,
+      requests: total.requests,
+      tokens: total.tokens,
+      cost,
+      carbonKg
+    }
+  })
+}
+
+function shareOf(part, whole) {
+  return whole === 0 ? 0 : part / whole
+}
+
+function byEnvironmentOf(currentByEnvironment, totals, teamSlug, rules) {
+  return currentByEnvironment
+    .map(([environment, list]) => {
+      const tokens = tokensOf()
+
+      list.forEach((row) => add(tokens, row))
+
+      const env = figuresOf(modelMapOf(list, teamSlug), rules)
+
+      return {
+        environment,
+        ...tokens,
+        share: shareOf(tokens.tokens, totals.tokens),
+        cost: env.cost,
+        carbonKg: env.carbonKg
+      }
+    })
+    .sort((a, b) => b.tokens - a.tokens)
+}
+
+function byModelOf(currentModels, totals, rules) {
+  return [...currentModels.entries()]
+    .map(([modelSlug, tokens]) => {
+      const one = figuresOf(new Map([[modelSlug, tokens]]), rules)
+
+      return {
+        modelSlug,
+        ...tokens,
+        share: shareOf(tokens.tokens, totals.tokens),
+        price: Object.hasOwn(rules.prices, modelSlug)
+          ? rules.prices[modelSlug]
+          : null,
+        cost: one.cost,
+        carbonKg: one.carbonKg
+      }
+    })
+    .sort((a, b) => b.tokens - a.tokens)
+}
+
+function byDayOf(currentKey, daysElapsed, currentByEnvironment) {
+  return Array.from({ length: daysElapsed }, (_, index) => {
+    const day = `${currentKey}-${String(index + 1).padStart(2, '0')}`
+    const perEnvironment = {}
+    let tokens = 0
+
+    for (const [environment, list] of currentByEnvironment) {
+      const sum = list
+        .filter((row) => row.day === day)
+        .reduce(
+          (total, row) => total + row.promptTokens + row.completionTokens,
+          0
+        )
+
+      if (sum > 0) {
+        perEnvironment[environment] = sum
+      }
+
+      tokens += sum
+    }
+
+    return { day, tokens, byEnvironment: perEnvironment }
+  })
 }
 
 /**
@@ -199,24 +291,7 @@ export function overviewOf(
     ]
   )
 
-  const monthsView = keys.map((key) => {
-    const rows = inWindow.flatMap(([, list]) =>
-      list.filter((row) => row.day.startsWith(key))
-    )
-    const total = tokensOf()
-
-    rows.forEach((row) => add(total, row))
-
-    const { cost, carbonKg } = figuresOf(modelMapOf(rows, teamSlug), rules)
-
-    return {
-      key,
-      requests: total.requests,
-      tokens: total.tokens,
-      cost,
-      carbonKg
-    }
-  })
+  const monthsView = monthsViewOf(keys, inWindow, teamSlug, rules)
 
   const currentByEnvironment = inWindow.map(([environment, list]) => [
     environment,
@@ -230,62 +305,14 @@ export function overviewOf(
   const currentModels = modelMapOf(currentRows, teamSlug)
   const figures = figuresOf(currentModels, rules)
   const factor = daysInMonth / daysElapsed
-
-  const byEnvironment = currentByEnvironment
-    .map(([environment, list]) => {
-      const tokens = tokensOf()
-
-      list.forEach((row) => add(tokens, row))
-
-      const env = figuresOf(modelMapOf(list, teamSlug), rules)
-
-      return {
-        environment,
-        ...tokens,
-        share: totals.tokens === 0 ? 0 : tokens.tokens / totals.tokens,
-        cost: env.cost,
-        carbonKg: env.carbonKg
-      }
-    })
-    .sort((a, b) => b.tokens - a.tokens)
-
-  const byModel = [...currentModels.entries()]
-    .map(([modelSlug, tokens]) => {
-      const one = figuresOf(new Map([[modelSlug, tokens]]), rules)
-
-      return {
-        modelSlug,
-        ...tokens,
-        share: totals.tokens === 0 ? 0 : tokens.tokens / totals.tokens,
-        price: Object.hasOwn(prices, modelSlug) ? prices[modelSlug] : null,
-        cost: one.cost,
-        carbonKg: one.carbonKg
-      }
-    })
-    .sort((a, b) => b.tokens - a.tokens)
-
-  const byDay = Array.from({ length: daysElapsed }, (_, index) => {
-    const day = `${currentKey}-${String(index + 1).padStart(2, '0')}`
-    const perEnvironment = {}
-    let tokens = 0
-
-    for (const [environment, list] of currentByEnvironment) {
-      const sum = list
-        .filter((row) => row.day === day)
-        .reduce(
-          (total, row) => total + row.promptTokens + row.completionTokens,
-          0
-        )
-
-      if (sum > 0) {
-        perEnvironment[environment] = sum
-      }
-
-      tokens += sum
-    }
-
-    return { day, tokens, byEnvironment: perEnvironment }
-  })
+  const byEnvironment = byEnvironmentOf(
+    currentByEnvironment,
+    totals,
+    teamSlug,
+    rules
+  )
+  const byModel = byModelOf(currentModels, totals, rules)
+  const byDay = byDayOf(currentKey, daysElapsed, currentByEnvironment)
 
   const unpricedModels = [
     ...new Set(

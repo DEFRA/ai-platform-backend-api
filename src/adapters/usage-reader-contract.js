@@ -33,7 +33,7 @@ export function describeUsageReaderContract(
       expect(Array.isArray(rows)).toBe(true)
 
       for (const row of rows) {
-        expect(Object.keys(row).sort()).toEqual([
+        expect(Object.keys(row).sort((a, b) => a.localeCompare(b))).toEqual([
           'completionTokens',
           'day',
           'deployment',
@@ -41,7 +41,8 @@ export function describeUsageReaderContract(
           'requests',
           'teamSlug'
         ])
-        expect(row.day >= window.from && row.day < window.to).toBe(true)
+        expect(row.day.localeCompare(window.from)).toBeGreaterThanOrEqual(0)
+        expect(row.day.localeCompare(window.to)).toBeLessThan(0)
         expect(row.teamSlug).toBe('team-a')
         expect(row.deployment.startsWith('team-a-')).toBe(true)
         expect(Number.isInteger(row.requests)).toBe(true)

@@ -27,6 +27,18 @@ import {
 
 // Every figure is an estimate until the tariff and period are agreed (B19), and
 // says which prices it used.
+const UPSTREAM_UNAVAILABLE = 'upstream-unavailable'
+const UPSTREAM_UNAVAILABLE_MESSAGE = 'Usage could not be read just now'
+const MS_PER_DAY = 86_400_000
+
+function upstreamUnavailable() {
+  return boomWithCode(
+    Boom.badGateway,
+    UPSTREAM_UNAVAILABLE_MESSAGE,
+    UPSTREAM_UNAVAILABLE
+  )
+}
+
 function costBasisOf() {
   return {
     estimate: true,
@@ -47,11 +59,7 @@ async function readUsage(reader, query) {
       )
     }
 
-    throw boomWithCode(
-      Boom.badGateway,
-      'Usage could not be read just now',
-      'upstream-unavailable'
-    )
+    throw upstreamUnavailable()
   }
 }
 
@@ -197,16 +205,25 @@ function carbonRules() {
 }
 
 function dayBefore(day, days) {
-  return new Date(Date.parse(`${day}T00:00:00Z`) - days * 86_400_000)
+  return new Date(Date.parse(`${day}T00:00:00Z`) - days * MS_PER_DAY)
+    .toISOString()
+    .slice(0, 10)
+}
+
+function laterDay(first, second) {
+  return new Date(Math.max(Date.parse(first), Date.parse(second)))
     .toISOString()
     .slice(0, 10)
 }
 
 // One environment's rows and refused calls, or `null` when it has no usage
 // source. Any other failure is a failed read: nothing partial is shown.
-async function readEnvironment(reader, { environment, window, teamSlug, now }) {
+async function readEnvironment(reader, { environment, window, teamSlug }) {
   try {
-    const refusalFrom = dayBefore(window.to, REFUSAL_DAYS)
+    const refusalFrom = laterDay(
+      dayBefore(window.to, REFUSAL_DAYS),
+      window.from
+    )
 
     const [rows, refusals] = await Promise.all([
       reader.readUsage({
@@ -217,7 +234,7 @@ async function readEnvironment(reader, { environment, window, teamSlug, now }) {
       }),
       reader.readRefusals({
         environment,
-        from: refusalFrom < window.from ? window.from : refusalFrom,
+        from: refusalFrom,
         to: window.to,
         teamSlug
       })
@@ -229,11 +246,7 @@ async function readEnvironment(reader, { environment, window, teamSlug, now }) {
       return null
     }
 
-    throw boomWithCode(
-      Boom.badGateway,
-      'Usage could not be read just now',
-      'upstream-unavailable'
-    )
+    throw upstreamUnavailable()
   }
 }
 
@@ -242,7 +255,7 @@ async function overviewOfTeam(team, { reader, now, prices }) {
   const environments = teamEnvironments()
   const reads = await Promise.all(
     environments.map((environment) =>
-      readEnvironment(reader, { environment, window, teamSlug: team.slug, now })
+      readEnvironment(reader, { environment, window, teamSlug: team.slug })
     )
   )
   const read = reads.filter(Boolean)
@@ -414,13 +427,15 @@ export async function getUserUsageSummary(
           return {
             ...base,
             available: false,
-            reason: error?.data?.code ?? 'upstream-unavailable'
+            reason: error?.data?.code ?? UPSTREAM_UNAVAILABLE
           }
         }
       })
   )
 
-  return { items: items.sort((a, b) => a.name.localeCompare(b.name)) }
+  return {
+    items: items.toSorted((a, b) => a.name.localeCompare(b.name))
+  }
 }
 
 /**
@@ -442,7 +457,7 @@ export async function getKeyUsage(
 ) {
   const credential = await findOwnCredential(db, { id, actor })
 
-  if (!credential || credential.tier !== 'research') {
+  if (credential?.tier !== 'research') {
     throw boomWithCode(Boom.notFound, 'No such key', 'credential-not-found')
   }
 

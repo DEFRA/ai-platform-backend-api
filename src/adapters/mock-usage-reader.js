@@ -4,13 +4,23 @@ const MS_PER_DAY = 86_400_000
 const DAY_LENGTH = 10
 const MOCK_MODELS = ['gpt-4o', 'gpt-4-1-nano']
 const SEED_MULTIPLIER = 31
+const SEED_START = 7
+const SEED_MODULUS = 9973
+const REQUESTS_BASE = 5
+const REQUESTS_SPREAD = 40
+const PROMPT_TOKENS_BASE = 2000
+const PROMPT_TOKENS_PER_SEED = 3
+const COMPLETION_TOKENS_BASE = 500
+const REFUSAL_EVERY_NTH_SEED = 7
+const REFUSED_CALLS = 2
 const ENVIRONMENT_NAME = /^[a-z][a-z0-9-]*$/
 
 // The same slug always gives the same figures, so a local run is repeatable.
 function seedOf(text) {
   return [...text].reduce(
-    (seed, char) => (seed * SEED_MULTIPLIER + char.codePointAt(0)) % 9973,
-    7
+    (seed, char) =>
+      (seed * SEED_MULTIPLIER + char.codePointAt(0)) % SEED_MODULUS,
+    SEED_START
   )
 }
 
@@ -55,9 +65,9 @@ export function createMockUsageReader() {
             day,
             teamSlug: api,
             deployment: `${api}-${model}`,
-            requests: 5 + (seed % 40),
-            promptTokens: 2000 + seed * 3,
-            completionTokens: 500 + seed
+            requests: REQUESTS_BASE + (seed % REQUESTS_SPREAD),
+            promptTokens: PROMPT_TOKENS_BASE + seed * PROMPT_TOKENS_PER_SEED,
+            completionTokens: COMPLETION_TOKENS_BASE + seed
           }
         })
       )
@@ -71,7 +81,10 @@ export function createMockUsageReader() {
       return daysBetween(from, to)
         .map((day) => ({
           day,
-          refused: seedOf(`${teamSlug}${day}refused`) % 7 === 0 ? 2 : 0
+          refused:
+            seedOf(`${teamSlug}${day}refused`) % REFUSAL_EVERY_NTH_SEED === 0
+              ? REFUSED_CALLS
+              : 0
         }))
         .filter(({ refused }) => refused > 0)
     }

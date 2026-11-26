@@ -112,6 +112,25 @@ function usageRowOf(row) {
   }
 }
 
+function requireWindow(from, to) {
+  requireDate(from)
+  requireDate(to)
+
+  if (to <= from) {
+    throw new Error('Usage window must end after it starts')
+  }
+}
+
+function requireFilters({ teamSlug, subscriptionId }) {
+  if (teamSlug !== undefined && !SLUG.test(teamSlug)) {
+    throw new Error('Usage team slug must be a slug')
+  }
+
+  if (subscriptionId !== undefined && !SUBSCRIPTION_KEY.test(subscriptionId)) {
+    throw new Error('Usage subscription must be a subscription ID')
+  }
+}
+
 /**
  * Reads what the gateway recorded from each environment's Log Analytics
  * workspace: the LLM log's token counts joined, by correlation ID, to the
@@ -125,15 +144,6 @@ export function createLogAnalyticsUsageReader({
   armClient = createArmClient(),
   environments = config.get('aipEnvironments')
 } = {}) {
-  function requireWindow(from, to) {
-    requireDate(from)
-    requireDate(to)
-
-    if (to <= from) {
-      throw new Error('Usage window must end after it starts')
-    }
-  }
-
   function targetOf(environment) {
     const target = Object.hasOwn(environments, environment)
       ? environments[environment]
@@ -172,17 +182,7 @@ export function createLogAnalyticsUsageReader({
       signal
     }) {
       requireWindow(from, to)
-
-      if (teamSlug !== undefined && !SLUG.test(teamSlug)) {
-        throw new Error('Usage team slug must be a slug')
-      }
-
-      if (
-        subscriptionId !== undefined &&
-        !SUBSCRIPTION_KEY.test(subscriptionId)
-      ) {
-        throw new Error('Usage subscription must be a subscription ID')
-      }
+      requireFilters({ teamSlug, subscriptionId })
 
       const target = targetOf(environment)
       const rows = await run(

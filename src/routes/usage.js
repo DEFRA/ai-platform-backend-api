@@ -11,8 +11,11 @@ import {
   getUserUsageSummary
 } from '#/services/usage-service.js'
 
-const USAGE_DAYS = [7, 30, 90]
-const DEFAULT_DAYS = 30
+const DAYS_IN_WEEK = 7
+const DAYS_IN_MONTH = 30
+const DAYS_IN_QUARTER = 90
+const USAGE_DAYS = [DAYS_IN_WEEK, DAYS_IN_MONTH, DAYS_IN_QUARTER]
+const DEFAULT_DAYS = DAYS_IN_MONTH
 
 const invalidQuery = failActionWithCode(
   'invalid-query',
