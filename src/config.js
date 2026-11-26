@@ -259,6 +259,12 @@ export const config = convict({
       format: ['mock', 'log-analytics'],
       default: 'mock',
       env: 'USAGE_MODE'
+    },
+    carbonEnabled: {
+      doc: 'Whether team usage includes an estimate of carbon. Off until the method and factors are agreed (HVE #52)',
+      format: Boolean,
+      default: false,
+      env: 'USAGE_CARBON_ENABLED'
     }
   },
   aipEnvironments: {

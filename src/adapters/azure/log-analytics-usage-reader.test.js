@@ -319,4 +319,75 @@ describe('#createLogAnalyticsUsageReader', () => {
       'ARM request failed'
     )
   })
+
+  test('narrows to one subscription for a personal key, after checking it', async () => {
+    const request = answerFor(ROWS)
+
+    await readerOver(request).readUsage({
+      ...window,
+      subscriptionId: 'sub-abc_123'
+    })
+
+    expect(request.mock.calls[0][2].body.query).toContain(
+      "| where ApimSubscriptionId == 'sub-abc_123'"
+    )
+  })
+
+  test.each(["x' or 1==1", '', 'a b', '-lead'])(
+    'refuses the subscription %j before asking Azure',
+    async (subscriptionId) => {
+      const request = answerFor(ROWS)
+
+      await expect(
+        readerOver(request).readUsage({ ...window, subscriptionId })
+      ).rejects.toThrow('subscription')
+      expect(request).not.toHaveBeenCalled()
+    }
+  )
+
+  describe('refused calls', () => {
+    const refusals = vi.fn(async () => ({
+      Tables: [
+        {
+          Columns: [{ ColumnName: 'Day' }, { ColumnName: 'Refused' }],
+          Rows: [['2026-11-02T00:00:00Z', 37]]
+        }
+      ]
+    }))
+
+    test('counts the 429s of one team API, a day at a time', async () => {
+      const rows = await readerOver(refusals).readRefusals({
+        ...window,
+        teamSlug: 'team-a'
+      })
+      const { query } = refusals.mock.calls[0][2].body
+
+      expect(rows).toEqual([{ day: '2026-11-02', refused: 37 }])
+      expect(query).toContain('ResponseCode == 429')
+      expect(query).toContain("ApiId == 'team-a'")
+      expect(query).toContain("_ResourceId =~ '/subscriptions/")
+    })
+
+    test.each(["x' or 1==1", undefined, ''])(
+      'refuses the team %j before asking Azure',
+      async (teamSlug) => {
+        const request = vi.fn()
+
+        await expect(
+          readerOver(request).readRefusals({ ...window, teamSlug })
+        ).rejects.toThrow('team slug')
+        expect(request).not.toHaveBeenCalled()
+      }
+    )
+
+    test('says an environment with no workspace has none', async () => {
+      await expect(
+        readerOver(vi.fn()).readRefusals({
+          ...window,
+          environment: 'sandbox',
+          teamSlug: 'team-a'
+        })
+      ).rejects.toMatchObject({ code: 'usage-not-available' })
+    })
+  })
 })

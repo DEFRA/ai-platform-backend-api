@@ -55,6 +55,28 @@ function refuseCredential(db, actor, id, code) {
 }
 
 /**
+ * Finds one of the actor's own credentials by id, as the stored record, for a
+ * service that needs a field the presented credential leaves out (the gateway
+ * subscription). Null for an id that matches nothing; another person's
+ * credential is a refused 404, audited.
+ * @param {import('mongodb').Db} db
+ * @param {{id: string, actor: {userId: string}}} params
+ */
+export async function findOwnCredential(db, { id, actor }) {
+  const credential = await findCredentialById(db, id)
+
+  if (!credential) {
+    return null
+  }
+
+  if (credential.userId !== actor.userId) {
+    throw await refuseCredential(db, actor, id, 'not-owner')
+  }
+
+  return credential
+}
+
+/**
  * Finds one of the actor's own credentials by id, applying lazy expiry.
  * Returns null for an id that matches nothing; another person's credential is
  * a refused 404, audited.

@@ -6,6 +6,7 @@ const QUERY_API_VERSION = '2017-01-01-preview'
 // The gateway log can land a little before or after the model's own record.
 const CLOCK_SKEW = '1h'
 const SLUG = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/
+const SUBSCRIPTION_KEY = /^[A-Za-z0-9][A-Za-z0-9._-]{0,79}$/
 const ISO_DATE = /^\d{4}-\d{2}-\d{2}$/
 const DAY_LENGTH = 10
 const SUBSCRIPTION_ID = /^[0-9a-fA-F-]{36}$/
@@ -30,13 +31,18 @@ function requireDate(value) {
 // text is checked first: a slug, a date or an API Management resource ID built
 // from checked parts, nothing else. Two instances may log to one workspace, so
 // both tables are limited to this environment's own API Management.
-function queryOf({ from, to, teamSlug, resourceId }) {
+function queryOf({ from, to, teamSlug, subscriptionId, resourceId }) {
   const team = teamSlug === undefined ? '' : `| where ApiId == '${teamSlug}'`
+  const key =
+    subscriptionId === undefined
+      ? ''
+      : `| where ApimSubscriptionId == '${subscriptionId}'`
 
   return `let calls = ApiManagementGatewayLogs
 | where TimeGenerated >= datetime(${from}) - ${CLOCK_SKEW} and TimeGenerated < datetime(${to}) + ${CLOCK_SKEW}
 | where _ResourceId =~ '${resourceId}'
 ${team}
+${key}
 | where isnotempty(ApiId)
 | project CorrelationId = tostring(CorrelationId), ApiId;
 ApiManagementGatewayLlmLog
@@ -46,6 +52,18 @@ ApiManagementGatewayLlmLog
 | join kind=inner calls on CorrelationId
 | summarize Requests = count(), PromptTokens = sum(PromptTokens), CompletionTokens = sum(CompletionTokens) by Day, ApiId, DeploymentName
 | order by Day asc, ApiId asc, DeploymentName asc`
+}
+
+// Calls the team's API refused with 429, a day at a time: the gateway's own
+// answer to a caller over its limit.
+function refusalsQueryOf({ from, to, teamSlug, resourceId }) {
+  return `ApiManagementGatewayLogs
+| where TimeGenerated >= datetime(${from}) and TimeGenerated < datetime(${to})
+| where _ResourceId =~ '${resourceId}'
+| where ApiId == '${teamSlug}'
+| where ResponseCode == 429
+| summarize Refused = count() by Day = startofday(TimeGenerated)
+| order by Day asc`
 }
 
 // The resource ID the gateway logs carry for this environment's API Management,
@@ -107,41 +125,104 @@ export function createLogAnalyticsUsageReader({
   armClient = createArmClient(),
   environments = config.get('aipEnvironments')
 } = {}) {
+  function requireWindow(from, to) {
+    requireDate(from)
+    requireDate(to)
+
+    if (to <= from) {
+      throw new Error('Usage window must end after it starts')
+    }
+  }
+
+  function targetOf(environment) {
+    const target = Object.hasOwn(environments, environment)
+      ? environments[environment]
+      : undefined
+
+    if (!target?.logAnalyticsWorkspace) {
+      throw usageNotAvailable(
+        `No Log Analytics workspace is configured for "${environment}"`
+      )
+    }
+
+    return target
+  }
+
+  async function run(target, query, signal) {
+    const body = await armClient.request(
+      'POST',
+      `/subscriptions/${target.subscriptionId}/resourceGroups/${target.resourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${target.logAnalyticsWorkspace}/api/query?api-version=${QUERY_API_VERSION}`,
+      { body: { query }, signal }
+    )
+
+    requireComplete(body)
+
+    return rowsOf(body)
+  }
+
   return {
     source: 'log-analytics',
 
-    async readUsage({ environment, from, to, teamSlug, signal }) {
-      requireDate(from)
-      requireDate(to)
-
-      if (to <= from) {
-        throw new Error('Usage window must end after it starts')
-      }
+    async readUsage({
+      environment,
+      from,
+      to,
+      teamSlug,
+      subscriptionId,
+      signal
+    }) {
+      requireWindow(from, to)
 
       if (teamSlug !== undefined && !SLUG.test(teamSlug)) {
         throw new Error('Usage team slug must be a slug')
       }
 
-      const target = Object.hasOwn(environments, environment)
-        ? environments[environment]
-        : undefined
-
-      if (!target?.logAnalyticsWorkspace) {
-        throw usageNotAvailable(
-          `No Log Analytics workspace is configured for "${environment}"`
-        )
+      if (
+        subscriptionId !== undefined &&
+        !SUBSCRIPTION_KEY.test(subscriptionId)
+      ) {
+        throw new Error('Usage subscription must be a subscription ID')
       }
 
-      const resourceId = apimResourceIdOf(target)
-      const body = await armClient.request(
-        'POST',
-        `/subscriptions/${target.subscriptionId}/resourceGroups/${target.resourceGroup}/providers/Microsoft.OperationalInsights/workspaces/${target.logAnalyticsWorkspace}/api/query?api-version=${QUERY_API_VERSION}`,
-        { body: { query: queryOf({ from, to, teamSlug, resourceId }) }, signal }
+      const target = targetOf(environment)
+      const rows = await run(
+        target,
+        queryOf({
+          from,
+          to,
+          teamSlug,
+          subscriptionId,
+          resourceId: apimResourceIdOf(target)
+        }),
+        signal
       )
 
-      requireComplete(body)
+      return rows.map(usageRowOf)
+    },
 
-      return rowsOf(body).map(usageRowOf)
+    async readRefusals({ environment, from, to, teamSlug, signal }) {
+      requireWindow(from, to)
+
+      if (!SLUG.test(teamSlug ?? '')) {
+        throw new Error('Usage team slug must be a slug')
+      }
+
+      const target = targetOf(environment)
+      const rows = await run(
+        target,
+        refusalsQueryOf({
+          from,
+          to,
+          teamSlug,
+          resourceId: apimResourceIdOf(target)
+        }),
+        signal
+      )
+
+      return rows.map((row) => ({
+        day: String(row.Day).slice(0, DAY_LENGTH),
+        refused: Number(row.Refused)
+      }))
     }
   }
 }

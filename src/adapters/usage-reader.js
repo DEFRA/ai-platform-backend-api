@@ -14,8 +14,10 @@
 /**
  * @typedef {object} UsageReader
  * @property {string} source - where the figures come from, `log-analytics` or `mock`
- * @property {(params: {environment: string, from: string, to: string, teamSlug?: string, signal?: AbortSignal}) => Promise<UsageRow[]>} readUsage
- *   Calls from `from` (inclusive) to `to` (exclusive), both `YYYY-MM-DD`, for one team's API or, with no `teamSlug`, every API. Throws an error with `code` `usage-not-available` for an environment it has no source for.
+ * @property {(params: {environment: string, from: string, to: string, teamSlug?: string, subscriptionId?: string, signal?: AbortSignal}) => Promise<UsageRow[]>} readUsage
+ *   Calls from `from` (inclusive) to `to` (exclusive), both `YYYY-MM-DD`, for one team's API, one API Management subscription (a personal key) or, with neither, every API. Throws an error with `code` `usage-not-available` for an environment it has no source for.
+ * @property {(params: {environment: string, from: string, to: string, teamSlug: string, signal?: AbortSignal}) => Promise<Array<{day: string, refused: number}>>} readRefusals
+ *   The calls a team's API refused with 429 (over its limit) on each day that had any.
  */
 
 export const USAGE_NOT_AVAILABLE = 'usage-not-available'

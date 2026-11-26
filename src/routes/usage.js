@@ -3,7 +3,13 @@ import Joi from 'joi'
 import { ACCESS } from '#/common/helpers/auth/access.js'
 import { environmentName } from '#/common/helpers/environment-name.js'
 import { failActionWithCode } from '#/common/helpers/fail-action.js'
-import { getAdminUsage, getTeamUsage } from '#/services/usage-service.js'
+import {
+  getAdminUsage,
+  getKeyUsage,
+  getTeamUsage,
+  getTeamUsageOverview,
+  getUserUsageSummary
+} from '#/services/usage-service.js'
 
 const USAGE_DAYS = [7, 30, 90]
 const DEFAULT_DAYS = 30
@@ -20,6 +26,63 @@ const query = Joi.object({
 }).unknown(false)
 
 export const usage = [
+  {
+    method: 'GET',
+    path: '/v1/teams/{teamId}/usage',
+    options: {
+      app: { access: ACCESS.teamMember },
+      description:
+        "A team's usage across every environment this instance offers: a figure for each of the last six months, and for this month the totals, a forecast at the rate so far, the share by environment and model, the tokens of each day and what needs attention. Counts and estimates only. Any member; a non-member gets 404, a team with no usage source in any environment 404 `usage-not-available`.",
+      validate: {
+        params: Joi.object({ teamId: Joi.string().required() }).unknown(false),
+        failAction: invalidQuery
+      }
+    },
+    handler: async (request, h) =>
+      h.response(
+        await getTeamUsageOverview(request.db, {
+          teamId: request.params.teamId,
+          actor: request.auth.credentials
+        })
+      )
+  },
+  {
+    method: 'GET',
+    path: '/v1/users/me/usage',
+    options: {
+      app: { access: ACCESS.user },
+      description:
+        "This month's tokens, estimated cost, forecast and what needs attention, for each team the signed-in person belongs to. A team whose usage cannot be read is listed with the reason."
+    },
+    handler: async (request, h) =>
+      h.response(
+        await getUserUsageSummary(request.db, {
+          actor: request.auth.credentials
+        })
+      )
+  },
+  {
+    method: 'GET',
+    path: '/v1/credentials/{id}/usage',
+    options: {
+      app: { access: ACCESS.credentialOwner },
+      description:
+        "A personal (Research tier) key's usage over the last 7, 30 or 90 days, and when it ends. Counts only. The owner; anyone else gets 404, audited.",
+      validate: {
+        params: Joi.object({ id: Joi.string().required() }).unknown(false),
+        query,
+        failAction: invalidQuery
+      }
+    },
+    handler: async (request, h) =>
+      h.response(
+        await getKeyUsage(request.db, {
+          id: request.params.id,
+          days: request.query.days,
+          actor: request.auth.credentials
+        })
+      )
+  },
   {
     method: 'GET',
     path: '/v1/teams/{teamId}/environments/{environment}/usage',
