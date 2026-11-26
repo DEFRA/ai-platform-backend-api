@@ -12,6 +12,8 @@ describe('#usage overview routes', () => {
   let readUsage
   let readRefusals
   let clearUsageOverviewCache
+  let getTeamUsageOverview
+  let usageOverviewCacheSize
 
   beforeAll(async () => {
     const { createServer } = await import('#/server.js')
@@ -20,7 +22,11 @@ describe('#usage overview routes', () => {
     ;({
       usageReaderRegistry: { current: reader }
     } = await import('#/adapters/usage-reader-registry.js'))
-    ;({ clearUsageOverviewCache } = await import('#/services/usage-service.js'))
+    ;({
+      clearUsageOverviewCache,
+      getTeamUsageOverview,
+      usageOverviewCacheSize
+    } = await import('#/services/usage-service.js'))
     server = await createServer()
     await server.initialize()
     withTestUsers(server)
@@ -238,6 +244,25 @@ describe('#usage overview routes', () => {
 
       expect(statusCode).toBe(401)
     })
+
+    test('releases an earlier day’s overview when the day rolls over', async () => {
+      const team = await fixtures.newTeam('ov-12-admin')
+      const actor = { userId: fixtures.as('ov-12-admin')['x-user-id'] }
+      const at = (day) => () => new Date(Date.UTC(2026, 10, day, 12))
+      const ask = (day) =>
+        getTeamUsageOverview(
+          server.db,
+          { teamId: team.teamId, actor },
+          { reader, now: at(day) }
+        )
+
+      await ask(1)
+      await ask(1)
+      expect(usageOverviewCacheSize()).toBe(1)
+
+      await ask(2)
+      expect(usageOverviewCacheSize()).toBe(1)
+    })
   })
 
   describe("a person's summary for Home", () => {
@@ -386,5 +411,21 @@ describe('#usage overview routes', () => {
       expect((await getKey(team, 'key-4')).statusCode).toBe(404)
       expect(readUsage).not.toHaveBeenCalled()
     })
+
+    test.each(['pending', 'failed'])(
+      'is 404 usage-not-available for a %s key with no gateway subscription, and reads nothing',
+      async (status) => {
+        const id = await insertKey(`key-5-${status}`, {
+          status,
+          externalGatewaySubscriptionId: null
+        })
+
+        const { statusCode, result } = await getKey(id, `key-5-${status}`)
+
+        expect(statusCode).toBe(404)
+        expect(result.code).toBe('usage-not-available')
+        expect(readUsage).not.toHaveBeenCalled()
+      }
+    )
   })
 })

@@ -297,12 +297,21 @@ async function overviewOfTeam(team, { reader, now, prices }) {
 }
 
 // Home and the Usage pages ask for the same team within a minute; the answer
-// is for one team, so the cache key is the team and the month.
+// is for one team, so the cache key is the team and the day. Expired entries
+// are dropped on every ask, so a long-running instance never keeps old days.
 function cachedOverview(team, deps) {
+  const at = deps.now.getTime()
   const key = `${team.teamId}:${deps.reader.source}:${isoDay(deps.now)}`
+
+  for (const [cachedKey, entry] of overviewCache) {
+    if (at - entry.at >= OVERVIEW_CACHE_MS) {
+      overviewCache.delete(cachedKey)
+    }
+  }
+
   const hit = overviewCache.get(key)
 
-  if (hit && deps.now.getTime() - hit.at < OVERVIEW_CACHE_MS) {
+  if (hit) {
     return hit.value
   }
 
@@ -312,7 +321,7 @@ function cachedOverview(team, deps) {
     throw error
   })
 
-  overviewCache.set(key, { at: deps.now.getTime(), value })
+  overviewCache.set(key, { at, value })
 
   return value
 }
@@ -326,6 +335,14 @@ function isoDay(date) {
  */
 export function clearUsageOverviewCache() {
   overviewCache.clear()
+}
+
+/**
+ * How many overviews are cached (tests).
+ * @returns {number}
+ */
+export function usageOverviewCacheSize() {
+  return overviewCache.size
 }
 
 /**
@@ -463,6 +480,17 @@ export async function getKeyUsage(
 
   const environment = environmentOf(credential)
   const subscriptionId = externalGatewaySubscriptionIdOf(credential)
+
+  // A key that never got a gateway subscription has no calls of its own; a
+  // query with no subscription would read every API's usage.
+  if (!subscriptionId) {
+    throw boomWithCode(
+      Boom.notFound,
+      'Usage is not available for this key',
+      USAGE_NOT_AVAILABLE
+    )
+  }
+
   const period = usagePeriod(now(), days)
   const rows = await readUsage(reader, {
     environment,
