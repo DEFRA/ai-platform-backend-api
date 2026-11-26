@@ -139,7 +139,20 @@ export async function getAdminUsage(
   )
   const summarise = (slug, slugRows) =>
     summariseUsage(slugRows, { period, teamSlug: slug, prices })
-  const rowsOf = (slug) => rows.filter((row) => row.teamSlug === slug)
+  // Grouped once, so a team's rows are a lookup and not a scan of every row.
+  const rowsBySlug = new Map()
+
+  for (const row of rows) {
+    const group = rowsBySlug.get(row.teamSlug)
+
+    if (group) {
+      group.push(row)
+    } else {
+      rowsBySlug.set(row.teamSlug, [row])
+    }
+  }
+
+  const rowsOf = (slug) => rowsBySlug.get(slug) ?? []
 
   const teamsView = teams
     .map((team) => {
