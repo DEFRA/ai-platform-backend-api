@@ -2,6 +2,7 @@ import { ObjectId } from 'mongodb'
 
 import { boomWithCode, Boom } from '#/common/helpers/boom-with-code.js'
 import { isDuplicateKeyError } from '#/common/helpers/mongo-errors.js'
+import { isReservedApiSlug } from '#/common/helpers/reserved-api-slugs.js'
 import { acquireLockWithRetry } from '#/common/helpers/mongo-lock.js'
 import { existingTeamId } from '#/common/helpers/team-id.js'
 import {
@@ -96,6 +97,32 @@ export function normaliseName(name) {
   return name.toLowerCase().trim().replace(/\s+/g, '-')
 }
 
+// One insert: the team, a replay of the same Idempotency-Key, or `taken` when
+// a unique index refused it (`slug` when only the slug clashed).
+async function tryInsertTeam(db, fields, slug, replayKey) {
+  try {
+    const { insertedId } = await db
+      .collection('teams')
+      .insertOne({ ...fields, slug })
+
+    return { insertedId, slug }
+  } catch (error) {
+    if (!isDuplicateKeyError(error)) {
+      throw error
+    }
+
+    // Either index can trip first when a concurrent retry uses the same key
+    // and the same name, so always check for a replay before reporting a clash.
+    const winner = await db.collection('teams').findOne(replayKey)
+
+    if (winner) {
+      return { replay: winner }
+    }
+
+    return { taken: error.keyPattern?.slug ? 'slug' : 'name' }
+  }
+}
+
 /**
  * Inserts a team, taking the next numbered slug when the derived one is
  * already held, and replaying an Idempotency-Key winner when a concurrent
@@ -111,26 +138,15 @@ async function insertTeamWithUniqueSlug(db, fields, replayKey) {
   for (let attempt = 1; attempt <= MAX_SLUG_ATTEMPTS; attempt++) {
     const slug = attempt === 1 ? base : withSlugSuffix(base, attempt)
 
-    try {
-      const { insertedId } = await db
-        .collection('teams')
-        .insertOne({ ...fields, slug })
+    // A team never takes the id of a gateway API no team owns.
+    if (!isReservedApiSlug(slug)) {
+      const outcome = await tryInsertTeam(db, fields, slug, replayKey)
 
-      return { insertedId, slug }
-    } catch (error) {
-      if (!isDuplicateKeyError(error)) {
-        throw error
+      if (!outcome.taken) {
+        return outcome
       }
 
-      // Either index can trip first when a concurrent retry uses the same key
-      // and the same name, so always check for a replay before reporting a clash.
-      const winner = await db.collection('teams').findOne(replayKey)
-
-      if (winner) {
-        return { replay: winner }
-      }
-
-      if (!error.keyPattern?.slug) {
+      if (outcome.taken === 'name') {
         break
       }
     }

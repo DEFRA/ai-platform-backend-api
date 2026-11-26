@@ -794,7 +794,9 @@ credential keeps what it covered when it was revoked; a later model activation c
 | `TEAM_DEFAULT_REQUESTS_PER_MINUTE`     | `60`                            | Request limit a new team file starts with when the catalogue model states no `limitsDefault.requestsPerMinute`                                                                                                                                                                    |
 | `AIP_ENVIRONMENTS`                     | `{}`                            | JSON keyed by environment name; ARM verification only accepts resources in that environment's subscription and resource group, and research keys are issued into the entry named by `RESEARCH_ENVIRONMENT`                                                                        |
 | `RESEARCH_ENVIRONMENT`                 | `infradev`                      | The `AIP_ENVIRONMENTS` entry research keys are issued into; live mode refuses to start when it is missing or lacks `apimName` or `tenantsVault`                                                                                                                                   |
+| `USAGE_MODE`                           | `mock`                          | Where team usage comes from: `mock` invents repeatable figures for a local run (refused in prod); `log-analytics` reads the gateway log in each environment's workspace, named by `logAnalyticsWorkspace` in its `AIP_ENVIRONMENTS` entry                                         |
 | `RESEARCH_DEPLOYMENTS_CACHE_MS`        | `60000`                         | How long the models deployed in that environment's `research.json` are cached, so listing models does not read GitHub per request (`0` turns the cache off)                                                                                                                       |
+| `USAGE_CARBON_ENABLED`                 | `false`                         | Adds estimated carbon to the usage answers. Off until the per-model factors (`src/services/model-carbon.js`, example values) are agreed; the Carbon page is hidden while it is off                                                                                                |
 
 ```json
 {
@@ -803,10 +805,25 @@ credential keeps what it covered when it was revoked; a later model activation c
     "resourceGroup": "rg-placeholder",
     "apimName": "apim-placeholder",
     "foundryAccounts": ["aif-placeholder"],
-    "tenantsVault": "kv-placeholder"
+    "tenantsVault": "kv-placeholder",
+    "logAnalyticsWorkspace": "law-placeholder"
   }
 }
 ```
+
+Usage (B19): `GET /v1/teams/{teamId}/environments/{environment}/usage?days=7|30|90` for a member of the team, and
+`GET /v1/admin/environments/{environment}/usage` for a Platform Admin, answer with counts and an estimated cost, never a
+message, name or address. With `USAGE_MODE=log-analytics` the backend queries the environment's workspace through ARM
+(`POST .../workspaces/{name}/api/query`), joining `ApiManagementGatewayLlmLog` to `ApiManagementGatewayLogs` on the
+correlation ID, with the identity it already uses for ARM, which needs Log Analytics Reader on the workspace. An
+environment with no `logAnalyticsWorkspace` answers `404 usage-not-available`. Prices are indicative
+(`src/services/model-prices.js`), so every cost is labelled an estimate until the tariff is agreed.
+
+The portal's Usage section reads `GET /v1/teams/{teamId}/usage` (six months and this month across every environment with
+a usage source, a forecast, refused calls and `budget: null` until budgets exist), `GET /v1/users/me/usage` (the same,
+summarised for each team the person belongs to, for Home) and `GET /v1/credentials/{id}/usage?days=7|30|90` (a
+personal key's own use). A cost is `null`, never `0`, when any model in it has no price. Overviews are cached for 60
+seconds per team.
 
 Every GitHub request sends `X-GitHub-Api-Version: 2026-03-10`, and each client gets its own installation token scoped to
 one repository with read permissions only (see GitOps operations above). Reads are conditional on ETags and back off on

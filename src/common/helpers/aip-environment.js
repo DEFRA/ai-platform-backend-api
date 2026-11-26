@@ -7,6 +7,7 @@ import { config } from '#/config.js'
  * @property {string} apimName
  * @property {string[]} foundryAccounts
  * @property {string} tenantsVault
+ * @property {string} [logAnalyticsWorkspace] - the workspace the gateway log is in, in the resource group; absent means no usage for the environment
  */
 
 /**

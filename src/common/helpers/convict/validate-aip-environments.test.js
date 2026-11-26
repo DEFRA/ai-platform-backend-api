@@ -35,6 +35,25 @@ describe('#convictValidateAipEnvironments', () => {
     ).toThrow(/location/)
   })
 
+  test('accepts a Log Analytics workspace, which is optional', () => {
+    expect(() =>
+      convictValidateAipEnvironments.validate({
+        infradev: { ...infradev, logAnalyticsWorkspace: 'SNDAIPAPPLW1401' }
+      })
+    ).not.toThrow()
+  })
+
+  test.each(['a/../b', 'law test', 'x?y=1', 'ab', '-lead-ing-'])(
+    'rejects the workspace %j, which would reach a different ARM path',
+    (workspace) => {
+      expect(() =>
+        convictValidateAipEnvironments.validate({
+          infradev: { ...infradev, logAnalyticsWorkspace: workspace }
+        })
+      ).toThrow(/logAnalyticsWorkspace/)
+    }
+  )
+
   test('parses the environment variable as JSON', () => {
     expect(
       convictValidateAipEnvironments.coerce(JSON.stringify({ infradev }))
