@@ -254,6 +254,64 @@ function byDayOf(currentKey, daysElapsed, currentByEnvironment) {
   })
 }
 
+function rowsInWindow(rowsByEnvironment, window) {
+  return Object.entries(rowsByEnvironment).map(([environment, rows]) => [
+    environment,
+    rows.filter(
+      (row) =>
+        row.day.localeCompare(window.from) >= 0 &&
+        row.day.localeCompare(window.to) < 0
+    )
+  ])
+}
+
+// This month: the totals, a forecast at the rate so far, and the shares by
+// environment and model, with the tokens of each day.
+function currentOf({
+  currentByEnvironment,
+  currentKey,
+  daysElapsed,
+  daysInMonth,
+  teamSlug,
+  rules
+}) {
+  const currentRows = currentByEnvironment.flatMap(([, list]) => list)
+  const totals = tokensOf()
+
+  currentRows.forEach((row) => add(totals, row))
+
+  const currentModels = modelMapOf(currentRows, teamSlug)
+  const figures = figuresOf(currentModels, rules)
+  const factor = daysInMonth / daysElapsed
+
+  return {
+    totals: {
+      ...totals,
+      cost: figures.cost,
+      carbonKg: figures.carbonKg,
+      electricityKwh: figures.electricityKwh,
+      costPerMillionTokens: perMillion(figures.cost, totals.tokens),
+      carbonGramsPerMillionTokens: perMillion(
+        scale(figures.carbonKg, GRAMS_PER_KILOGRAM),
+        totals.tokens
+      )
+    },
+    forecast: {
+      tokens: totals.tokens * factor,
+      cost: scale(figures.cost, factor),
+      carbonKg: scale(figures.carbonKg, factor)
+    },
+    byEnvironment: byEnvironmentOf(
+      currentByEnvironment,
+      totals,
+      teamSlug,
+      rules
+    ),
+    byModel: byModelOf(currentModels, totals, rules),
+    byDay: byDayOf(currentKey, daysElapsed, currentByEnvironment)
+  }
+}
+
 /**
  * What a team's Usage pages show, from its usage rows in each environment over
  * the last few months: a figure for every month, and for this month the
@@ -277,43 +335,17 @@ export function overviewOf(
 ) {
   const rules = { prices, carbon: { factors: MODEL_CARBON, ...carbon } }
   const window = monthsWindow(now, months)
-  const today = isoDay(now.getTime())
   const keys = monthKeys(now, months)
   const currentKey = keys.at(-1)
   const daysInMonth = new Date(
     Date.UTC(now.getUTCFullYear(), now.getUTCMonth() + 1, 0)
   ).getUTCDate()
   const daysElapsed = now.getUTCDate()
-  const inWindow = Object.entries(rowsByEnvironment).map(
-    ([environment, rows]) => [
-      environment,
-      rows.filter((row) => row.day >= window.from && row.day < window.to)
-    ]
-  )
-
-  const monthsView = monthsViewOf(keys, inWindow, teamSlug, rules)
-
+  const inWindow = rowsInWindow(rowsByEnvironment, window)
   const currentByEnvironment = inWindow.map(([environment, list]) => [
     environment,
     list.filter((row) => row.day.startsWith(currentKey))
   ])
-  const currentRows = currentByEnvironment.flatMap(([, list]) => list)
-  const totals = tokensOf()
-
-  currentRows.forEach((row) => add(totals, row))
-
-  const currentModels = modelMapOf(currentRows, teamSlug)
-  const figures = figuresOf(currentModels, rules)
-  const factor = daysInMonth / daysElapsed
-  const byEnvironment = byEnvironmentOf(
-    currentByEnvironment,
-    totals,
-    teamSlug,
-    rules
-  )
-  const byModel = byModelOf(currentModels, totals, rules)
-  const byDay = byDayOf(currentKey, daysElapsed, currentByEnvironment)
-
   const unpricedModels = [
     ...new Set(
       figuresOf(
@@ -326,32 +358,19 @@ export function overviewOf(
   return {
     window,
     month: { key: currentKey, daysElapsed, daysInMonth },
-    months: monthsView,
-    current: {
-      totals: {
-        ...totals,
-        cost: figures.cost,
-        carbonKg: figures.carbonKg,
-        electricityKwh: figures.electricityKwh,
-        costPerMillionTokens: perMillion(figures.cost, totals.tokens),
-        carbonGramsPerMillionTokens: perMillion(
-          scale(figures.carbonKg, GRAMS_PER_KILOGRAM),
-          totals.tokens
-        )
-      },
-      forecast: {
-        tokens: totals.tokens * factor,
-        cost: scale(figures.cost, factor),
-        carbonKg: scale(figures.carbonKg, factor)
-      },
-      byEnvironment,
-      byModel,
-      byDay
-    },
+    months: monthsViewOf(keys, inWindow, teamSlug, rules),
+    current: currentOf({
+      currentByEnvironment,
+      currentKey,
+      daysElapsed,
+      daysInMonth,
+      teamSlug,
+      rules
+    }),
     carbonBasis: { enabled: Boolean(carbon.enabled) },
     unavailable,
     unpricedModels,
-    attention: attentionOf(refusals, today),
+    attention: attentionOf(refusals, isoDay(now.getTime())),
     budget: null
   }
 }
